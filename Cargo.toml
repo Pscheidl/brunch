@@ -1,0 +1,23 @@
+[package]
+name = "brunch"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+console_error_panic_hook = "=0.1.7"
+leptos = { version = "=0.8.21", features = ["csr"] }
+js-sys = "=0.3.106"
+web-sys = { version = "=0.3.106", features = ["Window", "Document", "Element", "HtmlElement", "HtmlInputElement", "HtmlSelectElement", "HtmlDialogElement", "KeyboardEvent", "Storage", "MediaQueryList", "DomTokenList"] }
+
+[profile.dev]
+debug = 1
+
+[profile.test]
+debug = 1
+
+[profile.release]
+opt-level = "z"
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true

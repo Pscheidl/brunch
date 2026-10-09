@@ -1,0 +1,36 @@
+Asset: public/images/brunch-spread.png
+Created: 2026-10-08
+Provenance: Built-in image_gen imagegen tool, no CLI fallback
+Generated source: /home/pavel/.codex/generated_images/01a11c42-edd4-7a03-b506-09f2e1456813/exec-350346dc-bdfe-4868-aa22-51c2d0ed1f18.png
+Output: PNG, 1536 x 1024 pixels, opaque background
+
+Exact prompt:
+Use case: photorealistic-natural
+Asset type: hero photograph for an elegant green minimalist artisan bakery and healthy office snack delivery website
+Primary request: a high quality photorealistic editorial overhead breakfast spread, landscape 1536x1024.
+Scene/backdrop: warm off-white pale sage tabletop with a folded sage linen napkin and a few natural bread crumbs.
+Subject: a freshly made seeded sourdough sandwich with visible avocado, cottage cheese and thin radish slices on a small simple ceramic plate, a clear glass of creamy yogurt with golden granola and fresh berries, and a small colorful hummus bowl with crisp fresh vegetable sticks.
+Style/medium: refined editorial real food photography, appealing artisanal food with authentic textures.
+Composition/framing: flat lay from directly overhead, balanced generous spacing between the three dishes, whole dishes comfortably contained within the image, tasteful relaxed composition suitable for a web hero.
+Lighting/mood: natural soft morning window light, gentle shadows, bright calm fresh inviting atmosphere.
+Color palette: warm cream, pale sage, rich avocado green, earthy golden bread with restrained berry and radish accents.
+Constraints: real edible food, no text, no logos, no labels, no watermark, no people, no hands, no UI, no collage.
+
+Asset: public/images/snack-atlas.png
+Created: 2026-10-08
+Provenance: Built-in image_gen imagegen tool, no CLI fallback
+Generated source: /home/pavel/.codex/generated_images/01a11c42-edd4-7a03-b506-09f2e1456813/exec-0da21ccc-0897-46d9-9cec-cc59de1ef453.png
+Output: PNG, 1536 x 1024 pixels, opaque background
+
+Exact prompt:
+Use case: product-mockup
+Asset type: product photography atlas used by a bakery snack catalog website, a precise equal 3-column by 2-row image sprite.
+Primary request: create one 1536x1024 landscape image containing exactly six separate food product photographs arranged in an exact regular 3 columns by 2 rows grid. Every cell is exactly 512x512 pixels. The boundaries of cells are x=0,512,1024,1536 and y=0,512,1024. There are no visible borders or dividing lines. All six cells share the identical warm off-white background.
+Composition/framing: each single product is precisely centered within its own square cell, fully contained with generous clear padding. No objects, shadows, props or food extend into another cell. Each product occupies roughly 65 percent of its cell width and 65 percent of its cell height. The six independent photographs have consistent soft natural morning light and gentle shadows. Refined photorealistic editorial food photography, authentic appetizing artisan texture. No surrounding decoration or props.
+Top-left cell: a seeded sourdough sandwich filled with avocado, cottage cheese, thin radish slices and a few sprouts, lying on a small round cream ceramic plate, photographed at a slightly elevated three-quarter angle.
+Top-middle cell: a clear cylindrical glass jar filled with creamy yogurt, golden granola, raspberries and blueberries, photographed at a slightly elevated three-quarter angle.
+Top-right cell: a shallow small round cream ceramic hummus bowl, topped with a few roasted chickpeas, and neat carrot and cucumber sticks resting along one side of the bowl, photographed at a slightly elevated three-quarter angle.
+Bottom-left cell: exactly two attractive thick slices of banana bread with walnuts on a tiny plain cream plate, photographed at a slightly elevated three-quarter angle.
+Bottom-middle cell: one small circular seeded bagel sandwich filled with cream cheese, cucumber and sprouts, photographed at a slightly elevated three-quarter angle.
+Bottom-right cell: one clear small glass bottle of opaque fresh orange carrot ginger juice with a simple neutral metal lid and absolutely no label, photographed straight on.
+Constraints: strict six-cell equal regular grid, three columns and two rows, one product centered in each cell, same camera scale, plenty of clear padding, food stays fully inside its cell. No text, no captions, no numbers, no labels, no brands, no logos, no watermark, no visible grid lines, no collage borders, no people, no hands, no UI.

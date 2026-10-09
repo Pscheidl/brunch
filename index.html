@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="cs">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="theme-color" content="#ffffff">
+    <meta name="description" content="Čerstvé svačiny z pekárny až do kanceláře. Vyberte si svou dobrou pauzu. Interaktivní prototyp webu brunch.">
+    <title>brunch · Dobrá pauza začíná tady</title>
+    <base data-trunk-public-url>
+    <link data-trunk rel="rust" data-bin="brunch" data-wasm-opt="0" data-initializer="public/initializer.js">
+    <link data-trunk rel="css" href="style/main.css">
+    <link data-trunk rel="css" href="style/checkout.css">
+    <link data-trunk rel="icon" href="public/favicon.svg" type="image/svg+xml">
+    <link data-trunk rel="copy-dir" href="public/fonts">
+    <link data-trunk rel="copy-file" href="public/images/brunch-spread.webp" data-target-path="images">
+    <link data-trunk rel="copy-file" href="public/images/snack-atlas.webp" data-target-path="images">
+    <link data-trunk rel="copy-file" href="public/.nojekyll">
+    <link rel="preload" href="fonts/geist.woff2" as="font" type="font/woff2" crossorigin="anonymous">
+  </head>
+  <body>
+    <div id="app-loading" class="app-loading" role="status">
+      <span class="brand">brunch.</span>
+      <p id="loading-message">Chystáme vaši dobrou pauzu…</p>
+      <a id="loading-retry" href="./" hidden>Zkusit znovu</a>
+    </div>
+    <noscript><p class="no-script">Pro výběr svačin a vyzkoušení objednávky prosím zapněte JavaScript.</p><style>#app-loading { display: none; }</style></noscript>
+  </body>
+</html>

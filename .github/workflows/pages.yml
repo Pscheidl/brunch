@@ -1,0 +1,101 @@
+name: Frontend checks and GitHub Pages
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pages-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      pages: read
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install pinned Rust toolchain
+        run: rustup show active-toolchain
+
+      - name: Cache Rust and WebAssembly tools
+        uses: actions/cache@v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            ~/.cache/trunk
+            target
+          key: pages-${{ runner.os }}-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml', 'Trunk.toml') }}
+
+      - name: Check formatting and cart calculations
+        run: |
+          cargo fmt --all --check
+          cargo test --locked
+
+      - name: Install Trunk 0.21.14
+        env:
+          TRUNK_VERSION: 0.21.14
+        run: |
+          mkdir -p "$RUNNER_TEMP/trunk"
+          curl --fail --location --retry 3 \
+            "https://github.com/trunk-rs/trunk/releases/download/v${TRUNK_VERSION}/trunk-x86_64-unknown-linux-gnu.tar.gz" \
+            --output "$RUNNER_TEMP/trunk.tar.gz"
+          tar -xzf "$RUNNER_TEMP/trunk.tar.gz" -C "$RUNNER_TEMP/trunk"
+          echo "$RUNNER_TEMP/trunk" >> "$GITHUB_PATH"
+
+      - name: Verify build at the domain root
+        run: |
+          ./scripts/build.sh --public-url /
+          python3 scripts/check-pages.py --dist dist --public-url /
+
+      - name: Verify build under a repository path
+        run: |
+          ./scripts/build.sh --public-url /__pages-check__/
+          python3 scripts/check-pages.py --dist dist --public-url /__pages-check__/
+
+      - name: Read GitHub Pages configuration
+        if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+        id: pages
+        uses: actions/configure-pages@v6.0.0
+
+      - name: Build for the configured Pages address
+        if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+        env:
+          BASE_PATH: ${{ steps.pages.outputs.base_path }}
+        run: |
+          ./scripts/build.sh --public-url "${BASE_PATH}/"
+          python3 scripts/check-pages.py --dist dist --public-url "${BASE_PATH}/"
+
+      - name: Upload Pages artifact
+        if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+        uses: actions/upload-pages-artifact@v5.0.0
+        with:
+          path: dist
+
+  deploy:
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy static frontend
+        id: deployment
+        uses: actions/deploy-pages@v5.0.1

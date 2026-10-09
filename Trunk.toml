@@ -1,0 +1,21 @@
+trunk-version = "=0.21.14"
+
+[build]
+target = "index.html"
+dist = "dist"
+public_url = "/"
+filehash = true
+locked = true
+
+[watch]
+watch = ["index.html", "src", "style", "public"]
+ignore = ["dist", "target", "design"]
+
+[serve]
+addresses = ["127.0.0.1"]
+port = 3100
+open = false
+no_spa = true
+
+[tools]
+wasm_bindgen = "0.2.129"
