@@ -1,143 +1,228 @@
-//! Ukázkový katalog a výpočty košíku. Ceny jsou celé koruny.
-#[derive(Clone, Copy)]
+//! API data and cart calculations. All amounts use integer Czech haléře.
+use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
 pub struct Product {
-    pub id: usize,
-    pub name: &'static str,
-    pub description: &'static str,
-    pub category: &'static str,
-    pub tag: &'static str,
-    pub weight: &'static str,
-    pub price: u32,
+    pub id: i64,
+    pub name: String,
+    pub description: String,
+    pub category: String,
+    pub tag: String,
+    pub weight: String,
+    pub price_cents: i64,
     pub vegan: bool,
-    pub ingredients: &'static str,
-    pub allergens: &'static str,
+    pub ingredients: String,
+    pub allergens: String,
+    pub image: String,
+    pub active: bool,
+    pub stock: Option<i32>,
+    pub version: i64,
 }
 
-pub const PRODUCTS: [Product; 6] = [
-    Product {
-        id: 0,
-        name: "Avokádový kváskový sendvič",
-        description: "Cottage, křupavá ředkvička a pořádná porce avokáda.",
-        category: "Slané",
-        tag: "Z naší pece",
-        weight: "180 g",
-        price: 119,
-        vegan: false,
-        ingredients: "Celozrnný kváskový chléb, avokádo, cottage, ředkvička, rukola, citron, semínka.",
-        allergens: "Lepek (pšenice, žito), mléko, sezam.",
-    },
-    Product {
-        id: 1,
-        name: "Jogurt, granola & lesní ovoce",
-        description: "Bílý jogurt, naše pečená granola a šťavnaté ovoce.",
-        category: "Sladké",
-        tag: "Ranní radost",
-        weight: "220 g",
-        price: 89,
-        vegan: false,
-        ingredients: "Bílý jogurt, ovesné vločky, med, mandle, maliny, borůvky.",
-        allergens: "Mléko, lepek (oves), skořápkové plody (mandle).",
-    },
-    Product {
-        id: 2,
-        name: "Hummus bowl se zeleninou",
-        description: "Jemný hummus, pečená cizrna a čerstvá zelenina.",
-        category: "Bowls",
-        tag: "Rostlinné",
-        weight: "250 g",
-        price: 129,
-        vegan: true,
-        ingredients: "Cizrna, sezamová pasta tahini, olivový olej, citron, okurka, mrkev, listový salát.",
-        allergens: "Sezam.",
-    },
-    Product {
-        id: 3,
-        name: "Banánový chlebíček",
-        description: "Vláčný, voňavý po banánech. S vlašskými ořechy.",
-        category: "Sladké",
-        tag: "Z naší pece",
-        weight: "100 g",
-        price: 65,
-        vegan: true,
-        ingredients: "Banány, pšeničná mouka, ovesný nápoj, vlašské ořechy, řepkový olej, třtinový cukr, skořice.",
-        allergens: "Lepek (pšenice, oves), skořápkové plody (vlašské ořechy).",
-    },
-    Product {
-        id: 4,
-        name: "Celozrnný bagel s lučinou",
-        description: "Čerstvý sýr, okurka a klíčky v měkkém bagelu.",
-        category: "Slané",
-        tag: "Z naší pece",
-        weight: "160 g",
-        price: 99,
-        vegan: false,
-        ingredients: "Celozrnný pšeničný bagel, čerstvý sýr, okurka, klíčky, sezam a lněné semínko.",
-        allergens: "Lepek (pšenice), mléko, sezam.",
-    },
-    Product {
-        id: 5,
-        name: "Pomeranč, mrkev & zázvor",
-        description: "Svěží ovocná šťáva s malým zázvorovým probuzením.",
-        category: "Nápoje",
-        tag: "Svěží doušek",
-        weight: "250 ml",
-        price: 69,
-        vegan: true,
-        ingredients: "Pomerančová šťáva, mrkvová šťáva, zázvor, citronová šťáva.",
-        allergens: "Bez alergenů v ukázkové receptuře.",
-    },
-];
+#[derive(Clone, Debug, Default, Deserialize)]
+pub struct Settings {
+    pub delivery_fee_cents: i64,
+    pub free_delivery_from_cents: Option<i64>,
+}
 
-pub const FREE_DELIVERY_FROM: u32 = 350;
-pub const DELIVERY_FEE: u32 = 49;
-pub type Cart = [u16; 6];
+#[derive(Clone, Debug, Default, Deserialize)]
+pub struct DeliveryOptions {
+    pub dates: Vec<DeliveryDate>,
+    pub slots: Vec<String>,
+}
+#[derive(Clone, Debug, Deserialize)]
+pub struct DeliveryDate {
+    pub value: String,
+    pub label: String,
+}
+#[derive(Clone, Debug, Deserialize)]
+pub struct User {
+    pub id: String,
+    pub email: String,
+    pub is_admin: bool,
+}
+#[derive(Clone, Debug, Deserialize)]
+pub struct UserResponse {
+    pub user: User,
+}
+#[derive(Clone, Debug, Deserialize)]
+pub struct Order {
+    pub id: String,
+    pub number: String,
+    pub status: String,
+    pub payment_method: String,
+    pub subtotal_cents: i64,
+    pub delivery_fee_cents: i64,
+    pub total_cents: i64,
+    #[serde(default)]
+    pub email: String,
+    #[serde(default)]
+    pub name: Option<String>,
+    #[serde(default)]
+    pub phone: Option<String>,
+    #[serde(default)]
+    pub organization: Option<String>,
+    #[serde(default)]
+    pub street: String,
+    #[serde(default)]
+    pub city: String,
+    #[serde(default)]
+    pub postal_code: String,
+    #[serde(default)]
+    pub notes: Option<String>,
+    #[serde(default)]
+    pub delivery_date: String,
+    #[serde(default)]
+    pub delivery_slot: String,
+    #[serde(default)]
+    pub created_at: String,
+    #[serde(default)]
+    pub items: Vec<OrderItem>,
+}
+#[derive(Clone, Debug, Deserialize)]
+pub struct OrderItem {
+    pub product_id: i64,
+    pub name: String,
+    pub quantity: u16,
+    pub unit_price_cents: i64,
+    pub total_cents: i64,
+}
+#[derive(Clone, Debug, Serialize)]
+pub struct RequestedItem {
+    pub product_id: i64,
+    pub quantity: u16,
+}
+#[derive(Clone, Debug, Serialize)]
+pub struct OrderRequest {
+    pub idempotency_key: String,
+    pub email: String,
+    pub name: String,
+    pub phone: String,
+    pub organization: String,
+    pub street: String,
+    pub city: String,
+    pub postal_code: String,
+    pub notes: String,
+    pub delivery_date: String,
+    pub delivery_slot: String,
+    pub payment_method: String,
+    pub items: Vec<RequestedItem>,
+    pub expected_total_cents: i64,
+}
 
-pub fn subtotal(cart: &Cart) -> u32 {
-    PRODUCTS
+pub type Cart = BTreeMap<i64, u16>;
+
+pub fn subtotal(cart: &Cart, products: &[Product]) -> i64 {
+    products
         .iter()
-        .map(|p| p.price * u32::from(cart[p.id]))
+        .map(|p| p.price_cents * i64::from(cart.get(&p.id).copied().unwrap_or(0)))
         .sum()
 }
-
-pub fn delivery_fee(cart: &Cart) -> u32 {
-    let amount = subtotal(cart);
-    if amount == 0 || amount >= FREE_DELIVERY_FROM {
+pub fn delivery_fee(amount: i64, settings: &Settings) -> i64 {
+    if amount == 0
+        || settings
+            .free_delivery_from_cents
+            .is_some_and(|limit| amount >= limit)
+    {
         0
     } else {
-        DELIVERY_FEE
+        settings.delivery_fee_cents
     }
 }
-
 pub fn quantity(cart: &Cart) -> u32 {
-    cart.iter().map(|n| u32::from(*n)).sum()
+    cart.values().map(|n| u32::from(*n)).sum()
 }
-
 pub fn parse_cart(value: &str) -> Cart {
-    let parts: Vec<_> = value.split(',').collect();
-    if parts.len() != PRODUCTS.len() {
-        return [0; 6];
+    serde_json::from_str::<Cart>(value)
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|(id, n)| *id > 0 && *n > 0)
+        .map(|(id, n)| (id, n.min(99)))
+        .collect()
+}
+pub fn reconcile(cart: &mut Cart, products: &[Product]) -> bool {
+    let previous = cart.clone();
+    cart.retain(|id, count| {
+        if let Some(p) = products.iter().find(|p| p.id == *id && p.active) {
+            *count = (*count).min(p.stock.unwrap_or(99).clamp(0, 99) as u16);
+            *count > 0
+        } else {
+            false
+        }
+    });
+    *cart != previous
+}
+pub fn money(cents: i64) -> String {
+    if cents % 100 == 0 {
+        format!("{} Kč", cents / 100)
+    } else {
+        format!("{},{:02} Kč", cents / 100, cents.abs() % 100)
     }
-    std::array::from_fn(|i| parts[i].parse::<u16>().unwrap_or(0).min(99))
+}
+pub fn status_label(value: &str) -> &'static str {
+    match value {
+        "new" => "Přijato",
+        "confirmed" => "Potvrzeno",
+        "preparing" => "Připravujeme",
+        "out_for_delivery" => "Na cestě",
+        "delivered" => "Doručeno",
+        "cancelled" => "Zrušeno",
+        _ => "Zpracovává se",
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    #[test]
-    fn prices_and_delivery_follow_cart_contents() {
-        assert_eq!(delivery_fee(&[0; 6]), 0);
-        let small = [1, 1, 0, 0, 0, 0];
-        assert_eq!(subtotal(&small), 208);
-        assert_eq!(subtotal(&small) + delivery_fee(&small), 257);
-        let team = [2, 0, 1, 0, 0, 0];
-        assert_eq!(subtotal(&team), 367);
-        assert_eq!(delivery_fee(&team), 0);
-        assert_eq!(quantity(&team), 3);
+    fn product(id: i64, cents: i64, stock: Option<i32>) -> Product {
+        Product {
+            id,
+            name: "Svačina".into(),
+            description: String::new(),
+            category: String::new(),
+            tag: String::new(),
+            weight: String::new(),
+            price_cents: cents,
+            vegan: false,
+            ingredients: String::new(),
+            allergens: String::new(),
+            image: String::new(),
+            active: true,
+            stock,
+            version: 1,
+        }
     }
     #[test]
-    fn stored_cart_is_bounded_and_invalid_data_is_safe() {
-        assert_eq!(parse_cart("2,1,0,0,0,3"), [2, 1, 0, 0, 0, 3]);
-        assert_eq!(parse_cart("broken"), [0; 6]);
-        assert_eq!(parse_cart("999,-1,no,2,0,1"), [99, 0, 0, 2, 0, 1]);
+    fn cart_uses_stable_ids_and_exact_cents() {
+        let products = vec![product(90, 11950, None), product(7, 6500, None)];
+        let cart = Cart::from([(7, 2), (90, 1)]);
+        assert_eq!(subtotal(&cart, &products), 24950);
+        assert_eq!(quantity(&cart), 3);
+        assert_eq!(money(24950), "249,50 Kč");
+    }
+    #[test]
+    fn delivery_respects_optional_threshold_and_exact_boundary() {
+        let mut settings = Settings {
+            delivery_fee_cents: 4900,
+            free_delivery_from_cents: Some(35000),
+        };
+        assert_eq!(delivery_fee(34999, &settings), 4900);
+        assert_eq!(delivery_fee(35000, &settings), 0);
+        settings.free_delivery_from_cents = None;
+        assert_eq!(delivery_fee(99000, &settings), 4900);
+        assert_eq!(delivery_fee(0, &settings), 0);
+    }
+    #[test]
+    fn persisted_cart_recovers_safely_and_reconciles_stock() {
+        assert!(parse_cart("broken").is_empty());
+        let mut cart = parse_cart(r#"{"18":200,"7":2,"0":4,"22":1}"#);
+        assert_eq!(cart.get(&18), Some(&99));
+        assert!(!cart.contains_key(&0));
+        assert!(reconcile(
+            &mut cart,
+            &[product(18, 100, Some(3)), product(7, 100, Some(0))]
+        ));
+        assert_eq!(cart, Cart::from([(18, 3)]));
     }
 }

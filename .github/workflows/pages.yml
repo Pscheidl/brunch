@@ -1,4 +1,4 @@
-name: Frontend checks and GitHub Pages
+name: Frontend and backend checks
 
 on:
   push:
@@ -20,7 +20,6 @@ jobs:
     timeout-minutes: 30
     permissions:
       contents: read
-      pages: read
     steps:
       - uses: actions/checkout@v7.0.1
         with:
@@ -60,42 +59,42 @@ jobs:
           ./scripts/build.sh --public-url /
           python3 scripts/check-pages.py --dist dist --public-url /
 
-      - name: Verify build under a repository path
-        run: |
-          ./scripts/build.sh --public-url /__pages-check__/
-          python3 scripts/check-pages.py --dist dist --public-url /__pages-check__/
-
-      - name: Read GitHub Pages configuration
-        if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
-        id: pages
-        uses: actions/configure-pages@v6.0.0
-
-      - name: Build for the configured Pages address
-        if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
-        env:
-          BASE_PATH: ${{ steps.pages.outputs.base_path }}
-        run: |
-          ./scripts/build.sh --public-url "${BASE_PATH}/"
-          python3 scripts/check-pages.py --dist dist --public-url "${BASE_PATH}/"
-
-      - name: Upload Pages artifact
-        if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
-        uses: actions/upload-pages-artifact@v5.0.0
-        with:
-          path: dist
-
-  deploy:
-    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
-    needs: build
+  backend:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
-    permissions:
-      pages: write
-      id-token: write
-    environment:
-      name: github-pages
-      url: ${{ steps.deployment.outputs.page_url }}
+    timeout-minutes: 20
+    services:
+      postgres:
+        image: postgres:18.6-bookworm
+        env:
+          POSTGRES_USER: brunch
+          POSTGRES_PASSWORD: brunch-ci
+          POSTGRES_DB: brunch_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U brunch -d brunch_test"
+          --health-interval 3s
+          --health-timeout 3s
+          --health-retries 15
+    env:
+      TEST_DATABASE_URL: postgres://brunch:brunch-ci@127.0.0.1:5432/brunch_test
     steps:
-      - name: Deploy static frontend
-        id: deployment
-        uses: actions/deploy-pages@v5.0.1
+      - uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install pinned Rust toolchain
+        run: rustup show active-toolchain
+      - uses: actions/cache@v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry
+            server/target
+          key: backend-${{ runner.os }}-${{ hashFiles('server/Cargo.lock', 'rust-toolchain.toml') }}
+      - name: Formatting and unit tests
+        run: |
+          cargo fmt --manifest-path server/Cargo.toml --check
+          cargo test --locked --manifest-path server/Cargo.toml --lib
+      - name: PostgreSQL HTTP and SMTP integration
+        run: cargo test --locked --manifest-path server/Cargo.toml --test api --test mail --test security --test media -- --ignored --test-threads=1
+      - name: Clippy
+        run: cargo clippy --locked --manifest-path server/Cargo.toml --all-targets -- -D warnings

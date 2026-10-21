@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Check a Trunk output's local assets as served under a Pages base path.
+"""Check the storefront and administration's generated local assets.
 
 This checks generated HTML, CSS URLs and static JS/WASM references. It does
 not run the WebAssembly app, so interactive behaviour still needs a browser.
@@ -120,8 +120,10 @@ def check(dist: Path, public_url: str) -> list[str]:
         document_url = ORIGIN + public_url + path.relative_to(root).as_posix()
         document = Document()
         document.feed(path.read_text(encoding="utf-8"))
-        if document.bases != [public_url]:
-            errors.append(f"{path.name}: expected one <base href={public_url!r}>, got {document.bases!r}")
+        if path == root / "index.html" and document.bases != [public_url]:
+            errors.append(f"{path.relative_to(root)}: expected one <base href={public_url!r}>, got {document.bases!r}")
+        elif path != root / "index.html" and document.bases not in ([], [public_url]):
+            errors.append(f"{path.relative_to(root)}: unexpected base URL {document.bases!r}")
         context = urljoin(document_url, document.bases[0]) if document.bases else document_url
         for reference in document.references:
             asset(reference, context, path)
@@ -163,11 +165,11 @@ def main() -> int:
         parser.error("--public-url must be / or an absolute path ending in /, e.g. /brunch/")
     errors = check(args.dist, args.public_url)
     if errors:
-        print("Static Pages checks failed:", file=sys.stderr)
+        print("Static asset checks failed:", file=sys.stderr)
         for error in errors:
             print(f"  {error}", file=sys.stderr)
         return 1
-    print(f"Static Pages checks passed for {args.public_url}")
+    print(f"Static asset checks passed for {args.public_url}")
     return 0
 
 

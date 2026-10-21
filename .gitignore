@@ -5,3 +5,8 @@
 /output
 
 /dist
+/server/target
+/data
+/test-results
+/playwright-report
+/node_modules

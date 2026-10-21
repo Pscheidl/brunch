@@ -1,82 +1,95 @@
 # brunch
 
-Samostatný frontend pekárny s rozvozem svačin do kanceláře. Prototyp běží celý v prohlížeči a je připravený na GitHub Pages. Používá Rust 1.98.1, Leptos 0.8.21 v režimu CSR a Trunk 0.21.14. Backend, API ani databáze nejsou potřeba.
+Obchod s rozvozem svačin. Frontend používá Rust, Leptos CSR a Trunk. Backend je Rust/Axum s PostgreSQL. Obchod a administraci obsluhuje stejný server, takže nejsou potřeba oddělené domény ani CORS.
 
-Schválený vzhled kombinuje bílý základ, olivovou, světlou šalvěj a meruňku. Písmo Geist a jemné linky navazují na projekt `obecni-web`.
+## Objednávka a účet
 
-## Co lze vyzkoušet
+- Dynamický katalog, kategorie, rostlinný filtr, složení a alergeny, dostupné množství a košík zachovaný po obnovení stránky.
+- Nákup bez registrace. Povinné jsou e-mail, ulice, město a PSČ. Jméno, telefon, firma a pokyny pro kurýra jsou volitelné.
+- Výběr požadovaného dne a časového okna. Nabízejí se nejbližší tři pracovní dny podle pražského času, bez českých státních svátků.
+- Platba kartou přes terminál při doručení nebo hotově při doručení. Online platební brána není součástí této verze.
+- Server vždy spočítá cenu z databáze. Změnu ceny nebo dopravy mezi výběrem a odesláním musí zákazník znovu potvrdit.
+- Objednávka, její položky, odečet skladu a e-mailová fronta se uloží jednou transakcí. Opakovaný požadavek se stejným klíčem nevytvoří další objednávku.
+- Registrace a přihlášení jednorázovým odkazem z e-mailu. Platnost 15 minut, potvrzení kliknutím, bez hesel. Účet vzniká až po ověření adresy.
+- Přihlášený zákazník vidí své objednávky a může zopakovat nákup za aktuální ceny. Dřívější anonymní objednávky se automaticky nepřiřazují podle shodného e-mailu.
+- Potvrzení pro obchod i zákazníka a e-maily při změně stavu objednávky.
 
-- Nabídku šesti svačin, kategorie, rostlinný filtr a detaily se složením a alergeny.
-- Přidávání a množství, výpočet dopravy a košík zachovaný po obnovení stránky.
-- Objednávkový tok **Košík → Doručení → Platba → Potvrzení ukázky**, včetně návratu mezi kroky.
-- Ukázkovou platbu kartou nebo při převzetí. Prototyp nevyžaduje skutečné údaje karty.
-- Pobočky dostupné z navigace. Konkrétní adresy a otevírací dobu zatím čekáme od pekárny.
+## Administrace
 
-Objednávky ani platby se nikam neodesílají. Kontaktní údaje existují pouze v paměti otevřené stránky a po obnovení zmizí. Do místního úložiště se zapisují pouze počty svačin. Produkty, ceny, doprava, termíny a fotografie jsou ukázkové.
+Na `/admin/` se správce přihlásí stejným e-mailovým odkazem. Tato verze má jednoho správce určeného `ADMIN_EMAIL` v konfiguraci serveru. Změna adresy a restart převedou oprávnění na nového správce a odeberou je původnímu.
+
+- Zboží: přidání a úpravy, kategorie, složení, alergeny, nahrávání fotografií JPEG/PNG/WebP, dostupnost, archivace a skladové množství. Prázdný sklad znamená neomezenou dostupnost. Fotografie mohou mít nejvýše 2 MB a 4096 pixelů na straně. Server ověří skutečný formát a odstraní vložená metadata.
+- Ceny: časová historie každé změny a identifikace správce. Starší objednávky si uchovají původní název, cenu a dopravu.
+- Objednávky: hledání a filtrování, detail kontaktu a doručení, poznámka, položky, změny stavu, evidence přijaté platby a historie změn.
+- Doprava: cena, volitelná hranice pro dopravu zdarma a e-mail příjemce objednávek.
+- Zákazníci: ověřené účty a počty jejich objednávek.
+- E-maily: přehled fronty, výsledků odeslání a opakování selhaných objednávkových zpráv.
+
+Stavy postupují `nová → potvrzená → příprava → na cestě → doručená`. Před doručením lze nezaplacenou objednávku zrušit, čímž se rezervované kusy jednou vrátí. Přijatou platbu lze zaznamenat na cestě nebo při doručení. Doručená objednávka musí být zaplacená. Zrušení zaplacené objednávky vyžaduje budoucí samostatný proces vrácení peněz.
 
 ## Místní spuštění
 
-Jednorázově nainstalujte Rust s cílem WebAssembly a Trunk:
+Potřebujete Rust podle `rust-toolchain.toml`, Trunk 0.21.14 a PostgreSQL 18. Pro místní databázi a zachytávání e-mailů je připraven Docker Compose:
 
 ```bash
-rustup target add wasm32-unknown-unknown
-cargo install trunk --locked --version 0.21.14
-```
-
-Spusťte vývojový náhled:
-
-```bash
+cp .env.example .env
+docker compose up -d
 ./scripts/dev.sh
 ```
 
-Otevřete <http://127.0.0.1:3100>. Trunk při změnách obnovuje stránku. Jde pouze o vývojový server statických souborů.
+Obchod a administrace běží na `http://127.0.0.1:3100`, místní e-mailová schránka na `http://127.0.0.1:18026`. Všechny zprávy z výchozího místního nastavení zůstávají v Mailpitu. Správce má adresu `admin@example.test`, objednávky chodí na `orders@example.test`.
 
-Skripty používají Trunk z `PATH`, `target/tools/trunk/trunk` nebo místního sousedního projektu `../obecni-web/target/tools/trunk/trunk`. Vlastní cestu lze předat přes `BRUNCH_TRUNK_BIN`. Sousední projekt není pro sestavení potřeba, pokud je Trunk nainstalovaný.
+Při prvním spuštění se automaticky provedou migrace, založí správce a vloží původních šest ukázkových produktů. Výchozí doprava stojí 49 Kč, od 350 Kč je zdarma. Existující data se při dalších startech nepřepisují. Ukázkové zboží, složení a fotografie je před skutečným prodejem potřeba upravit v administraci.
 
-## Sestavení pro GitHub Pages
+Pro nativní PostgreSQL nastavte `DATABASE_URL`, pro vlastní místní SMTP odpovídající proměnné. Backend čte `.env` v kořeni projektu. `./scripts/dev.sh` sestaví frontend a spustí backend. Po změně frontendu skript znovu spusťte. Statický výstup musí být pro tento backend sestaven s cestou `/`.
 
 ```bash
-./scripts/build.sh --public-url /brunch/
+./scripts/build.sh --public-url /
+cargo run --locked --manifest-path server/Cargo.toml
 ```
 
-Hotové soubory jsou v `dist/`. Pro doménu bez podadresáře použijte `--public-url /`. Výstup obsahuje HTML, CSS, JavaScript, WebAssembly, písma a optimalizované fotografie. Zdrojové PNG, návrhové poznámky ani lokální screenshoty se nepublikují.
+Skripty hledají Trunk v `PATH`, `target/tools/trunk/trunk` nebo v sousedním `obecni-web/target/tools/trunk/trunk`. Lze nastavit `BRUNCH_TRUNK_BIN`. Sousední projekt není závislost aplikace. Sestavení přesune zaváděcí JavaScript do samostatného souboru, aby bylo kompatibilní s bezpečnostní politikou serveru.
 
-Pro offline sestavení ze stažených závislostí a nástrojů:
+`docker compose down` zastaví místní služby a zachová databázový svazek. Přepínač `-v` by databázi smazal.
+
+## Testy
+
+Použijte samostatnou místní databázi. Integrační testy vytvářejí a odstraňují vlastní schémata, nepřepisují aplikační tabulky.
 
 ```bash
-CARGO_NET_OFFLINE=true ./scripts/build.sh --offline --public-url /brunch/
+export TEST_DATABASE_URL=postgres://brunch:brunch-local@127.0.0.1:55434/brunch
+./scripts/test.sh
 ```
 
-Postup nasazení:
-
-1. Připojte projekt k repozitáři na GitHubu a nahrajte zdrojové soubory na větev `main`.
-2. V **Settings → Pages → Build and deployment → Source** vyberte **GitHub Actions**.
-3. Workflow `.github/workflows/pages.yml` provede kontroly, sestaví statický web a zveřejní jej. Cestu webu přebírá z nastavení Pages, podporuje tedy projektový podadresář i kořen vlastní domény.
-4. Veřejnou adresu najdete ve výsledku nasazení a v nastavení Pages.
-
-Pull requesty pouze ověřují sestavení. Nasazení probíhá z `main`, automaticky po pushi nebo ručním spuštění workflow. Účty a skutečné platby přijdou až s backendem.
-
-## Ověření
+Samostatné příkazy:
 
 ```bash
-cargo fmt --check
 cargo test --locked --lib
-./scripts/build.sh --public-url /brunch/
-python3 scripts/check-pages.py --dist dist --public-url /brunch/
+cargo test --locked --manifest-path server/Cargo.toml --lib
+cargo test --locked --manifest-path server/Cargo.toml --test api --test mail --test security --test media -- --ignored --test-threads=1
+cargo clippy --locked --manifest-path server/Cargo.toml --all-targets -- -D warnings
 ```
 
-CI kromě testů košíku ověřuje sestavení pro kořen i podadresář a kontroluje reference v HTML, CSS a JavaScriptu proti skutečným souborům v balíčku. Interakce je potřeba ověřit v prohlížeči.
+Databázové a SMTP integrační testy jsou označeny `ignored`, protože bez PostgreSQL nemají smysluplný výsledek. Skript výše je vždy výslovně spouští a při chybě nebo chybějící databázi skončí neúspěšně. SMTP test spouští skutečný místní testovací SMTP server a ověřuje i opakování po výpadku. Scénáře a rozsah jsou v `docs/test-plan.md`, výsledky místního ověření v `docs/local-verification.md`.
+
+## Provozní nastavení
+
+`PUBLIC_URL` musí odpovídat adrese webu. Mimo localhost je vyžadováno HTTPS. Relace používá HttpOnly cookie, SameSite=Lax a při HTTPS také Secure. Zápisové API ověřuje původ požadavku a vlastní hlavičku. Administrátorská oprávnění se kontrolují na serveru pro každý endpoint, ne pouze zobrazením menu.
+
+Pro doručování mimo počítač nastavte skutečné `SMTP_HOST`, `SMTP_PORT`, `SMTP_FROM`, `SMTP_USERNAME`, `SMTP_PASSWORD`, `SMTP_TLS=true`, `ORDER_EMAIL` a `ADMIN_EMAIL`. SMTP používá povinný STARTTLS. Tajné hodnoty patří do prostředí nebo `.env`, nikdy do Git repozitáře. Služba potřebuje zálohovaný PostgreSQL, HTTPS reverse proxy a provozní dohled. API dostupnost ověřuje `/api/health`.
+
+Fronta opakuje selhané odeslání s prodlužujícím se odstupem, po osmi pokusech zůstane zpráva jako selhaná v administraci. E-mail se považuje za odeslaný až po přijetí SMTP serverem, nikoli za prokazatelně doručený do schránky. Při pádu přesně mezi SMTP přijetím a uložením výsledku může přijít duplikát. Opakované odeslání má stejné Message-ID. Objednávka se při potížích s e-mailem neztratí.
+
+Časová okna jsou požadavkem zákazníka, nikoli rezervací kapacity kurýra. Tato verze nemá napojení na dopravce, GPS sledování, ověření adresy, zónování rozvozu, online platby ani automatické plánování tras. Obsluha potvrzuje přijetí a proveditelnost doručení v administraci. Veřejné spuštění vyžaduje doplnění skutečných kontaktních a obchodních údajů provozovatele, podmínek a pravidel zpracování zákaznických údajů.
+
+GitHub Pages neumí spustit PostgreSQL ani tento backend. CI nyní ověřuje frontend i backend, publikace vyžaduje samostatný aplikační server. V tomto úkolu se nic nenasazuje.
 
 ## Struktura
 
-- `src/app.rs`: komponenty a objednávkový tok
-- `src/catalog.rs`: ukázkový katalog a výpočty košíku
-- `src/main.rs`: spuštění Leptos aplikace v prohlížeči
-- `index.html`, `Trunk.toml`: statický vstup a sestavení
-- `style/`: schválený vzhled a styly objednávky
-- `public/`: fotografie, písma a malý indikátor načítání
-- `.github/workflows/pages.yml`: kontroly a nasazení
-
-Podklady návrhu a jejich omezení jsou v [poznámce k UX](design/ux-decisions.md). Prompty fotografií jsou v `design/image-prompts.txt`, licence písem v `public/fonts/LICENSE.txt`.
-
-Sestavení odpovídá oficiálním postupům [Leptos CSR](https://book.leptos.dev/deployment/csr.html) a [GitHub Pages](https://docs.github.com/en/pages/getting-started-with-github-pages/using-custom-workflows-with-github-pages).
+- `src/`, `style/`: zákaznický obchod a objednávka
+- `public/admin/`: administrace
+- `server/src/`: autentizace, obchodní API, e-mailová fronta
+- `server/migrations/`: verzované PostgreSQL migrace
+- `server/tests/`: skutečné HTTP, databázové a SMTP testy
+- `docs/api-contract.md`: datové rozhraní
+- `compose.yaml`, `.env.example`: místní služby a konfigurace

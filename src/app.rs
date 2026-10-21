@@ -1,8 +1,12 @@
 use crate::{
-    catalog::{self, Cart, FREE_DELIVERY_FROM, PRODUCTS, Product},
+    api,
+    catalog::{
+        self, Cart, DeliveryOptions, Order, OrderRequest, Product, RequestedItem, Settings, User,
+        UserResponse, money,
+    },
     icons::Icon,
 };
-use leptos::{html, prelude::*};
+use leptos::{html, prelude::*, task::spawn_local};
 
 #[component]
 pub fn App() -> impl IntoView {
@@ -10,479 +14,649 @@ pub fn App() -> impl IntoView {
 }
 
 #[derive(Clone, Copy)]
-struct Shop {
-    cart: RwSignal<Cart>,
-    delivery_dialog: NodeRef<html::Dialog>,
-    cart_dialog: NodeRef<html::Dialog>,
-    product_dialog: NodeRef<html::Dialog>,
-    branches_dialog: NodeRef<html::Dialog>,
-    selected_product: RwSignal<usize>,
-    postal_code: RwSignal<String>,
-    day: RwSignal<usize>,
-    days: RwSignal<[String; 3]>,
-    slot: RwSignal<String>,
-    cart_step: RwSignal<u8>,
-    cart_title: NodeRef<html::H2>,
-    cart_content: NodeRef<html::Div>,
-    draft_postal: RwSignal<String>,
-    draft_day: RwSignal<usize>,
-    draft_slot: RwSignal<String>,
-    announcement: RwSignal<String>,
-}
-
-fn open_dialog(dialog: NodeRef<html::Dialog>) {
-    if let Some(dialog) = dialog.get() {
-        let _ = dialog.show_modal();
-    }
-}
-
-fn close_dialog(dialog: NodeRef<html::Dialog>) {
-    if let Some(dialog) = dialog.get() {
-        dialog.close();
-    }
-}
-
-impl Shop {
-    fn open_delivery(self) {
-        self.draft_postal.set(self.postal_code.get_untracked());
-        self.draft_day.set(self.day.get_untracked());
-        self.draft_slot.set(self.slot.get_untracked());
-        open_dialog(self.delivery_dialog);
-    }
-    fn go_to_step(self, step: u8) {
-        self.cart_step.set(step);
-        if let Some(title) = self.cart_title.get() {
-            let _ = title.focus();
-        }
-        if let Some(dialog) = self.cart_dialog.get() {
-            dialog.set_scroll_top(0);
-        }
-        if let Some(content) = self.cart_content.get() {
-            content.set_scroll_top(0);
-        }
-    }
-    fn open_cart(self) {
-        self.cart_step.set(0);
-        open_dialog(self.cart_dialog);
-    }
-    fn add(self, id: usize) {
-        self.cart
-            .update(|cart| cart[id] = cart[id].saturating_add(1).min(99));
-        self.announcement
-            .set(format!("{} přidáno do košíku.", PRODUCTS[id].name));
-    }
-    fn show_product(self, id: usize) {
-        self.selected_product.set(id);
-        open_dialog(self.product_dialog);
-    }
-    fn delivery_label(self) -> String {
-        format!("{}, {}", self.days.get()[self.day.get()], self.slot.get())
-    }
-}
-
-#[component]
-fn Home() -> impl IntoView {
-    let shop = Shop {
-        cart: RwSignal::new([0; 6]),
-        delivery_dialog: NodeRef::new(),
-        cart_dialog: NodeRef::new(),
-        product_dialog: NodeRef::new(),
-        branches_dialog: NodeRef::new(),
-        selected_product: RwSignal::new(0),
-        postal_code: RwSignal::new(String::new()),
-        day: RwSignal::new(0),
-        days: RwSignal::new([
-            "Nejbližší pracovní den".into(),
-            "Další pracovní den".into(),
-            "Třetí pracovní den".into(),
-        ]),
-        slot: RwSignal::new("9:00–10:00".into()),
-        cart_step: RwSignal::new(0),
-        cart_title: NodeRef::new(),
-        cart_content: NodeRef::new(),
-        draft_postal: RwSignal::new(String::new()),
-        draft_day: RwSignal::new(0),
-        draft_slot: RwSignal::new("9:00–10:00".into()),
-        announcement: RwSignal::new(String::new()),
-    };
-    let category = RwSignal::new("Vše");
-    let vegan = RwSignal::new(false);
-    let restored = RwSignal::new(false);
-
-    Effect::new(move |_| {
-        if !restored.get_untracked() {
-            #[cfg(target_arch = "wasm32")]
-            {
-                if let Some(storage) =
-                    web_sys::window().and_then(|w| w.local_storage().ok().flatten())
-                {
-                    if let Ok(Some(saved)) = storage.get_item("brunch-cart-v1") {
-                        shop.cart.set(catalog::parse_cart(&saved));
-                    }
-                }
-                shop.days.set(next_delivery_days());
-            }
-            restored.set(true);
-        }
-    });
-    Effect::new(move |_| {
-        let ready = restored.get();
-        let cart = shop.cart.get();
-        if ready {
-            #[cfg(target_arch = "wasm32")]
-            if let Some(storage) = web_sys::window().and_then(|w| w.local_storage().ok().flatten())
-            {
-                let value = cart
-                    .iter()
-                    .map(u16::to_string)
-                    .collect::<Vec<_>>()
-                    .join(",");
-                let _ = storage.set_item("brunch-cart-v1", &value);
-            }
-            #[cfg(not(target_arch = "wasm32"))]
-            let _ = cart;
-        }
-    });
-
-    view! {
-        <a class="skip-link" href="#nabidka">"Přejít na nabídku"</a>
-        <div class="top-note">"Ochutnávka budoucího brunch. Prohlížíte si interaktivní návrh."</div>
-        <header class="site-header">
-            <div class="header-inner page-width">
-                <a class="brand" href="./" aria-label="brunch, úvodní stránka"><span class="brand-mark"><Icon name="leaf"/></span>"brunch"<span class="brand-dot">"."</span></a>
-                <nav class="desktop-nav" aria-label="Hlavní navigace">
-                    <a href="#nabidka" class="active">"Naše nabídka"</a>
-                    <a href="#jak-to-funguje">"Jak to funguje"</a>
-                    <button class="nav-branches" on:click=move |_| open_dialog(shop.branches_dialog)>"Pobočky"</button>
-                    <a href="#do-kancelare">"Pro vaši kancelář"</a>
-                </nav>
-                <div class="header-actions">
-                    <button class="header-branches" on:click=move |_| open_dialog(shop.branches_dialog)><Icon name="pin"/><span>"Pobočky"</span></button>
-                    <button class="header-cart" on:click=move |_| shop.open_cart() aria-label=move || format!("Otevřít košík, {} kusů", catalog::quantity(&shop.cart.get()))>
-                        <Icon name="bag"/><span>"Košík"</span><span class="cart-count">{move || catalog::quantity(&shop.cart.get())}</span>
-                    </button>
-                </div>
-            </div>
-        </header>
-        <main>
-            <section class="hero page-width" aria-labelledby="hero-title">
-                <div class="hero-copy">
-                    <div class="eyebrow"><span class="status-dot"></span>"Z PEKÁRNY ROVNOU K VÁM"</div>
-                    <h1 id="hero-title">"Dobrá pauza."<br/><span>"Lepší den."</span></h1>
-                    <p>"Poctivé pečivo. Čerstvé suroviny. Svačiny, na které se budete těšit. Až k vám do kanceláře."</p>
-                    <a class="button primary hero-cta" href="#nabidka">"Co si dnes dáte?"<Icon/></a>
-                    <div class="hero-footnote"><Icon name="check"/>"Pár kliknutí. Bez registrace."</div>
-                </div>
-                <div class="hero-visual">
-                    <img src="images/brunch-spread.webp" alt="Kváskový sendvič, jogurt s granolou a hummus se zeleninou na prostřeném stole" width="1536" height="1024" fetchpriority="high"/>
-                    <div class="photo-caption"><span class="caption-icon"><Icon name="sun"/></span><div><strong>"Malá pauza. Velká radost."</strong><span>"Dobré věci si zaslouží svůj čas."</span></div></div>
-                    <span class="photo-index">"01 / DOBRÉ RÁNO"</span>
-                </div>
-            </section>
-
-            <div class="page-width">
-                <section class="delivery-strip" aria-label="Nastavení doručení">
-                    <button class="delivery-selector" on:click=move |_| shop.open_delivery()>
-                        <Icon name="pin"/><span><small>"VAŠE KANCELÁŘ"</small><strong>{move || if shop.postal_code.get().is_empty() { "Kam to přivezeme?".into() } else { format!("PSČ {}", shop.postal_code.get()) }}</strong></span><Icon name="chevron"/>
-                    </button>
-                    <button class="delivery-selector" on:click=move |_| shop.open_delivery()>
-                        <Icon name="clock"/><span><small>"UKÁZKOVÝ TERMÍN"</small><strong>{move || shop.delivery_label()}</strong></span><Icon name="chevron"/>
-                    </button>
-                    <div class="delivery-price"><Icon name="truck"/><span>"Doručení "<strong>"49 Kč"</strong><small>"Od 350 Kč ho máte od nás."</small></span></div>
-                </section>
-                <div class="benefits"><span><Icon name="leaf"/>"Suroviny, které znáte"</span><span><Icon name="sun"/>"Připraveno na vaše ráno"</span><span><Icon name="bag"/>"Pro vás i celý tým"</span></div>
-            </div>
-
-            <section class="catalog page-width" id="nabidka" aria-labelledby="catalog-title">
-                <div class="section-heading"><div><p class="eyebrow">"VAŠE DALŠÍ OBLÍBENÁ SVAČINA"</p><h2 id="catalog-title">"Na co máte chuť?"</h2></div><p class="catalog-note">"Něco malého. Něco dobrého. Něco pro vás."</p></div>
-                <div class="filter-bar">
-                    <div class="categories" role="group" aria-label="Kategorie svačin">
-                        {["Vše", "Slané", "Sladké", "Bowls", "Nápoje"].into_iter().map(move |name| view! {
-                            <button class:active=move || category.get() == name aria-pressed=move || category.get() == name on:click=move |_| category.set(name)>{name}</button>
-                        }).collect_view()}
-                    </div>
-                    <label class="vegan-filter"><input type="checkbox" prop:checked=move || vegan.get() on:change=move |ev| vegan.set(event_target_checked(&ev))/><Icon name="leaf"/>"Jen rostlinné"</label>
-                </div>
-                <div class="result-meta" role="status">{move || {
-                    let count = PRODUCTS.iter().filter(|p| (category.get() == "Vše" || category.get() == p.category) && (!vegan.get() || p.vegan)).count();
-                    format!("{} {}", count, if count == 1 { "svačina v nabídce" } else if (2..=4).contains(&count) { "svačiny v nabídce" } else { "svačin v nabídce" })
-                }}</div>
-                <div class="product-grid">
-                    {PRODUCTS.into_iter().map(move |product| view! {
-                        <div hidden=move || (category.get() != "Vše" && category.get() != product.category) || (vegan.get() && !product.vegan)>
-                            <ProductCard product shop/>
-                        </div>
-                    }).collect_view()}
-                </div>
-                <Show when=move || !PRODUCTS.iter().any(|p| (category.get() == "Vše" || category.get() == p.category) && (!vegan.get() || p.vegan))>
-                    <div class="empty-results"><Icon name="leaf"/><h3>"Tuhle kombinaci zatím nepečeme."</h3><p>"Zkuste jinou kategorii nebo si prohlédněte celou nabídku."</p><button class="button secondary" on:click=move |_| {category.set("Vše"); vegan.set(false);}>"Zobrazit všechny svačiny"</button></div>
-                </Show>
-                <p class="catalog-disclaimer">"Ukázková nabídka a ceny včetně DPH. Fotografie jsou ilustrační."</p>
-            </section>
-
-            <section class="how-section page-width" id="jak-to-funguje" aria-labelledby="how-title">
-                <div class="section-heading"><div><p class="eyebrow">"PAUZA BEZ STAROSTÍ"</p><h2 id="how-title">"Vy máte svůj den. My svačinu."</h2></div></div>
-                <div class="steps-grid">
-                    <article><span class="step-number">"01"</span><h3>"Vyberte si podle chuti"</h3><p>"Slané, sladké nebo něco do misky. Složení i alergeny najdete u každé svačiny."</p></article>
-                    <article><span class="step-number">"02"</span><h3>"Řekněte nám kam a kdy"</h3><p>"Zvolte si ranní čas, který vám sedí. Doručení i celkovou cenu uvidíte předem."</p></article>
-                    <article><span class="step-number">"03"</span><h3>"Udělejte si dobrou pauzu"</h3><p>"Přivezeme ji až do kanceláře. Stačí zavřít notebook a na chvíli si vydechnout."</p></article>
-                </div>
-            </section>
-            <section class="office-section page-width" id="do-kancelare" aria-labelledby="office-title"><div class="office-banner"><div><span class="eyebrow">"DOBRÉ VĚCI SE LÉPE SDÍLÍ"</span><h2 id="office-title">"Přiberte ke svačině kolegy."</h2><p>"Každému něco podle chuti. Jedna společná objednávka, jedna cesta k vám. Od 350 Kč s doručením zdarma."</p></div><a class="button secondary" href="#nabidka">"Vybrat pro celý tým"<Icon/></a></div></section>
-        </main>
-        <footer class="site-footer page-width"><a class="brand footer-brand" href="./">"brunch."</a><p>"Dobrá pauza začíná tady."</p><button class="text-button footer-branches" on:click=move |_| open_dialog(shop.branches_dialog)>"Pobočky"<Icon name="pin"/></button><span>"Návrh · 2026"</span></footer>
-        <div class="mobile-cart" class:has-items={move || catalog::quantity(&shop.cart.get()) > 0}><button class="button primary" on:click=move |_| shop.open_cart()><span><Icon name="bag"/>"Zobrazit košík"<span class="cart-count">{move || catalog::quantity(&shop.cart.get())}</span></span><strong>{move || format!("{} Kč", catalog::subtotal(&shop.cart.get()) + catalog::delivery_fee(&shop.cart.get()))}<Icon/></strong></button></div>
-        <div class="sr-only" aria-live="polite" aria-atomic="true">{move || shop.announcement.get()}</div>
-        <DeliveryDialog shop/>
-        <ProductDialog shop/>
-        <CartDialog shop/>
-        <BranchesDialog shop/>
-    }
-}
-
-#[component]
-fn ProductCard(product: Product, shop: Shop) -> impl IntoView {
-    view! {
-        <article class="product-card" class:in-cart={move || shop.cart.get()[product.id] > 0}>
-            <button class=format!("product-photo snack-image snack-{}", product.id) aria-label=format!("Podrobnosti: {}", product.name) on:click=move |_| shop.show_product(product.id)>
-                <span class="product-tag">{product.tag}</span><span class="photo-detail">"Složení a alergeny"<Icon name="plus"/></span>
-            </button>
-            <div class="product-info"><div class="product-meta"><span>{product.category}</span><span>{product.weight}</span></div>
-                <h3><button on:click=move |_| shop.show_product(product.id)>{product.name}</button></h3><p>{product.description}</p>
-                <div class="product-bottom"><span class="product-price">{product.price}<small>" Kč"</small></span><QuantityControl id=product.id shop/></div>
-            </div>
-        </article>
-    }
-}
-
-#[component]
-fn QuantityControl(id: usize, shop: Shop) -> impl IntoView {
-    view! {
-        <Show when={move || shop.cart.get()[id] > 0} fallback=move || view! {
-            <button class="add-button" aria-label=format!("Přidat {} do košíku", PRODUCTS[id].name) on:click=move |_| shop.add(id)>"Přidat"<Icon name="plus"/></button>
-        }>
-            <div class="quantity-control" role="group" aria-label=format!("Počet: {}", PRODUCTS[id].name)>
-                <button aria-label=format!("Odebrat jeden kus: {}", PRODUCTS[id].name) on:click=move |_| shop.cart.update(|c| c[id] = c[id].saturating_sub(1))><Icon name="minus"/></button>
-                <span aria-live="polite">{move || shop.cart.get()[id]}</span>
-                <button aria-label=format!("Přidat jeden kus: {}", PRODUCTS[id].name) disabled={move || shop.cart.get()[id] >= 99} on:click=move |_| shop.add(id)><Icon name="plus"/></button>
-            </div>
-        </Show>
-    }
-}
-
-#[component]
-fn DeliveryDialog(shop: Shop) -> impl IntoView {
-    let draft_postal = shop.draft_postal;
-    let draft_day = shop.draft_day;
-    let draft_slot = shop.draft_slot;
-    view! {
-        <dialog node_ref=shop.delivery_dialog class="delivery-dialog" aria-labelledby="delivery-title">
-            <div class="dialog-heading"><div><p class="eyebrow">"DOBRÁ PAUZA V PRAVÝ ČAS"</p><h2 id="delivery-title">"Kam a kdy to bude?"</h2></div><button class="icon-button" aria-label="Zavřít nastavení doručení" on:click=move |_| close_dialog(shop.delivery_dialog)><Icon name="close"/></button></div>
-            <p class="dialog-intro">"Vyberte si doručení do kanceláře. Vše můžete ještě změnit v košíku."</p>
-            <form on:submit=move |ev| {
-                ev.prevent_default();
-                shop.postal_code.set(draft_postal.get().trim().to_owned());
-                shop.day.set(draft_day.get());
-                shop.slot.set(draft_slot.get());
-                close_dialog(shop.delivery_dialog);
-            }>
-                <label class="form-field">"PSČ kanceláře"<input name="delivery-postal" autocomplete="postal-code" inputmode="numeric" placeholder="Např. 110 00" pattern="[0-9]{3} ?[0-9]{2}" title="Zadejte pět číslic, například 110 00" required prop:value=move || draft_postal.get() on:input=move |ev| draft_postal.set(event_target_value(&ev))/></label>
-                <fieldset><legend>"Den doručení"</legend><div class="day-options">{(0..3).map(move |index| view! {<label class:selected=move || draft_day.get() == index><input type="radio" name="delivery-day" prop:checked=move || draft_day.get() == index on:change=move |_| draft_day.set(index)/><span>{move || shop.days.get()[index].clone()}</span></label>}).collect_view()}</div></fieldset>
-                <label class="form-field">"Čas doručení"<select name="delivery-time" prop:value=move || draft_slot.get() on:change=move |ev| draft_slot.set(event_target_value(&ev))><option>"8:00–9:00"</option><option>"9:00–10:00"</option><option>"10:00–11:00"</option></select></label>
-                <div class="info-note"><Icon name="truck"/><p>"Doručení 49 Kč. Od 350 Kč zdarma."</p></div>
-                <p class="demo-note">"Ukázkové nastavení. PSČ zatím neověřuje oblast rozvozu a termín se nerezervuje."</p>
-                <button class="button primary full-width" type="submit">"Uložit a vybírat"<Icon/></button>
-            </form>
-        </dialog>
-    }
-}
-
-#[component]
-fn ProductDialog(shop: Shop) -> impl IntoView {
-    view! {
-        <dialog node_ref=shop.product_dialog class="product-dialog" aria-labelledby="product-title">
-            <button class="icon-button floating-close" aria-label="Zavřít detail svačiny" on:click=move |_| close_dialog(shop.product_dialog)><Icon name="close"/></button>
-            {move || {
-                let product = PRODUCTS[shop.selected_product.get()];
-                view! {
-                    <div class=format!("detail-photo snack-image snack-{}", product.id) role="img" aria-label=product.name></div>
-                    <div class="detail-content"><div class="product-meta"><span>{product.tag}</span><span>{product.weight}</span></div><h2 id="product-title">{product.name}</h2><p>{product.description}</p>
-                        <h3>"Co je uvnitř"</h3><p>{product.ingredients}</p><h3>"Alergeny"</h3><p>{product.allergens}</p>
-                        <p class="demo-note">"Ukázková receptura a ilustrační fotografie. Finální složení a alergeny potvrdí pekárna před spuštěním."</p>
-                        <div class="product-bottom"><strong class="product-price">{product.price}" Kč"</strong><QuantityControl id=product.id shop/></div>
-                    </div>
-                }
-            }}
-        </dialog>
-    }
-}
-
-#[component]
-fn CartTotals(shop: Shop) -> impl IntoView {
-    view! {
-        <div class="cart-totals"><div><span>"Svačiny"</span><span>{move || format!("{} Kč", catalog::subtotal(&shop.cart.get()))}</span></div><div><span>"Doručení"</span><span>{move || if catalog::delivery_fee(&shop.cart.get()) == 0 { "Zdarma" } else { "49 Kč" }}</span></div><div class="grand-total"><strong>"Celkem"<small>"včetně DPH"</small></strong><strong>{move || format!("{} Kč", catalog::subtotal(&shop.cart.get()) + catalog::delivery_fee(&shop.cart.get()))}</strong></div></div>
-    }
-}
-
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum PaymentMethod {
-    Card,
-    OnDelivery,
-}
-
-#[derive(Clone, Copy)]
-struct CheckoutDetails {
+struct Details {
     name: RwSignal<String>,
     email: RwSignal<String>,
     phone: RwSignal<String>,
     organization: RwSignal<String>,
     street: RwSignal<String>,
     city: RwSignal<String>,
+    postal: RwSignal<String>,
+    notes: RwSignal<String>,
+}
+impl Details {
+    fn new() -> Self {
+        Self {
+            name: RwSignal::new(String::new()),
+            email: RwSignal::new(String::new()),
+            phone: RwSignal::new(String::new()),
+            organization: RwSignal::new(String::new()),
+            street: RwSignal::new(String::new()),
+            city: RwSignal::new(String::new()),
+            postal: RwSignal::new(String::new()),
+            notes: RwSignal::new(String::new()),
+        }
+    }
+    fn use_address(self, order: &Order) {
+        self.name.set(order.name.clone().unwrap_or_default());
+        self.phone.set(order.phone.clone().unwrap_or_default());
+        self.organization
+            .set(order.organization.clone().unwrap_or_default());
+        self.street.set(order.street.clone());
+        self.city.set(order.city.clone());
+        self.postal.set(order.postal_code.clone());
+        self.notes.set(order.notes.clone().unwrap_or_default());
+    }
+}
+#[derive(Clone, Copy)]
+struct Shop {
+    cart: RwSignal<Cart>,
+    products: RwSignal<Vec<Product>>,
+    settings: RwSignal<Settings>,
+    options: RwSignal<DeliveryOptions>,
+    loading: RwSignal<bool>,
+    ready: RwSignal<bool>,
+    error: RwSignal<String>,
+    notice: RwSignal<String>,
+    announcement: RwSignal<String>,
+    cart_dialog: NodeRef<html::Dialog>,
+    delivery_dialog: NodeRef<html::Dialog>,
+    product_dialog: NodeRef<html::Dialog>,
+    account_dialog: NodeRef<html::Dialog>,
+    selected_product: RwSignal<i64>,
+    day: RwSignal<String>,
+    slot: RwSignal<String>,
+    step: RwSignal<u8>,
+    cart_title: NodeRef<html::H2>,
+    cart_content: NodeRef<html::Div>,
+    details: Details,
+    payment: RwSignal<String>,
+    submitting: RwSignal<bool>,
+    order_error: RwSignal<String>,
+    confirmation: RwSignal<Option<Order>>,
+    user: RwSignal<Option<User>>,
+    orders: RwSignal<Vec<Order>>,
+    account_loading: RwSignal<bool>,
+    account_error: RwSignal<String>,
+    auth_message: RwSignal<String>,
+    auth_busy: RwSignal<bool>,
+    login_token: RwSignal<Option<String>>,
+    attempt: RwSignal<Option<(String, String)>>,
+}
+fn open_dialog(dialog: NodeRef<html::Dialog>) {
+    if let Some(d) = dialog.get() {
+        let _ = d.show_modal();
+    }
+}
+fn close_dialog(dialog: NodeRef<html::Dialog>) {
+    if let Some(d) = dialog.get() {
+        d.close();
+    }
+}
+fn storage_get(key: &str, session: bool) -> Option<String> {
+    #[cfg(target_arch = "wasm32")]
+    {
+        let window = web_sys::window()?;
+        let storage = if session {
+            window.session_storage()
+        } else {
+            window.local_storage()
+        }
+        .ok()??;
+        storage.get_item(key).ok().flatten()
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let _ = (key, session);
+        None
+    }
+}
+fn storage_set(key: &str, value: Option<&str>, session: bool) {
+    #[cfg(target_arch = "wasm32")]
+    if let Some(window) = web_sys::window() {
+        if let Ok(Some(storage)) = if session {
+            window.session_storage()
+        } else {
+            window.local_storage()
+        } {
+            if let Some(value) = value {
+                let _ = storage.set_item(key, value);
+            } else {
+                let _ = storage.remove_item(key);
+            }
+        }
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    let _ = (key, value, session);
+}
+fn new_key() -> Option<String> {
+    #[cfg(target_arch = "wasm32")]
+    {
+        web_sys::window()?.crypto().ok().map(|c| c.random_uuid())
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        None
+    }
+}
+fn take_login_token() -> Option<String> {
+    #[cfg(target_arch = "wasm32")]
+    {
+        let window = web_sys::window()?;
+        let url = web_sys::Url::new(&window.location().href().ok()?).ok()?;
+        let token = url.search_params().get("login_token")?;
+        url.search_params().delete("login_token");
+        let _ = window.history().ok()?.replace_state_with_url(
+            &js_sys::Object::new().into(),
+            "",
+            Some(&format!("{}{}{}", url.pathname(), url.search(), url.hash())),
+        );
+        Some(token)
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        None
+    }
 }
 
-#[component]
-fn CheckoutStepper(shop: Shop) -> impl IntoView {
-    view! {
-        <ol class="checkout-stepper" aria-label="Kroky objednávky" hidden=move || shop.cart_step.get() == 3>
-            {[(0, "Košík"), (1, "Doručení"), (2, "Platba")].into_iter().map(move |(step, label)| view! {
-                <li class:current=move || shop.cart_step.get() == step class:complete={move || shop.cart_step.get() > step}>
-                    <button type="button" disabled={move || step >= shop.cart_step.get()} aria-current=move || (shop.cart_step.get() == step).then_some("step") on:click=move |_| shop.go_to_step(step)>
-                        <span class="step-dot"><Show when={move || shop.cart_step.get() > step} fallback=move || view! { {step + 1} }><Icon name="check"/></Show></span>
-                        <span>{label}</span>
-                    </button>
-                </li>
-            }).collect_view()}
-        </ol>
+impl Shop {
+    fn subtotal(self) -> i64 {
+        catalog::subtotal(&self.cart.get(), &self.products.get())
+    }
+    fn fee(self) -> i64 {
+        catalog::delivery_fee(self.subtotal(), &self.settings.get())
+    }
+    fn total(self) -> i64 {
+        self.subtotal() + self.fee()
+    }
+    fn count(self, id: i64) -> u16 {
+        self.cart.with(|c| c.get(&id).copied().unwrap_or(0))
+    }
+    fn add(self, id: i64) {
+        if self.submitting.get_untracked() {
+            return;
+        }
+        if let Some(p) = self.products.get_untracked().iter().find(|p| p.id == id) {
+            let max = p.stock.unwrap_or(99).clamp(0, 99) as u16;
+            self.cart.update(|c| {
+                let n = c.entry(id).or_default();
+                *n = n.saturating_add(1).min(max);
+            });
+            self.announcement
+                .set(format!("{} přidáno do košíku.", p.name));
+            self.confirmation.set(None);
+        }
+    }
+    fn remove(self, id: i64) {
+        if self.submitting.get_untracked() {
+            return;
+        }
+        self.cart.update(|c| {
+            if let Some(n) = c.get_mut(&id) {
+                *n = n.saturating_sub(1);
+            }
+            c.retain(|_, n| *n > 0);
+        });
+    }
+    fn go(self, step: u8) {
+        self.step.set(step);
+        if let Some(title) = self.cart_title.get() {
+            let _ = title.focus();
+        }
+        if let Some(content) = self.cart_content.get() {
+            content.set_scroll_top(0);
+        }
+    }
+    fn open_cart(self) {
+        self.step
+            .set(if self.confirmation.get_untracked().is_some() {
+                3
+            } else {
+                0
+            });
+        open_dialog(self.cart_dialog);
+    }
+    fn delivery_label(self) -> String {
+        let options = self.options.get();
+        let day = self.day.get();
+        options
+            .dates
+            .iter()
+            .find(|d| d.value == day)
+            .map(|d| format!("{}, {}", d.label, self.slot.get()))
+            .unwrap_or_else(|| "Vyberte požadovaný termín".into())
+    }
+    fn delivery_info(self) -> String {
+        let s = self.settings.get();
+        if !self.ready.get() {
+            return "Načítáme cenu dopravy…".into();
+        }
+        match s.free_delivery_from_cents {
+            Some(limit) => format!(
+                "Doručení {}. Od {} zdarma.",
+                money(s.delivery_fee_cents),
+                money(limit)
+            ),
+            None => format!("Doručení {}.", money(s.delivery_fee_cents)),
+        }
+    }
+    fn refresh(self) {
+        self.loading.set(true);
+        self.error.set(String::new());
+        self.ready.set(false);
+        spawn_local(async move {
+            let result = async {
+                let p = api::get::<Vec<Product>>("/api/products").await?;
+                let s = api::get::<Settings>("/api/settings").await?;
+                let d = api::get::<DeliveryOptions>("/api/delivery-options").await?;
+                Ok::<_, api::ApiError>((p, s, d))
+            }
+            .await;
+            match result {
+                Ok((products, settings, options)) => {
+                    self.cart.update(|cart| {if catalog::reconcile(cart,&products) {self.notice.set("Košík jsme upravili podle aktuální dostupnosti. Zkontrolujte prosím počty.".into());}});
+                    if !options
+                        .dates
+                        .iter()
+                        .any(|d| d.value == self.day.get_untracked())
+                    {
+                        self.day.set(
+                            options
+                                .dates
+                                .first()
+                                .map(|d| d.value.clone())
+                                .unwrap_or_default(),
+                        );
+                    }
+                    if !options.slots.contains(&self.slot.get_untracked()) {
+                        self.slot
+                            .set(options.slots.first().cloned().unwrap_or_default());
+                    }
+                    self.products.set(products);
+                    self.settings.set(settings);
+                    self.options.set(options);
+                    self.ready.set(true);
+                }
+                Err(err) => self.error.set(err.message),
+            }
+            self.loading.set(false);
+        });
+    }
+    fn load_orders(self) {
+        self.account_loading.set(true);
+        self.account_error.set(String::new());
+        let identity = self.user.get_untracked().map(|u| u.id);
+        spawn_local(async move {
+            let result = api::get::<Vec<Order>>("/api/orders/mine").await;
+            if self.user.get_untracked().map(|u| u.id) != identity {
+                return;
+            }
+            match result {
+                Ok(orders) => self.orders.set(orders),
+                Err(e) => {
+                    if e.status == 401 {
+                        self.user.set(None);
+                    }
+                    self.account_error.set(e.message);
+                }
+            }
+            self.account_loading.set(false);
+        });
+    }
+    fn open_account(self) {
+        close_dialog(self.cart_dialog);
+        open_dialog(self.account_dialog);
+        if self.user.get_untracked().is_some() {
+            self.load_orders();
+        }
+    }
+    fn submit(self) {
+        if self.submitting.get_untracked() || !self.ready.get_untracked() {
+            return;
+        }
+        let details = self.details;
+        let mut body = OrderRequest {
+            idempotency_key: String::new(),
+            email: details.email.get_untracked().trim().into(),
+            name: details.name.get_untracked().trim().into(),
+            phone: details.phone.get_untracked().trim().into(),
+            organization: details.organization.get_untracked().trim().into(),
+            street: details.street.get_untracked().trim().into(),
+            city: details.city.get_untracked().trim().into(),
+            postal_code: details.postal.get_untracked().trim().into(),
+            notes: details.notes.get_untracked().trim().into(),
+            delivery_date: self.day.get_untracked(),
+            delivery_slot: self.slot.get_untracked(),
+            payment_method: self.payment.get_untracked(),
+            items: self
+                .cart
+                .get_untracked()
+                .into_iter()
+                .map(|(product_id, quantity)| RequestedItem {
+                    product_id,
+                    quantity,
+                })
+                .collect(),
+            expected_total_cents: self.total(),
+        };
+        let signature = serde_json::to_string(&body).unwrap_or_default();
+        let saved = self.attempt.get_untracked().or_else(|| {
+            storage_get("brunch-order-attempt", true)
+                .and_then(|v| serde_json::from_str::<(String, String)>(&v).ok())
+        });
+        body.idempotency_key = match saved {
+            Some((previous, key)) if previous == signature => key,
+            _ => match new_key() {
+                Some(key) => key,
+                None => {
+                    self.order_error.set(
+                        "Pro dokončení objednávky použijte zabezpečené připojení HTTPS.".into(),
+                    );
+                    return;
+                }
+            },
+        };
+        self.attempt
+            .set(Some((signature.clone(), body.idempotency_key.clone())));
+        storage_set(
+            "brunch-order-attempt",
+            Some(&serde_json::to_string(&(signature, &body.idempotency_key)).unwrap_or_default()),
+            true,
+        );
+        self.submitting.set(true);
+        self.order_error.set(String::new());
+        spawn_local(async move {
+            match api::post::<Order>("/api/orders", &body).await {
+                Ok(order) => {
+                    storage_set("brunch-order-attempt", None, true);
+                    self.attempt.set(None);
+                    self.confirmation.set(Some(order));
+                    self.cart.set(Cart::new());
+                    self.notice.set(String::new());
+                    self.go(3);
+                    self.refresh();
+                }
+                Err(err) => {
+                    if err.status == 409 {
+                        self.order_error.set(format!("{} Zkontrolujte prosím aktualizovanou nabídku, cenu i termín a poté objednávku znovu potvrďte.",err.message));
+                        self.refresh();
+                    } else {
+                        self.order_error.set(format!("{} Pokud se spojení přerušilo, opakujte stejnou objednávku tímto tlačítkem. Opakované odeslání stejné objednávky ji nevytvoří podruhé.",err.message));
+                    }
+                }
+            }
+            self.submitting.set(false);
+        });
     }
 }
 
 #[component]
-fn CheckoutAddress(shop: Shop, details: CheckoutDetails) -> impl IntoView {
+fn Home() -> impl IntoView {
+    let shop = Shop {
+        cart: RwSignal::new(Cart::new()),
+        products: RwSignal::new(Vec::new()),
+        settings: RwSignal::new(Settings::default()),
+        options: RwSignal::new(DeliveryOptions::default()),
+        loading: RwSignal::new(true),
+        ready: RwSignal::new(false),
+        error: RwSignal::new(String::new()),
+        notice: RwSignal::new(String::new()),
+        announcement: RwSignal::new(String::new()),
+        cart_dialog: NodeRef::new(),
+        delivery_dialog: NodeRef::new(),
+        product_dialog: NodeRef::new(),
+        account_dialog: NodeRef::new(),
+        selected_product: RwSignal::new(0),
+        day: RwSignal::new(String::new()),
+        slot: RwSignal::new(String::new()),
+        step: RwSignal::new(0),
+        cart_title: NodeRef::new(),
+        cart_content: NodeRef::new(),
+        details: Details::new(),
+        payment: RwSignal::new("card_on_delivery".into()),
+        submitting: RwSignal::new(false),
+        order_error: RwSignal::new(String::new()),
+        confirmation: RwSignal::new(None),
+        user: RwSignal::new(None),
+        orders: RwSignal::new(Vec::new()),
+        account_loading: RwSignal::new(false),
+        account_error: RwSignal::new(String::new()),
+        auth_message: RwSignal::new(String::new()),
+        auth_busy: RwSignal::new(false),
+        login_token: RwSignal::new(None),
+        attempt: RwSignal::new(None),
+    };
+    let category = RwSignal::new("Vše".to_owned());
+    let vegan = RwSignal::new(false);
+    let search = RwSignal::new(String::new());
+    let restored = RwSignal::new(false);
+    Effect::new(move |_| {
+        if restored.get_untracked() {
+            return;
+        }
+        if let Some(value) = storage_get("brunch-cart-v2", false) {
+            shop.cart.set(catalog::parse_cart(&value));
+        }
+        restored.set(true);
+        shop.refresh();
+        if let Some(token) = take_login_token() {
+            shop.login_token.set(Some(token));
+            open_dialog(shop.account_dialog);
+        } else {
+            spawn_local(async move {
+                if let Ok(response) = api::get::<UserResponse>("/api/auth/me").await {
+                    shop.details.email.set(response.user.email.clone());
+                    shop.user.set(Some(response.user));
+                }
+            });
+        }
+    });
+    Effect::new(move |_| {
+        if restored.get() {
+            storage_set(
+                "brunch-cart-v2",
+                Some(&serde_json::to_string(&shop.cart.get()).unwrap_or_default()),
+                false,
+            );
+        }
+    });
+    let filtered = move || {
+        shop.products
+            .get()
+            .into_iter()
+            .filter(|p| {
+                (category.get() == "Vše" || category.get() == p.category)
+                    && (!vegan.get() || p.vegan)
+                    && format!("{} {}", p.name, p.description)
+                        .to_lowercase()
+                        .contains(&search.get().to_lowercase())
+            })
+            .collect::<Vec<_>>()
+    };
     view! {
-        <div class="checkout-address">
-            <Icon name="pin"/>
-            <div>
-                <strong>{move || details.name.get()}</strong>
-                <Show when=move || !details.organization.get().trim().is_empty()><span>{move || details.organization.get()}</span></Show>
-                <span>{move || details.street.get()}</span>
-                <span>{move || format!("{} {}", shop.postal_code.get(), details.city.get())}</span>
-            </div>
-        </div>
-        <div class="checkout-address"><Icon name="clock"/><div><strong>{move || shop.delivery_label()}</strong><span>"Ukázkový termín doručení"</span></div></div>
+        <a class="skip-link" href="#nabidka">"Přejít na nabídku"</a>
+        <div class="top-note">"Dobrá pauza bez registrace. Kartou i hotově zaplatíte při doručení."</div>
+        <header class="site-header"><div class="header-inner page-width">
+            <a class="brand" href="./" aria-label="brunch, úvodní stránka"><span class="brand-mark"><Icon name="leaf"/></span>"brunch"<span class="brand-dot">"."</span></a>
+            <nav class="desktop-nav" aria-label="Hlavní navigace"><a href="#nabidka" class="active">"Naše nabídka"</a><a href="#jak-to-funguje">"Jak to funguje"</a><a href="#do-kancelare">"Pro vaši kancelář"</a></nav>
+            <div class="header-actions"><button class="account-button" on:click=move |_| shop.open_account()><Icon name="person"/><span>{move || if shop.user.get().is_some() {"Můj účet"} else {"Přihlásit"}}</span></button><button class="header-cart" on:click=move |_| shop.open_cart() aria-label=move || format!("Otevřít košík, {} kusů",catalog::quantity(&shop.cart.get()))><Icon name="bag"/><span>"Košík"</span><span class="cart-count">{move ||catalog::quantity(&shop.cart.get())}</span></button></div>
+        </div></header>
+        <main>
+            <section class="hero page-width" aria-labelledby="hero-title"><div class="hero-copy"><div class="eyebrow"><span class="status-dot"></span>"Z PEKÁRNY ROVNOU K VÁM"</div><h1 id="hero-title">"Dobrá pauza."<br/><span>"Lepší den."</span></h1><p>"Poctivé pečivo. Čerstvé suroviny. Svačiny, na které se budete těšit. Až k vám do kanceláře."</p><a class="button primary hero-cta" href="#nabidka">"Co si dnes dáte?"<Icon/></a><div class="hero-footnote"><Icon name="check"/>"Pár kliknutí. Bez registrace."</div></div><div class="hero-visual"><img src="images/brunch-spread.webp" alt="Kváskový sendvič, jogurt s granolou a hummus se zeleninou na prostřeném stole" width="1536" height="1024" fetchpriority="high"/><div class="photo-caption"><span class="caption-icon"><Icon name="sun"/></span><div><strong>"Malá pauza. Velká radost."</strong><span>"Dobré věci si zaslouží svůj čas."</span></div></div><span class="photo-index">"01 / DOBRÉ RÁNO"</span></div></section>
+            <div class="page-width"><section class="delivery-strip" aria-label="Nastavení doručení"><button class="delivery-selector" on:click=move |_| open_dialog(shop.delivery_dialog)><Icon name="pin"/><span><small>"VAŠE ADRESA"</small><strong>{move || if shop.details.postal.get().is_empty() {"Kam to přivezeme?".into()} else {format!("PSČ {}",shop.details.postal.get())}}</strong></span><Icon name="chevron"/></button><button class="delivery-selector" on:click=move |_| open_dialog(shop.delivery_dialog)><Icon name="clock"/><span><small>"POŽADOVANÝ TERMÍN"</small><strong>{move ||shop.delivery_label()}</strong></span><Icon name="chevron"/></button><div class="delivery-price"><Icon name="truck"/><span>{move ||shop.delivery_info()}</span></div></section><div class="benefits"><span><Icon name="leaf"/>"Suroviny, které znáte"</span><span><Icon name="sun"/>"Připraveno na vaše ráno"</span><span><Icon name="bag"/>"Pro vás i celý tým"</span></div></div>
+            <section class="catalog page-width" id="nabidka" aria-labelledby="catalog-title"><div class="section-heading"><div><p class="eyebrow">"VAŠE DALŠÍ OBLÍBENÁ SVAČINA"</p><h2 id="catalog-title">"Na co máte chuť?"</h2></div><p class="catalog-note">"Něco malého. Něco dobrého. Něco pro vás."</p></div>
+                <div class="filter-bar"><div class="categories" role="group" aria-label="Kategorie svačin">{move || {let mut names = vec!["Vše".to_owned()]; for p in shop.products.get() {if !names.contains(&p.category) {names.push(p.category);}} names.into_iter().map(move |name| {let active=name.clone(); let pressed=name.clone(); let choose=name.clone(); view! {<button class:active=move ||category.get()==active aria-pressed=move ||category.get()==pressed on:click=move |_|category.set(choose.clone())>{name}</button>}}).collect_view()}}</div><label class="vegan-filter"><input type="checkbox" prop:checked=move ||vegan.get() on:change=move |ev|vegan.set(event_target_checked(&ev))/><Icon name="leaf"/>"Jen rostlinné"</label></div>
+                <label class="catalog-search"><Icon name="bag"/><input type="search" aria-label="Hledat v nabídce" placeholder="Najít oblíbenou svačinu…" prop:value=move ||search.get() on:input=move |ev|search.set(event_target_value(&ev))/></label>
+                <Show when=move ||shop.loading.get()><p class="shop-status" role="status">"Načítáme čerstvou nabídku…"</p></Show>
+                <Show when=move ||!shop.error.get().is_empty()><div class="api-message error" role="alert"><p>{move ||shop.error.get()}</p><button class="button secondary" on:click=move |_|shop.refresh()>"Zkusit znovu"</button></div></Show>
+                <Show when=move ||!shop.notice.get().is_empty()><div class="api-message" role="status">{move ||shop.notice.get()}</div></Show>
+                <div class="result-meta" role="status">{move ||if shop.ready.get() {format!("{} položek v nabídce",filtered().len())} else {String::new()}}</div>
+                <div class="product-grid"><For each=filtered key=|p| (p.id,p.version,p.price_cents,p.stock) children=move |product| view! {<ProductCard product shop/>}/></div>
+                <Show when=move ||shop.ready.get() && filtered().is_empty()><div class="empty-results"><Icon name="leaf"/><h3>"Tady je zatím prázdno."</h3><p>"Zkuste jinou kategorii nebo hledání. Nabídku průběžně doplňujeme."</p><button class="button secondary" on:click=move |_|{category.set("Vše".into());vegan.set(false);search.set(String::new());}>"Zobrazit celou nabídku"</button></div></Show>
+                <p class="catalog-disclaimer">"Konečné ceny včetně případné DPH. Fotografie jsou ilustrační."</p>
+            </section>
+            <section class="how-section page-width" id="jak-to-funguje" aria-labelledby="how-title"><div class="section-heading"><div><p class="eyebrow">"PAUZA BEZ STAROSTÍ"</p><h2 id="how-title">"Vy máte svůj den. My svačinu."</h2></div></div><div class="steps-grid"><article><span class="step-number">"01"</span><h3>"Vyberte si podle chuti"</h3><p>"Slané, sladké nebo něco do misky. Složení i alergeny najdete u každé svačiny."</p></article><article><span class="step-number">"02"</span><h3>"Řekněte nám kam a kdy"</h3><p>"Stačí adresa a e-mail. Vyberete požadovaný čas a doplníte třeba patro nebo zvonek."</p></article><article><span class="step-number">"03"</span><h3>"Zaplaťte při doručení"</h3><p>"Kartou nebo hotově. Přijetí objednávky vám pošleme e-mailem, termín následně potvrdíme."</p></article></div></section>
+            <section class="office-section page-width" id="do-kancelare" aria-labelledby="office-title"><div class="office-banner"><div><span class="eyebrow">"DOBRÉ VĚCI SE LÉPE SDÍLÍ"</span><h2 id="office-title">"Přiberte ke svačině kolegy."</h2><p>"Každému něco podle chuti. Jedna společná objednávka, jedna cesta k vám. "{move ||shop.delivery_info()}</p></div><a class="button secondary" href="#nabidka">"Vybrat pro celý tým"<Icon/></a></div></section>
+        </main>
+        <footer class="site-footer page-width"><a class="brand footer-brand" href="./">"brunch."</a><p>"Dobrá pauza začíná tady."</p><button class="text-button" on:click=move |_|shop.open_account()>"Můj účet a objednávky"</button><a class="admin-link" href="/admin/">"Administrace"</a><span>"2026"</span></footer>
+        <div class="mobile-cart" class:has-items={move ||catalog::quantity(&shop.cart.get())>0}><button class="button primary" on:click=move |_|shop.open_cart()><span><Icon name="bag"/>"Zobrazit košík"<span class="cart-count">{move ||catalog::quantity(&shop.cart.get())}</span></span><strong>{move ||if shop.ready.get() {money(shop.total())} else {"Načítáme…".into()}}<Icon/></strong></button></div>
+        <div class="sr-only" aria-live="polite" aria-atomic="true">{move ||shop.announcement.get()}</div>
+        <DeliveryDialog shop/><ProductDialog shop/><CartDialog shop/><AccountDialog shop/>
     }
 }
 
+fn photo_class(product: &Product) -> String {
+    let index = match product.name.as_str() {
+        "Avokádový kváskový sendvič" => Some(0),
+        "Jogurt, granola & lesní ovoce" => Some(1),
+        "Hummus bowl se zeleninou" => Some(2),
+        "Banánový chlebíček" => Some(3),
+        "Celozrnný bagel s lučinou" => Some(4),
+        "Pomeranč, mrkev & zázvor" => Some(5),
+        _ => None,
+    };
+    if !product.image.is_empty() {
+        "custom-product-image".into()
+    } else if let Some(index) = index {
+        format!("snack-image snack-{index}")
+    } else {
+        "product-placeholder".into()
+    }
+}
+fn photo_style(product: &Product) -> String {
+    // Admin API accepts local asset paths only. Quote and CSS control characters are rejected here too.
+    let path = &product.image;
+    if path.starts_with('/')
+        && !path.starts_with("//")
+        && !path
+            .chars()
+            .any(|c| matches!(c, '\'' | '"' | '\\' | '\n' | '\r' | ')' | '('))
+    {
+        format!("background-image: url('{path}')")
+    } else {
+        String::new()
+    }
+}
+#[component]
+fn ProductCard(product: Product, shop: Shop) -> impl IntoView {
+    let id = product.id;
+    let class = format!("product-photo {}", photo_class(&product));
+    let style = photo_style(&product);
+    view! {
+        <article class="product-card" class:in-cart={move ||shop.count(id)>0}>
+            <button class=class style=style aria-label=format!("Podrobnosti: {}",product.name) on:click=move |_|{shop.selected_product.set(id);open_dialog(shop.product_dialog);}>
+                <span class="product-tag">{product.tag}</span><span class="photo-detail">"Složení a alergeny"<Icon name="plus"/></span>
+            </button>
+            <div class="product-info"><div class="product-meta"><span>{product.category}</span><span>{product.weight}</span></div><h3><button on:click=move |_|{shop.selected_product.set(id);open_dialog(shop.product_dialog);}>{product.name}</button></h3><p>{product.description}</p><div class="product-bottom"><span class="product-price">{money(product.price_cents)}</span><QuantityControl id shop/></div></div>
+        </article>
+    }
+}
+#[component]
+fn QuantityControl(id: i64, shop: Shop) -> impl IntoView {
+    let name = move || {
+        shop.products.with(|p| {
+            p.iter()
+                .find(|p| p.id == id)
+                .map(|p| p.name.clone())
+                .unwrap_or_default()
+        })
+    };
+    let limit = move || {
+        shop.products.with(|p| {
+            p.iter()
+                .find(|p| p.id == id)
+                .map(|p| p.stock.unwrap_or(99).clamp(0, 99) as u16)
+                .unwrap_or(0)
+        })
+    };
+    view! {
+        <Show when={move ||shop.count(id)>0} fallback=move ||view! {<button class="add-button" disabled=move ||limit()==0 || shop.submitting.get() aria-label=move ||format!("Přidat {} do košíku",name()) on:click=move |_|shop.add(id)>{move ||if limit()==0 {"Vyprodáno"} else {"Přidat"}}<Icon name="plus"/></button>}>
+            <div class="quantity-control" role="group" aria-label=move ||format!("Počet: {}",name())><button disabled=move ||shop.submitting.get() aria-label=move ||format!("Odebrat jeden kus: {}",name()) on:click=move |_|shop.remove(id)><Icon name="minus"/></button><span aria-live="polite">{move ||shop.count(id)}</span><button disabled={move ||shop.count(id)>=limit() ||shop.submitting.get()} aria-label=move ||format!("Přidat jeden kus: {}",name()) on:click=move |_|shop.add(id)><Icon name="plus"/></button></div>
+        </Show>
+    }
+}
+#[component]
+fn ProductDialog(shop: Shop) -> impl IntoView {
+    view! {
+        <dialog node_ref=shop.product_dialog class="product-dialog" aria-labelledby="product-title"><button class="icon-button floating-close" aria-label="Zavřít detail svačiny" on:click=move |_|close_dialog(shop.product_dialog)><Icon name="close"/></button>
+            {move ||shop.products.get().into_iter().find(|p|p.id==shop.selected_product.get()).map(|p|view! {
+                <div class=format!("detail-photo {}",photo_class(&p)) style=photo_style(&p) role="img" aria-label=p.name.clone()></div><div class="detail-content"><div class="product-meta"><span>{p.tag}</span><span>{p.weight}</span></div><h2 id="product-title">{p.name}</h2><p>{p.description}</p><h3>"Co je uvnitř"</h3><p>{p.ingredients}</p><h3>"Alergeny"</h3><p>{p.allergens}</p><div class="product-bottom"><strong class="product-price">{money(p.price_cents)}</strong><QuantityControl id=p.id shop/></div></div>
+            })}
+        </dialog>
+    }
+}
+#[component]
+fn DeliveryFields(shop: Shop, prefix: &'static str) -> impl IntoView {
+    view! {
+        <div class="day-options">{move ||shop.options.get().dates.into_iter().map(|date| {
+            let selected=date.value.clone();let checked=date.value.clone();let choose=date.value.clone();
+            view! {<label class:selected=move ||shop.day.get()==selected><input type="radio" name=format!("{prefix}-day") value=date.value prop:checked=move ||shop.day.get()==checked on:change=move |_|shop.day.set(choose.clone())/><span>{date.label}</span></label>}
+        }).collect_view()}</div>
+        <label class="form-field checkout-time">"Čas doručení"<select required name=format!("{prefix}-time") prop:value=move ||shop.slot.get() on:change=move |ev|shop.slot.set(event_target_value(&ev))>{move ||shop.options.get().slots.into_iter().map(|slot|view! {<option value=slot.clone() selected=move ||shop.slot.get()==slot>{slot.clone()}</option>}).collect_view()}</select></label>
+        <p class="field-hint">"Vyberte požadované časové okno. Dostupnost rozvozu na vaši adresu a přesný termín potvrdíme po přijetí objednávky."</p>
+    }
+}
+#[component]
+fn DeliveryDialog(shop: Shop) -> impl IntoView {
+    view! {
+        <dialog node_ref=shop.delivery_dialog class="delivery-dialog" aria-labelledby="delivery-title"><div class="dialog-heading"><div><p class="eyebrow">"DOBRÁ PAUZA V PRAVÝ ČAS"</p><h2 id="delivery-title">"Kam a kdy to bude?"</h2></div><button class="icon-button" aria-label="Zavřít nastavení doručení" on:click=move |_|close_dialog(shop.delivery_dialog)><Icon name="close"/></button></div><p class="dialog-intro">"Vše můžete ještě změnit v košíku."</p><form on:submit=move |ev|{ev.prevent_default();close_dialog(shop.delivery_dialog);}><label class="form-field">"PSČ"<input name="delivery-postal" autocomplete="postal-code" inputmode="numeric" placeholder="Např. 110 00" pattern="[0-9]{3} ?[0-9]{2}" title="Zadejte pět číslic" required prop:value=move ||shop.details.postal.get() on:input=move |ev|shop.details.postal.set(event_target_value(&ev))/></label><DeliveryFields shop prefix="delivery"/><div class="info-note"><Icon name="truck"/><p>{move ||shop.delivery_info()}</p></div><button class="button primary full-width" type="submit" disabled=move ||!shop.ready.get()>"Uložit a vybírat"<Icon/></button></form></dialog>
+    }
+}
+#[component]
+fn CartTotals(shop: Shop) -> impl IntoView {
+    view! {<Show when=move ||shop.ready.get() fallback=move ||view! {<p class="shop-status" role="status">"Ověřujeme aktuální cenu objednávky…"</p>}><div class="cart-totals"><div><span>"Svačiny"</span><span>{move ||money(shop.subtotal())}</span></div><div><span>"Doručení"</span><span>{move ||if shop.fee()==0 {"Zdarma".into()} else {money(shop.fee())}}</span></div><div class="grand-total"><strong>"Celkem"<small>"konečná cena"</small></strong><strong>{move ||money(shop.total())}</strong></div></div></Show>}
+}
+#[component]
+fn CheckoutAddress(shop: Shop) -> impl IntoView {
+    let d = shop.details;
+    view! {<div class="checkout-address"><Icon name="pin"/><div><strong>{move ||d.name.get()}</strong><span>{move ||d.organization.get()}</span><span>{move ||d.street.get()}</span><span>{move ||format!("{} {}",d.postal.get(),d.city.get())}</span><span>{move ||d.notes.get()}</span></div></div><div class="checkout-address"><Icon name="clock"/><div><strong>{move ||shop.delivery_label()}</strong><span>"Požadovaný termín, čeká na potvrzení"</span></div></div><div class="checkout-address"><Icon name="person"/><div><strong>{move ||d.email.get()}</strong><span>{move ||d.phone.get()}</span></div></div>}
+}
 #[component]
 fn CheckoutItems(shop: Shop) -> impl IntoView {
-    view! {
-        <div class="checkout-review-items">
-            {PRODUCTS.into_iter().map(move |product| view! {
-                <Show when={move || shop.cart.get()[product.id] > 0}>
-                    <div><span><b>{move || shop.cart.get()[product.id]}"×"</b>{product.name}</span><strong>{move || format!("{} Kč", product.price * u32::from(shop.cart.get()[product.id]))}</strong></div>
-                </Show>
-            }).collect_view()}
-        </div>
-    }
+    view! {<div class="checkout-review-items">{move ||shop.products.get().into_iter().filter(|p|shop.count(p.id)>0).map(|p|view! {<div><span><b>{shop.count(p.id)}"×"</b>{p.name}</span><strong>{money(p.price_cents*i64::from(shop.count(p.id)))}</strong></div>}).collect_view()}</div>}
 }
-
+#[component]
+fn CheckoutStepper(shop: Shop) -> impl IntoView {
+    view! {<ol class="checkout-stepper" aria-label="Kroky objednávky" hidden=move ||shop.step.get()==3>{[(0,"Košík"),(1,"Doručení"),(2,"Potvrzení")].into_iter().map(move |(step,label)|view! {<li class:current=move ||shop.step.get()==step class:complete={move ||shop.step.get()>step}><button type="button" disabled={move ||step>=shop.step.get() ||shop.submitting.get()} aria-current=move ||(shop.step.get()==step).then_some("step") on:click=move |_|shop.go(step)><span class="step-dot">{step+1}</span><span>{label}</span></button></li>}).collect_view()}</ol>}
+}
 #[component]
 fn CartDialog(shop: Shop) -> impl IntoView {
-    let details = CheckoutDetails {
-        name: RwSignal::new(String::new()),
-        email: RwSignal::new(String::new()),
-        phone: RwSignal::new(String::new()),
-        organization: RwSignal::new(String::new()),
-        street: RwSignal::new(String::new()),
-        city: RwSignal::new(String::new()),
-    };
-    let payment_method = RwSignal::new(PaymentMethod::Card);
+    let d = shop.details;
     view! {
         <dialog node_ref=shop.cart_dialog class="cart-dialog checkout-dialog" aria-labelledby="cart-title">
-            <div class="dialog-heading">
-                <div><p class="eyebrow">"VAŠE DOBRÁ PAUZA"</p><h2 id="cart-title" node_ref=shop.cart_title tabindex="-1">{move || match shop.cart_step.get() { 1 => "Kam to přivezeme?", 2 => "Už jen poslední krok.", 3 => "Ukázka je hotová.", _ => "Váš košík" }}</h2></div>
-                <button class="icon-button" aria-label="Zavřít košík" on:click=move |_| close_dialog(shop.cart_dialog)><Icon name="close"/></button>
-            </div>
-            <Show when={move || catalog::quantity(&shop.cart.get()) > 0} fallback=move || view! {
-                <div class="empty-cart"><span class="empty-cart-icon"><Icon name="bag"/></span><h3>"Vaše pauza je zatím prázdná."</h3><p>"Přidejte si něco dobrého. Třeba čerstvý sendvič nebo jogurt s granolou."</p><button class="button primary" on:click=move |_| close_dialog(shop.cart_dialog)>"Jdu si vybrat"<Icon/></button></div>
-            }>
+            <div class="dialog-heading"><div><p class="eyebrow">"VAŠE DOBRÁ PAUZA"</p><h2 id="cart-title" node_ref=shop.cart_title tabindex="-1">{move ||match shop.step.get() {1=>"Kam to přivezeme?",2=>"Už jen poslední krok.",3=>"Objednávku jsme přijali.",_=>"Váš košík"}}</h2></div><button class="icon-button" aria-label="Zavřít košík" on:click=move |_|close_dialog(shop.cart_dialog)><Icon name="close"/></button></div>
+            <Show when={move ||shop.step.get()==3 ||catalog::quantity(&shop.cart.get())>0} fallback=move ||view! {<div class="empty-cart"><span class="empty-cart-icon"><Icon name="bag"/></span><h3>"Vaše pauza je zatím prázdná."</h3><p>"Přidejte si něco dobrého z naší nabídky."</p><Show when=move ||!shop.order_error.get().is_empty()><div class="api-message error" role="alert">{move ||shop.order_error.get()}</div></Show><button class="button primary" on:click=move |_|close_dialog(shop.cart_dialog)>"Jdu si vybrat"<Icon/></button></div>}>
                 <CheckoutStepper shop/>
                 <div class="checkout-body" node_ref=shop.cart_content>
-                    <section data-checkout-step="cart" hidden=move || shop.cart_step.get() != 0 aria-label="Obsah košíku">
-                        <div class="free-delivery"><Icon name="truck"/><p>{move || {let amount = catalog::subtotal(&shop.cart.get()); if amount >= FREE_DELIVERY_FROM { "Doručení máte od nás. Dobrou chuť!".into() } else { format!("Ještě {} Kč a doručení máte zdarma.", FREE_DELIVERY_FROM - amount) }}}</p><progress max=FREE_DELIVERY_FROM value=move || catalog::subtotal(&shop.cart.get()).min(FREE_DELIVERY_FROM) aria-label="Do dopravy zdarma"/></div>
-                        <div class="cart-items">{PRODUCTS.into_iter().map(move |product| view! {
-                            <Show when={move || shop.cart.get()[product.id] > 0}>
-                                <article class="cart-item"><div class=format!("cart-item-photo snack-image snack-{}", product.id) role="img" aria-label=product.name></div><div class="cart-item-info"><h3>{product.name}</h3><p>{product.weight}" · "{product.price}" Kč / ks"</p><div class="cart-item-actions"><QuantityControl id=product.id shop/><strong>{move || format!("{} Kč", u32::from(shop.cart.get()[product.id]) * product.price)}</strong></div></div></article>
-                            </Show>
-                        }).collect_view()}</div>
-                        <div class="cart-delivery"><Icon name="clock"/><div><strong>{move || shop.delivery_label()}</strong><span>{move || if shop.postal_code.get().is_empty() { "Adresu doplníte v dalším kroku".into() } else { format!("Doručení na PSČ {}", shop.postal_code.get()) }}</span></div><button class="text-button" on:click=move |_| shop.go_to_step(1)>"Upravit"</button></div>
-                        <CartTotals shop/>
-                        <button class="button primary full-width" on:click=move |_| shop.go_to_step(1)>"Pokračovat k doručení"<Icon/></button>
-                        <p class="checkout-reassurance"><Icon name="check"/>"Bez registrace. Za pár chvil hotovo."</p>
+                    <Show when=move ||!shop.notice.get().is_empty()><div class="api-message" role="status">{move ||shop.notice.get()}</div></Show>
+                    <Show when=move ||!shop.error.get().is_empty()><div class="api-message error" role="alert"><p>{move ||shop.error.get()}</p><button class="button secondary" on:click=move |_|shop.refresh()>"Obnovit nabídku"</button></div></Show>
+                    <section data-checkout-step="cart" hidden=move ||shop.step.get()!=0 aria-label="Obsah košíku">
+                        <Show when=move ||shop.settings.get().free_delivery_from_cents.is_some()><div class="free-delivery"><Icon name="truck"/><p>{move ||{let limit=shop.settings.get().free_delivery_from_cents.unwrap_or(0);if shop.subtotal()>=limit {"Doručení máte od nás. Dobrou chuť!".into()} else {format!("Ještě {} a doručení máte zdarma.",money(limit-shop.subtotal()))}}}</p><progress max=move ||shop.settings.get().free_delivery_from_cents.unwrap_or(1).max(1) value=move ||shop.subtotal() aria-label="Do dopravy zdarma"/></div></Show>
+                        <div class="cart-items"><For each={move ||shop.products.get().into_iter().filter(|p|shop.count(p.id)>0).collect::<Vec<_>>()} key=|p|(p.id,p.version,p.price_cents) children=move |p|view! {<article class="cart-item"><div class=format!("cart-item-photo {}",photo_class(&p)) style=photo_style(&p) role="img" aria-label=p.name.clone()></div><div class="cart-item-info"><h3>{p.name}</h3><p>{p.weight}" · "{money(p.price_cents)}" / ks"</p><div class="cart-item-actions"><QuantityControl id=p.id shop/><strong>{move ||money(p.price_cents*i64::from(shop.count(p.id)))}</strong></div></div></article>}/></div>
+                        <CartTotals shop/><button class="button primary full-width" disabled=move ||!shop.ready.get() on:click=move |_|shop.go(1)>"Pokračovat k doručení"<Icon/></button><p class="checkout-reassurance"><Icon name="check"/>"Bez registrace. Za pár chvil hotovo."</p>
                     </section>
-
-                    <section data-checkout-step="delivery" hidden=move || shop.cart_step.get() != 1 aria-label="Doručovací údaje">
-                        <div class="checkout-guest"><span class="checkout-guest-icon"><Icon name="person"/></span><div><strong>"Objednáváte bez účtu"</strong><span>"Stačí nám vědět, komu a kam přivézt svačinu."</span></div></div>
-                        <div class="checkout-demo-help"><p>"Zkoušíte si návrh. Použijte klidně smyšlené údaje."</p><button class="text-button" type="button" on:click=move |_| {
-                            details.name.set("Jana Ukázková".into());
-                            details.email.set("demo@example.com".into());
-                            details.phone.set("+420 000 000 000".into());
-                            details.organization.set("Ukázková kancelář, 2. patro".into());
-                            details.street.set("Ukázková 12".into());
-                            details.city.set("Ukázkové město".into());
-                            shop.postal_code.set("110 00".into());
-                        }>"Vyplnit ukázkové údaje"<Icon name="sparkle"/></button></div>
-                        <form class="checkout-form" on:submit=move |ev| { ev.prevent_default(); shop.go_to_step(2); }>
-                            <fieldset class="checkout-fieldset"><legend>"Kontakt na vás"</legend>
-                                <label class="form-field">"Jméno a příjmení"<input name="name" autocomplete="name" pattern=r".*\S.*" title="Vyplňte jméno a příjmení" required prop:value=move || details.name.get() on:input=move |ev| details.name.set(event_target_value(&ev))/></label>
-                                <div class="form-row"><label class="form-field">"E-mail"<input type="email" name="email" autocomplete="email" required prop:value=move || details.email.get() on:input=move |ev| details.email.set(event_target_value(&ev))/></label><label class="form-field">"Telefon pro kurýra"<input type="tel" name="tel" autocomplete="tel" minlength="9" pattern=r"\+?(?:[0-9] *){9,15}" title="Zadejte 9 až 15 číslic, například +420 777 123 456" required prop:value=move || details.phone.get() on:input=move |ev| details.phone.set(event_target_value(&ev))/></label></div>
-                            </fieldset>
-                            <fieldset class="checkout-fieldset"><legend>"Adresa kanceláře"</legend>
-                                <label class="form-field">"Ulice a číslo domu"<input name="street-address" autocomplete="street-address" pattern=r".*\S.*" title="Vyplňte ulici a číslo domu" required prop:value=move || details.street.get() on:input=move |ev| details.street.set(event_target_value(&ev))/></label>
-                                <div class="form-row address-row"><label class="form-field">"Město"<input name="city" autocomplete="address-level2" pattern=r".*\S.*" title="Vyplňte město" required prop:value=move || details.city.get() on:input=move |ev| details.city.set(event_target_value(&ev))/></label><label class="form-field">"PSČ"<input name="postal-code" autocomplete="postal-code" inputmode="numeric" pattern="[0-9]{3} ?[0-9]{2}" title="Zadejte pět číslic, například 110 00" required prop:value=move || shop.postal_code.get() on:input=move |ev| shop.postal_code.set(event_target_value(&ev))/></label></div>
-                                <label class="form-field">"Firma, patro nebo zvonek (nepovinné)"<input name="organization" autocomplete="organization" placeholder="Ať vás snadno najdeme" prop:value=move || details.organization.get() on:input=move |ev| details.organization.set(event_target_value(&ev))/></label>
-                            </fieldset>
-                            <fieldset class="checkout-fieldset"><legend>"Kdy se vám to hodí?"</legend>
-                                <div class="day-options">{(0..3).map(move |index| view! {<label class:selected=move || shop.day.get() == index><input type="radio" name="checkout-day" prop:checked=move || shop.day.get() == index on:change=move |_| shop.day.set(index)/><span>{move || shop.days.get()[index].clone()}</span></label>}).collect_view()}</div>
-                                <label class="form-field checkout-time">"Čas doručení"<select name="checkout-time" prop:value=move || shop.slot.get() on:change=move |ev| shop.slot.set(event_target_value(&ev))><option>"8:00–9:00"</option><option>"9:00–10:00"</option><option>"10:00–11:00"</option></select></label>
-                                <p class="field-hint">"Ukázkové termíny. Oblast rozvozu ani volnou kapacitu zatím neověřujeme."</p>
-                            </fieldset>
-                            <div class="checkout-next-total"><span>"Celkem včetně doručení"</span><strong>{move || format!("{} Kč", catalog::subtotal(&shop.cart.get()) + catalog::delivery_fee(&shop.cart.get()))}</strong></div>
-                            <button class="button primary full-width" type="submit">"Pokračovat k platbě"<Icon/></button>
-                            <button class="text-button checkout-back" type="button" on:click=move |_| shop.go_to_step(0)><Icon name="back"/>"Zpět do košíku"</button>
+                    <section data-checkout-step="delivery" hidden=move ||shop.step.get()!=1 aria-label="Doručovací údaje">
+                        <div class="checkout-guest"><span class="checkout-guest-icon"><Icon name="person"/></span><div><strong>{move ||if shop.user.get().is_some() {"Jste přihlášeni"} else {"Nakoupíte i bez účtu"}}</strong><span>"Povinný je jen e-mail a doručovací adresa."</span></div></div>
+                        <Show when=move ||shop.user.get().is_none()><button class="text-button optional-login" type="button" on:click=move |_|shop.open_account()>"Mám účet, přihlásit se"</button></Show>
+                        <form class="checkout-form" on:submit=move |ev|{ev.prevent_default();shop.go(2);}>
+                            <fieldset class="checkout-fieldset"><legend>"Kam poslat potvrzení"</legend><label class="form-field">"E-mail"<input type="email" name="email" autocomplete="email" required maxlength="254" prop:value=move ||d.email.get() on:input=move |ev|d.email.set(event_target_value(&ev))/></label></fieldset>
+                            <fieldset class="checkout-fieldset"><legend>"Doručovací adresa"</legend><label class="form-field">"Ulice a číslo domu"<input name="street-address" autocomplete="street-address" pattern=r".*\S.*" required maxlength="300" prop:value=move ||d.street.get() on:input=move |ev|d.street.set(event_target_value(&ev))/></label><div class="form-row address-row"><label class="form-field">"Město"<input name="city" autocomplete="address-level2" pattern=r".*\S.*" required maxlength="120" prop:value=move ||d.city.get() on:input=move |ev|d.city.set(event_target_value(&ev))/></label><label class="form-field">"PSČ"<input name="postal-code" autocomplete="postal-code" inputmode="numeric" pattern="[0-9]{3} ?[0-9]{2}" title="Zadejte pět číslic, například 110 00" required prop:value=move ||d.postal.get() on:input=move |ev|d.postal.set(event_target_value(&ev))/></label></div><label class="form-field">"Pokyny pro doručení (nepovinné)"<textarea name="notes" rows="3" maxlength="2000" placeholder="Např. 3. patro, zvonek Novákovi, předat na recepci" prop:value=move ||d.notes.get() on:input=move |ev|d.notes.set(event_target_value(&ev))></textarea></label>
+                            <details class="optional-details"><summary>"Přidat jméno, telefon nebo firmu"</summary><label class="form-field">"Jméno (nepovinné)"<input name="name" autocomplete="name" maxlength="120" prop:value=move ||d.name.get() on:input=move |ev|d.name.set(event_target_value(&ev))/></label><label class="form-field">"Telefon pro kurýra (nepovinné)"<input type="tel" name="tel" autocomplete="tel" maxlength="40" prop:value=move ||d.phone.get() on:input=move |ev|d.phone.set(event_target_value(&ev))/></label><label class="form-field">"Firma (nepovinné)"<input name="organization" autocomplete="organization" maxlength="200" prop:value=move ||d.organization.get() on:input=move |ev|d.organization.set(event_target_value(&ev))/></label></details></fieldset>
+                            <fieldset class="checkout-fieldset"><legend>"Kdy se vám to hodí?"</legend><DeliveryFields shop prefix="checkout"/></fieldset>
+                            <div class="checkout-next-total"><span>"Celkem včetně doručení"</span><strong>{move ||money(shop.total())}</strong></div><button class="button primary full-width" type="submit" disabled=move ||!shop.ready.get() ||shop.day.get().is_empty() ||shop.slot.get().is_empty()>"Zkontrolovat objednávku"<Icon/></button><button class="text-button checkout-back" type="button" on:click=move |_|shop.go(0)><Icon name="back"/>"Zpět do košíku"</button>
                         </form>
                     </section>
-
-                    <section data-checkout-step="payment" hidden=move || shop.cart_step.get() != 2 aria-label="Platba a kontrola objednávky">
-                        <div class="checkout-review">
-                            <div class="checkout-section-heading"><h3>"Vaše dobrá pauza"</h3><button class="text-button" type="button" on:click=move |_| shop.go_to_step(1)>"Upravit doručení"</button></div>
-                            <CheckoutAddress shop details/>
-                            <CheckoutItems shop/>
-                        </div>
-                        <fieldset class="payment-options"><legend>"Jak chcete zaplatit?"</legend>
-                            <label class="payment-option" class:selected=move || payment_method.get() == PaymentMethod::Card>
-                                <input type="radio" name="payment-method" value="card" prop:checked=move || payment_method.get() == PaymentMethod::Card on:change=move |_| payment_method.set(PaymentMethod::Card)/>
-                                <Icon name="card"/><span><strong>"Kartou online"</strong><small>"Vyzkoušejte ukázkovou platbu"</small></span><span class="payment-fee">"Zdarma"</span>
-                            </label>
-                            <label class="payment-option" class:selected=move || payment_method.get() == PaymentMethod::OnDelivery>
-                                <input type="radio" name="payment-method" value="on-delivery" prop:checked=move || payment_method.get() == PaymentMethod::OnDelivery on:change=move |_| payment_method.set(PaymentMethod::OnDelivery)/>
-                                <Icon name="wallet"/><span><strong>"Při převzetí"</strong><small>"Ukázka úhrady kurýrovi"</small></span><span class="payment-fee">"Zdarma"</span>
-                            </label>
-                        </fieldset>
-                        <div class="demo-payment-card" hidden=move || payment_method.get() != PaymentMethod::Card>
-                            <div class="demo-card-top"><span>"TESTOVACÍ KARTA"</span><Icon name="card"/></div><strong class="demo-card-number">"••••  ••••  ••••  4242"</strong><div class="demo-card-bottom"><span>"Připravená k vyzkoušení"</span><b>"DEMO"</b></div>
-                        </div>
-                        <div class="payment-demo-note"><Icon name="info"/><p><strong>"Toto je pouze ukázka."</strong>" Nezadáváte údaje skutečné karty. Objednávka se neodešle a nic nezaplatíte."</p></div>
+                    <section data-checkout-step="payment" hidden=move ||shop.step.get()!=2 aria-label="Platba a kontrola objednávky">
+                        <div class="checkout-review"><div class="checkout-section-heading"><h3>"Vaše dobrá pauza"</h3><button class="text-button" disabled=move ||shop.submitting.get() type="button" on:click=move |_|shop.go(1)>"Upravit doručení"</button></div><CheckoutAddress shop/><CheckoutItems shop/></div>
+                        <fieldset class="payment-options" disabled=move ||shop.submitting.get()><legend>"Jak zaplatíte při doručení?"</legend><label class="payment-option" class:selected=move ||shop.payment.get()=="card_on_delivery"><input type="radio" name="payment-method" value="card_on_delivery" prop:checked=move ||shop.payment.get()=="card_on_delivery" on:change=move |_|shop.payment.set("card_on_delivery".into())/><Icon name="card"/><span><strong>"Kartou při doručení"</strong><small>"Přiložíte kartu nebo telefon k terminálu"</small></span></label><label class="payment-option" class:selected=move ||shop.payment.get()=="cash_on_delivery"><input type="radio" name="payment-method" value="cash_on_delivery" prop:checked=move ||shop.payment.get()=="cash_on_delivery" on:change=move |_|shop.payment.set("cash_on_delivery".into())/><Icon name="wallet"/><span><strong>"Hotově při doručení"</strong><small>"Zaplatíte kurýrovi při převzetí"</small></span></label></fieldset>
                         <CartTotals shop/>
-                        <button class="button primary full-width payment-submit" type="button" on:click=move |_| shop.go_to_step(3)><Icon name="check"/>{move || format!("{} · {} Kč", if payment_method.get() == PaymentMethod::Card { "Vyzkoušet platbu" } else { "Dokončit ukázku" }, catalog::subtotal(&shop.cart.get()) + catalog::delivery_fee(&shop.cart.get()))}</button>
-                        <button class="text-button checkout-back" type="button" on:click=move |_| shop.go_to_step(1)><Icon name="back"/>"Zpět k doručení"</button>
+                        <Show when=move ||!shop.order_error.get().is_empty()><div class="api-message error" role="alert">{move ||shop.order_error.get()}</div></Show>
+                        <p class="field-hint checkout-order-info">"Odesláním vytvoříte objednávku s povinností platby při doručení. Přijetí vám potvrdíme e-mailem. Požadovaný termín ještě potvrdí obsluha."</p>
+                        <button class="button primary full-width payment-submit" type="button" disabled=move ||shop.submitting.get() ||!shop.ready.get() ||shop.day.get().is_empty() ||shop.slot.get().is_empty() on:click=move |_|shop.submit()><Icon name="check"/>{move ||if shop.submitting.get() {"Odesíláme objednávku…".into()} else {format!("Objednat s povinností platby · {}",money(shop.total()))}}</button><button class="text-button checkout-back" type="button" disabled=move ||shop.submitting.get() on:click=move |_|shop.go(1)><Icon name="back"/>"Zpět k doručení"</button>
                     </section>
-
-                    <section data-checkout-step="confirmation" hidden=move || shop.cart_step.get() != 3 class="checkout-confirmation" aria-label="Potvrzení ukázkové objednávky">
-                        <div class="confirmation-intro"><span class="confirmation-mark"><Icon name="check"/></span><p class="eyebrow">"TAKHLE JEDNODUCHÉ TO BUDE"</p><h3>"Dobrá pauza je na dohled."</h3><p>"Prošli jste celou ukázkovou objednávkou."<br/><strong>"Nic se neobjednalo ani nezaplatilo."</strong></p></div>
-                        <div class="confirmation-details"><h4>"Vaše ukázková objednávka"</h4><CheckoutAddress shop details/><div class="checkout-address"><Icon name="card"/><div><strong>{move || if payment_method.get() == PaymentMethod::Card { "Kartou online · ukázka" } else { "Při převzetí · ukázka" }}</strong><span>{move || details.email.get()}</span></div></div><CheckoutItems shop/><CartTotals shop/></div>
-                        <p class="confirmation-note">"Žádný e-mail jsme neposlali. Vyplněné údaje zůstávají pouze v této otevřené stránce."</p>
-                        <button class="button primary full-width" on:click=move |_| {shop.go_to_step(0); close_dialog(shop.cart_dialog);}>"Zpátky na svačiny"<Icon/></button>
-                        <button class="text-button checkout-back" type="button" on:click=move |_| shop.go_to_step(0)>"Prohlédnout košík znovu"</button>
+                    <section data-checkout-step="confirmation" hidden=move ||shop.step.get()!=3 class="checkout-confirmation" aria-label="Potvrzení objednávky">
+                        {move ||shop.confirmation.get().map(|order|view! {<div class="confirmation-intro"><span class="confirmation-mark"><Icon name="check"/></span><p class="eyebrow">"DĚKUJEME ZA OBJEDNÁVKU"</p><h3>"Dobrá pauza je na dohled."</h3><p>"Číslo objednávky "<strong>{order.number.clone()}</strong><br/>"Přijetí vám potvrdíme e-mailem."</p></div><OrderSummary order/>})}
+                        <p class="confirmation-note">"Platíte až při doručení. Požadovaný termín a dostupnost rozvozu ještě potvrdíme."</p><Show when=move ||shop.user.get().is_none()><button class="button secondary full-width" on:click=move |_|shop.open_account()>"Příště rychleji? Vytvořit účet e-mailem"</button><p class="field-hint">"Účet ukládá objednávky vytvořené po přihlášení. Tato objednávka vám zůstane v e-mailu."</p></Show><button class="button primary full-width" on:click=move |_|{shop.confirmation.set(None);shop.go(0);close_dialog(shop.cart_dialog);}>"Zpátky na svačiny"<Icon/></button>
                     </section>
                 </div>
             </Show>
@@ -491,33 +665,88 @@ fn CartDialog(shop: Shop) -> impl IntoView {
 }
 
 #[component]
-fn BranchesDialog(shop: Shop) -> impl IntoView {
+fn OrderSummary(order: Order) -> impl IntoView {
+    let payment = if order.payment_method == "cash_on_delivery" {
+        "Hotově při doručení"
+    } else {
+        "Kartou při doručení"
+    };
     view! {
-        <dialog node_ref=shop.branches_dialog class="branches-dialog" aria-labelledby="branches-title">
-            <div class="dialog-heading"><div><p class="eyebrow">"POTKEJME SE U NĚČEHO DOBRÉHO"</p><h2 id="branches-title">"Naše pobočky"</h2></div><button class="icon-button" aria-label="Zavřít pobočky" on:click=move |_| close_dialog(shop.branches_dialog)><Icon name="close"/></button></div>
-            <div class="branches-illustration"><Icon name="store"/><span>"Brzy i osobně"</span></div>
-            <p class="branches-description">"Tady najdete místa, kde si můžete dát svou dobrou pauzu. Konkrétní pobočky, adresy a otevírací dobu právě připravujeme."</p>
-            <a class="button primary full-width" href="#nabidka" on:click=move |_| close_dialog(shop.branches_dialog)>"Zatím si vybrat svačinu"<Icon/></a>
-        </dialog>
+        <div class="confirmation-details"><div class="order-heading"><h4>{format!("Objednávka {}",order.number)}</h4><span class="order-status">{catalog::status_label(&order.status)}</span></div><div class="checkout-address"><Icon name="pin"/><div><strong>{order.street}</strong><span>{format!("{} {}",order.postal_code,order.city)}</span><span>{order.notes.unwrap_or_default()}</span></div></div><div class="checkout-address"><Icon name="clock"/><div><strong>{format!("{} · {}",order.delivery_date,order.delivery_slot)}</strong><span>{if order.status=="new" {"Požadovaný termín, čeká na potvrzení"} else {"Termín objednávky"}}</span></div></div><div class="checkout-address"><Icon name="card"/><div><strong>{payment}</strong><span>{order.email}</span></div></div><div class="checkout-review-items">{order.items.into_iter().map(|item|view! {<div><span><b>{item.quantity}"×"</b>{item.name}</span><strong>{money(item.total_cents)}</strong></div>}).collect_view()}</div><div class="cart-totals"><div><span>"Svačiny"</span><span>{money(order.subtotal_cents)}</span></div><div><span>"Doručení"</span><span>{money(order.delivery_fee_cents)}</span></div><div class="grand-total"><strong>"Celkem"</strong><strong>{money(order.total_cents)}</strong></div></div></div>
     }
 }
-
-#[cfg(target_arch = "wasm32")]
-fn next_delivery_days() -> [String; 3] {
-    let date = js_sys::Date::new_0();
-    let weekdays = ["Ne", "Po", "Út", "St", "Čt", "Pá", "So"];
-    std::array::from_fn(|_| {
-        loop {
-            date.set_date(date.get_date() + 1);
-            if date.get_day() != 0 && date.get_day() != 6 {
-                break;
-            }
+#[component]
+fn AccountOrder(order: Order, shop: Shop) -> impl IntoView {
+    let address = order.clone();
+    let reorder = order.clone();
+    view! {
+        <article class="account-order"><details><summary><span><strong>{order.number.clone()}</strong><small>{order.delivery_date.clone()}</small></span><span class="order-status">{catalog::status_label(&order.status)}</span><strong>{money(order.total_cents)}</strong></summary><OrderSummary order=order.clone()/></details><div class="order-actions"><button class="button secondary" disabled=move ||!shop.ready.get() on:click=move |_|{
+            let products=shop.products.get_untracked();let mut omitted=false;
+            shop.cart.update(|cart|{for item in &reorder.items {if let Some(product)=products.iter().find(|p|p.id==item.product_id && p.active && p.stock!=Some(0)) {let max=product.stock.unwrap_or(99).clamp(0,99) as u16;let existing=cart.entry(item.product_id).or_default();let requested=existing.saturating_add(item.quantity);*existing=requested.min(max);if requested>max {omitted=true;}} else {omitted=true;}}});
+            shop.details.use_address(&reorder);shop.confirmation.set(None);
+            shop.notice.set(if omitted {"Do košíku jsme přidali dostupné položky. Některé svačiny nebo počty už nejsou dostupné. Platí aktuální ceny.".into()} else {"Svačiny jsme přidali do košíku za aktuální ceny. Zkontrolujte nový termín doručení.".into()});
+            close_dialog(shop.account_dialog);shop.open_cart();
+        }>"Přidat znovu do košíku"</button><button class="text-button" on:click=move |_|{shop.details.use_address(&address);shop.auth_message.set("Doručovací adresu jsme předvyplnili pro další objednávku.".into());}>"Použít tuto adresu"</button></div></article>
+    }
+}
+#[component]
+fn AccountDialog(shop: Shop) -> impl IntoView {
+    let request_link = move || {
+        if shop.auth_busy.get_untracked() {
+            return;
         }
-        format!(
-            "{} {}. {}.",
-            weekdays[date.get_day() as usize],
-            date.get_date(),
-            date.get_month() + 1
-        )
-    })
+        shop.auth_busy.set(true);
+        shop.account_error.set(String::new());
+        shop.auth_message.set(String::new());
+        let email = shop.details.email.get_untracked();
+        spawn_local(async move {
+            match api::post::<serde_json::Value>("/api/auth/request",&serde_json::json!({"email":email})).await {
+                Ok(_) => shop.auth_message.set("Pokud je adresa správná, za chvíli v e-mailu najdete přihlašovací odkaz. Platí 15 minut. Zkontrolujte také spam.".into()),
+                Err(e) => shop.account_error.set(e.message),
+            }
+            shop.auth_busy.set(false);
+        });
+    };
+    let verify = move || {
+        if shop.auth_busy.get_untracked() {
+            return;
+        }
+        let Some(token) = shop.login_token.get_untracked() else {
+            return;
+        };
+        shop.auth_busy.set(true);
+        shop.account_error.set(String::new());
+        spawn_local(async move {
+            match api::post::<UserResponse>("/api/auth/verify", &serde_json::json!({"token":token}))
+                .await
+            {
+                Ok(response) => {
+                    shop.details.email.set(response.user.email.clone());
+                    shop.user.set(Some(response.user));
+                    shop.login_token.set(None);
+                    shop.auth_message
+                        .set("Jste přihlášeni. Účet je připravený k objednávání.".into());
+                    shop.load_orders();
+                }
+                Err(e) => {
+                    shop.account_error.set(e.message);
+                    if e.status == 400 || e.status == 401 {
+                        shop.login_token.set(None);
+                    }
+                }
+            }
+            shop.auth_busy.set(false);
+        });
+    };
+    view! {
+        <dialog node_ref=shop.account_dialog class="account-dialog" aria-labelledby="account-title"><div class="dialog-heading"><div><p class="eyebrow">"VAŠE OBLÍBENÁ PAUZA"</p><h2 id="account-title">{move ||if shop.user.get().is_some() {"Můj účet"} else {"Účet bez hesla"}}</h2></div><button class="icon-button" aria-label="Zavřít účet" on:click=move |_|close_dialog(shop.account_dialog)><Icon name="close"/></button></div>
+            <Show when=move ||!shop.account_error.get().is_empty()><div class="api-message error" role="alert">{move ||shop.account_error.get()}</div></Show><Show when=move ||!shop.auth_message.get().is_empty()><div class="api-message" role="status">{move ||shop.auth_message.get()}</div></Show>
+            <Show when=move ||shop.login_token.get().is_some()><div class="login-confirm"><p>"Potvrďte přihlášení jednorázovým odkazem z e-mailu."</p><button class="button primary full-width" disabled=move ||shop.auth_busy.get() on:click=move |_|verify()>{move ||if shop.auth_busy.get() {"Přihlašujeme…"} else {"Potvrdit přihlášení"}}</button></div></Show>
+            <Show when=move ||shop.user.get().is_none() &&shop.login_token.get().is_none()><div class="account-intro"><Icon name="person"/><p>"Stačí váš e-mail. Pošleme odkaz pro přihlášení, při prvním použití rovnou vytvoříme účet. Žádné heslo si nemusíte pamatovat."</p></div><form on:submit=move |ev|{ev.prevent_default();request_link();}><label class="form-field">"Váš e-mail"<input type="email" autocomplete="email" name="login-email" required maxlength="254" prop:value=move ||shop.details.email.get() on:input=move |ev|shop.details.email.set(event_target_value(&ev))/></label><button class="button primary full-width" type="submit" disabled=move ||shop.auth_busy.get()>{move ||if shop.auth_busy.get() {"Posíláme odkaz…"} else {"Poslat přihlašovací odkaz"}}</button></form><p class="field-hint">"S účtem uvidíte své další objednávky, snadno je zopakujete a použijete minulou adresu. Nákup bez účtu je vždy možný."</p></Show>
+            <Show when=move ||shop.user.get().is_some()><div class="account-identity"><strong>{move ||shop.user.get().map(|u|u.email).unwrap_or_default()}</strong><button class="text-button" disabled=move ||shop.auth_busy.get() on:click=move |_|{
+                shop.auth_busy.set(true);
+                spawn_local(async move {match api::post::<serde_json::Value>("/api/auth/logout",&serde_json::json!({})).await {Ok(_) => {shop.user.set(None);shop.orders.set(Vec::new());shop.auth_message.set("Jste odhlášeni.".into());},Err(e)=>shop.account_error.set(e.message)}shop.auth_busy.set(false);});
+            }>"Odhlásit"</button></div><Show when=move ||shop.user.get().is_some_and(|u|u.is_admin)><a class="button secondary full-width" href="/admin/">"Otevřít administraci"</a></Show><div class="account-orders-heading"><h3>"Moje objednávky"</h3><button class="text-button" disabled=move ||shop.account_loading.get() on:click=move |_|shop.load_orders()>"Obnovit stav"</button></div><Show when=move ||shop.account_loading.get()><p class="shop-status" role="status">"Načítáme objednávky…"</p></Show><Show when=move ||!shop.account_loading.get() &&shop.orders.get().is_empty()><p class="account-empty">"Vaše první objednávka na vás teprve čeká. Objednávky bez přihlášení najdete ve svém e-mailu."</p></Show><div class="account-orders"><For each=move ||shop.orders.get() key=|o|(o.id.clone(),o.status.clone()) children=move |order|view! {<AccountOrder order shop/>}/></div></Show>
+        </dialog>
+    }
 }

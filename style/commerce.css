@@ -1,0 +1,58 @@
+.account-button { display:flex; align-items:center; gap:7px; min-height:44px; padding:8px; color:var(--accent); font-size:12px; }
+.catalog-search { display:flex; align-items:center; gap:10px; width:min(100%,360px); margin-bottom:22px; padding:0 12px; border:1px solid var(--line); border-radius:8px; color:var(--muted); }
+.catalog-search input { width:100%; min-height:43px; border:0; background:transparent; color:var(--ink); font-size:13px; }
+.catalog-search .icon { width:17px; }
+.api-message { padding:14px 16px; margin:14px 0; background:var(--tint); border:1px solid #ccd8bc; border-radius:9px; color:var(--accent-hover); font-size:12px; line-height:1.75; overflow-wrap:anywhere; }
+.api-message.error { color:#8b362d; background:#fff0ed; border-color:#edc4bc; }
+.api-message .button { margin-top:12px; }
+.shop-status { padding:24px 0; color:var(--muted); font-size:13px; }
+.custom-product-image { display:block; background-size:cover; background-position:center; aspect-ratio:1; }
+.product-placeholder { display:block; aspect-ratio:1; background:var(--fresh-gradient); }
+.product-placeholder::before { content:'brunch.'; display:grid; place-items:center; height:100%; color:var(--accent); opacity:.5; font-size:30px; letter-spacing:-1.5px; font-weight:650; }
+.product-photo { position:relative; }
+.product-photo .product-tag { max-width:calc(100% - 30px); }
+.product-price { font-size:21px; }
+.optional-login { margin-top:12px; }
+.checkout-form { margin-top:22px; }
+.optional-details { margin:8px 0 16px; }
+.optional-details summary { cursor:pointer; padding:10px 0 15px; color:var(--accent); font-size:12px; }
+.checkout-order-info { margin:12px 0 18px; }
+.checkout-fieldset textarea { resize:vertical; min-height:90px; }
+.checkout-dialog .field-hint, .account-dialog .field-hint { margin-block:12px 20px; font-size:11px; line-height:1.8; color:var(--muted); }
+.confirmation-details .order-heading { display:flex; justify-content:space-between; gap:12px; align-items:start; margin-bottom:18px; }
+.order-heading h4 { margin-bottom:0; }
+.order-status { display:inline-flex; flex-shrink:0; padding:4px 8px; border-radius:6px; background:var(--tint); color:var(--accent-hover); font-size:10px; line-height:1.5; }
+.account-dialog { width:min(660px,calc(100% - 32px)); max-height:calc(100dvh - 40px); overflow-y:auto; }
+.account-dialog .dialog-heading h2 { font-size:27px; }
+.account-intro { display:flex; gap:16px; align-items:start; margin:22px 0 24px; font-size:13px; line-height:1.8; color:var(--muted); }
+.account-intro .icon { color:var(--accent); width:30px; height:30px; }
+.account-identity { display:flex; flex-wrap:wrap; gap:12px; align-items:center; justify-content:space-between; padding:8px 0 24px; }
+.account-identity strong { overflow-wrap:anywhere; font-size:14px; }
+.account-orders-heading { display:flex; align-items:center; justify-content:space-between; gap:16px; margin:24px 0 16px; }
+.account-orders-heading h3 { font-size:17px; font-weight:550; }
+.account-empty { margin:20px 0; font-size:13px; color:var(--muted); line-height:1.8; }
+.account-order { margin-bottom:16px; padding:17px; border:1px solid var(--line); border-radius:12px; }
+.account-order summary { display:flex; flex-wrap:wrap; align-items:center; justify-content:space-between; gap:12px; cursor:pointer; font-size:12px; }
+.account-order summary small { display:block; margin-top:5px; color:var(--muted); font-size:10px; }
+.account-order .confirmation-details { margin-top:18px; padding:16px; }
+.order-actions { display:flex; flex-wrap:wrap; align-items:center; gap:12px; margin-top:17px; }
+.order-actions .button { padding:9px 12px; min-height:40px; font-size:11px; }
+.order-actions .text-button { font-size:11px; }
+.login-confirm { font-size:13px; line-height:1.8; }
+.login-confirm .button { margin:20px 0; }
+.admin-link { font-size:11px; color:var(--muted); }
+.delivery-price { max-width:270px; }
+@media(max-width:800px) { .desktop-nav { gap:18px; } .desktop-nav a:last-child { display:none; } }
+@media(max-width:600px) {
+ .account-button { gap:4px; padding:4px; font-size:11px; }
+ .account-button .icon { width:17px; height:17px; }
+ .delivery-price { max-width:none; }
+ .account-dialog { padding:23px 19px; }
+ .account-dialog .dialog-heading h2 { font-size:25px; }
+ .product-price { font-size:18px; }
+ .account-order { padding:13px; }
+ .account-order .confirmation-details { padding:12px; }
+ .site-footer .text-button { font-size:11px; }
+ .payment-submit { white-space:normal; text-align:center; }
+}
+@media(max-width:359px) { .account-button .icon { display:none; } }

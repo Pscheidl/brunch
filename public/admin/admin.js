@@ -1,0 +1,343 @@
+'use strict'
+
+const content = document.querySelector('#content')
+const nav = document.querySelector('#navigation')
+const identity = document.querySelector('#identity')
+const dialog = document.querySelector('#editor')
+const notice = document.querySelector('#notice')
+const state = { user: null, page: 'orders', generation: 0, orderPage: 1, customerPage: 1, orderStatus: '', orderQuery: '' }
+const money = value => new Intl.NumberFormat('cs-CZ', { style: 'currency', currency: 'CZK' }).format(value / 100)
+const dateTime = value => value ? new Intl.DateTimeFormat('cs-CZ', { dateStyle: 'medium', timeStyle: 'short', timeZone: 'Europe/Prague' }).format(new Date(value)) : 'Dosud neodesláno'
+const statuses = { new: 'Nová', confirmed: 'Potvrzená', preparing: 'Připravuje se', out_for_delivery: 'Na cestě', delivered: 'Doručená', cancelled: 'Zrušená' }
+const payments = { unpaid: 'Nezaplaceno', paid: 'Zaplaceno' }
+const mailStates = { pending: 'Čeká na odeslání', sent: 'Odesláno', failed: 'Odeslání selhalo' }
+const routes = [['orders', 'Objednávky'], ['products', 'Zboží a ceny'], ['customers', 'Zákazníci'], ['settings', 'Doprava a nastavení'], ['mail', 'E-maily']]
+
+function el(tag, attributes = {}, ...children) {
+  const node = document.createElement(tag)
+  for (const [key, value] of Object.entries(attributes)) {
+    if (key === 'class') node.className = value
+    else if (key.startsWith('on')) node.addEventListener(key.slice(2), value)
+    else if (value !== null && value !== false && value !== undefined) node.setAttribute(key, value === true ? '' : String(value))
+  }
+  for (const child of children.flat(Infinity)) {
+    if (child !== null && child !== undefined) node.append(child instanceof Node ? child : document.createTextNode(String(child)))
+  }
+  return node
+}
+function button(label, click, type = '') {
+  return el('button', { type: 'button', class: `button ${type}`, onclick: click }, label)
+}
+function badge(label, kind = '') { return el('span', { class: `badge ${kind}` }, label) }
+function notify(message, error = false) {
+  notice.textContent = message
+  notice.className = error ? 'error' : ''
+  notice.hidden = false
+  clearTimeout(notify.timer)
+  notify.timer = setTimeout(() => { notice.hidden = true }, error ? 12000 : 5000)
+}
+async function api(path, options = {}) {
+  const response = await fetch(path, { credentials: 'same-origin', ...options, headers: { 'Content-Type': 'application/json', 'X-Brunch-Request': '1', ...options.headers } })
+  const data = await response.json().catch(() => ({}))
+  if (!response.ok) {
+    const error = new Error(response.status === 409 ? `${data.error || 'Záznam se mezitím změnil.'} Zavřete okno a načtěte aktuální data tlačítkem Obnovit.` : data.error || `Požadavek se nepodařil (${response.status}).`)
+    error.status = response.status
+    throw error
+  }
+  return data
+}
+function field(label, name, value = '', options = {}) {
+  const { kind = 'input', hint, full, ...attributes } = options
+  const input = el(kind, { name, 'aria-label': label, ...attributes })
+  if (kind === 'textarea') input.value = value ?? ''
+  else if (attributes.type === 'checkbox') input.checked = Boolean(value)
+  else input.value = value ?? ''
+  return el('label', { class: `field${full ? ' full' : ''}` }, el('span', {}, label), input, hint ? el('small', { class: 'hint' }, hint) : null)
+}
+function selectField(label, name, values, selected, options = {}) {
+  const select = el('select', { name, 'aria-label': label, ...options }, values.map(([value, text]) => el('option', { value }, text)))
+  select.value = selected
+  return el('label', { class: 'field' }, el('span', {}, label), select)
+}
+function errorBox(error) { return el('p', { class: 'error', role: 'alert' }, error.message || String(error)) }
+function empty(title, text) { return el('div', { class: 'empty' }, el('strong', {}, title), text) }
+function header(title, description, action = null) {
+  return el('div', { class: 'page-head' }, el('div', {}, el('h1', {}, title), el('p', {}, description)), action)
+}
+function table(headings, rows, compact = false) {
+  return el('div', { class: `table-wrap${compact ? ' compact' : ''}` }, el('table', {}, el('thead', {}, el('tr', {}, headings.map(h => el('th', { scope: 'col' }, h)))), el('tbody', {}, rows)))
+}
+function pager(page, total, change) {
+  const prev = button('← Předchozí', () => change(page - 1), 'small')
+  const next = button('Další →', () => change(page + 1), 'small')
+  prev.disabled = page <= 1
+  next.disabled = page * 50 >= total
+  return el('div', { class: 'pagination' }, el('span', {}, `Celkem ${total} · Strana ${page} z ${Math.max(1, Math.ceil(total / 50))}`), el('div', {}, prev, next))
+}
+function openDialog(title) {
+  dialog.replaceChildren(el('div', { class: 'dialog-head' }, el('h2', { id: 'dialog-title' }, title), el('button', { type: 'button', class: 'button link', 'aria-label': 'Zavřít okno', onclick: () => dialog.close() }, '×')))
+  const body = el('div', { class: 'dialog-body' })
+  dialog.append(body)
+  if (!dialog.open) dialog.showModal()
+  return body
+}
+function formError(form, error) {
+  form.querySelector('[data-form-error]')?.remove()
+  const box = errorBox(error)
+  box.dataset.formError = 'true'
+  form.prepend(box)
+  box.scrollIntoView({ block: 'nearest' })
+}
+async function saveForm(event, work) {
+  event.preventDefault()
+  const form = event.currentTarget
+  const submit = form.querySelector('[type=submit]')
+  if (submit.disabled) return
+  const label = submit.textContent
+  submit.disabled = true
+  submit.textContent = 'Ukládám…'
+  try { await work(new FormData(form)) }
+  catch (error) { formError(form, error) }
+  finally { submit.disabled = false; submit.textContent = label }
+}
+function cents(value, nullable = false) {
+  const text = String(value ?? '').trim().replace(',', '.')
+  if (!text && nullable) return null
+  if (!/^\d+(\.\d{1,2})?$/.test(text)) throw new Error('Cenu zadejte v korunách, nejvýše se dvěma desetinnými místy.')
+  const number = Math.round(Number(text) * 100)
+  if (!Number.isSafeInteger(number)) throw new Error('Cena je příliš vysoká.')
+  return number
+}
+
+async function checkAuth() {
+  try {
+    const { user } = await api('/api/auth/me')
+    state.user = user
+    identity.replaceChildren(el('span', {}, user.email), button('Odhlásit', logout, 'small'))
+    if (!user.is_admin) {
+      nav.hidden = true
+      content.replaceChildren(el('section', { class: 'panel login-panel' }, el('h1', {}, 'Přístup do administrace'), el('p', {}, `Účet ${user.email} nemá oprávnění správce. Přihlaste se e-mailem povoleným v nastavení serveru.`), button('Odhlásit a změnit účet', logout), el('p', {}, el('a', { href: '/' }, 'Přejít do obchodu'))))
+      return
+    }
+    nav.hidden = false
+    nav.replaceChildren(...routes.map(([route, label]) => el('a', { href: `#${route}`, 'data-route': route }, label)))
+    renderPage()
+  } catch (error) {
+    if (error.status === 401) showLogin()
+    else content.replaceChildren(header('Administrace', 'Spojení se serverem se nepodařilo.'), errorBox(error), button('Zkusit znovu', checkAuth))
+  }
+}
+function showLogin() {
+  state.user = null
+  nav.hidden = true
+  identity.replaceChildren()
+  const result = el('div', { role: 'status' })
+  const form = el('form', { onsubmit: event => saveForm(event, async data => {
+    await api('/api/auth/request', { method: 'POST', body: JSON.stringify({ email: data.get('email') }) })
+    result.replaceChildren(el('p', { class: 'success' }, 'Pokud lze přihlášení dokončit, dorazí vám e-mail s jednorázovým odkazem. Otevřete ho a pak se vraťte do administrace. Odkaz platí 15 minut.'))
+  }) }, field('Váš administrátorský e-mail', 'email', '', { type: 'email', autocomplete: 'email', required: true, maxlength: 254 }), el('button', { class: 'button primary', type: 'submit' }, 'Poslat přihlašovací odkaz'), result)
+  content.replaceChildren(el('section', { class: 'panel login-panel' }, el('h1', {}, 'Vítejte v administraci'), el('p', {}, 'Přihlaste se bezpečně odkazem v e-mailu. Heslo nepotřebujete.'), form, el('p', {}, el('a', { href: '/' }, 'Zpět do obchodu'))))
+}
+async function logout() {
+  try {
+    await api('/api/auth/logout', { method: 'POST', body: '{}' })
+    if (dialog.open) dialog.close()
+    state.generation++
+    showLogin()
+  } catch (error) { notify(error.message, true) }
+}
+async function renderPage() {
+  if (!state.user?.is_admin) return
+  const requested = location.hash.slice(1)
+  state.page = routes.some(([key]) => key === requested) ? requested : 'orders'
+  const generation = ++state.generation
+  for (const link of nav.querySelectorAll('a')) {
+    if (link.dataset.route === state.page) link.setAttribute('aria-current', 'page')
+    else link.removeAttribute('aria-current')
+  }
+  content.replaceChildren(el('p', { class: 'loading', role: 'status' }, 'Načítám data…'))
+  try {
+    const page = await ({ orders: ordersPage, products: productsPage, customers: customersPage, settings: settingsPage, mail: mailPage })[state.page]()
+    if (generation === state.generation) content.replaceChildren(...page)
+  } catch (error) {
+    if (generation !== state.generation) return
+    if (error.status === 401) { showLogin(); return }
+    content.replaceChildren(header('Data nelze načíst', 'Zkuste požadavek opakovat.'), errorBox(error), button('Obnovit', renderPage))
+  }
+}
+
+async function ordersPage() {
+  const query = new URLSearchParams({ page: state.orderPage, status: state.orderStatus, q: state.orderQuery })
+  const data = await api(`/api/admin/orders?${query}`)
+  const filter = el('form', { class: 'filters', onsubmit: event => {
+    event.preventDefault()
+    const data = new FormData(event.currentTarget)
+    state.orderQuery = String(data.get('q')).trim()
+    state.orderStatus = String(data.get('status'))
+    state.orderPage = 1
+    renderPage()
+  } }, field('Vyhledat objednávku', 'q', state.orderQuery, { type: 'search', placeholder: 'Číslo nebo e-mail', maxlength: 100 }), selectField('Stav objednávky', 'status', [['', 'Všechny stavy'], ...Object.entries(statuses)], state.orderStatus), el('button', { class: 'button', type: 'submit' }, 'Vyhledat'))
+  filter.firstChild.classList.add('search')
+  const rows = data.orders.map(order => el('tr', {}, el('td', {}, el('strong', {}, order.number), el('small', {}, dateTime(order.created_at))), el('td', {}, order.name || order.email, order.name ? el('small', {}, order.email) : null), el('td', {}, order.delivery_date, el('small', {}, order.delivery_slot), el('small', {}, order.city)), el('td', {}, badge(statuses[order.status] || order.status, order.status), el('small', {}, payments[order.payment_status] || order.payment_status)), el('td', { class: 'number' }, money(order.total_cents)), el('td', {}, button('Detail', () => orderDialog(order.id), 'small'))))
+  return [header('Objednávky', 'Od potvrzení až po předání zákazníkovi.', button('Obnovit', renderPage)), filter, rows.length ? table(['Objednávka', 'Zákazník', 'Doručení', 'Stav', 'Celkem', 'Akce'], rows) : empty('Žádné objednávky', state.orderStatus || state.orderQuery ? 'Zkuste změnit hledání nebo filtr.' : 'Nové objednávky se zobrazí na tomto místě.'), pager(data.page, data.total, page => { state.orderPage = page; renderPage() })]
+}
+async function orderDialog(id) {
+  const body = openDialog('Detail objednávky')
+  body.append(el('p', { class: 'loading' }, 'Načítám objednávku…'))
+  try {
+    const order = await api(`/api/admin/orders/${id}`)
+    if (!body.isConnected) return
+    body.dataset.orderVersion = String(order.version)
+    dialog.querySelector('#dialog-title').textContent = order.number
+    const contact = el('p', {}, [order.name, order.organization].filter(Boolean).join('\n'))
+    contact.append(el('br'), el('a', { href: `mailto:${encodeURIComponent(order.email)}` }, order.email))
+    if (order.phone) contact.append(el('br'), /^\+?[0-9 ()-]{5,40}$/.test(order.phone) ? el('a', { href: `tel:${order.phone.replace(/[^\d+]/g, '')}` }, order.phone) : order.phone)
+    const mapUrl = `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(`${order.street}, ${order.postal_code} ${order.city}, Česko`)}`
+    body.replaceChildren(el('div', { class: 'summary-grid' }, el('section', {}, el('h3', {}, 'Zákazník'), contact), el('section', {}, el('h3', {}, 'Doručení'), el('p', {}, `${order.street}\n${order.postal_code} ${order.city}\n${order.delivery_date} · ${order.delivery_slot}`))), el('div', { class: 'actions no-print' }, el('a', { class: 'button small', href: mapUrl, target: '_blank', rel: 'noopener noreferrer' }, 'Otevřít adresu v mapě ↗'), button('Vytisknout rozvozový list', () => window.print(), 'small')))
+    if (order.notes) body.append(el('div', { class: 'note' }, el('strong', {}, 'Pokyny pro doručení\n'), order.notes))
+    body.append(el('h3', {}, 'Položky objednávky'), table(['Zboží', 'Množství', 'Cena za kus', 'Celkem'], order.items.map(item => el('tr', {}, el('td', {}, item.name), el('td', {}, `${item.quantity} ks`), el('td', { class: 'number' }, money(item.unit_price_cents)), el('td', { class: 'number' }, money(item.total_cents)))), true), el('div', { class: 'totals' }, el('div', {}, el('span', {}, 'Zboží'), money(order.subtotal_cents)), el('div', {}, el('span', {}, 'Doprava'), money(order.delivery_fee_cents)), el('div', {}, el('span', {}, 'Celkem'), money(order.total_cents))))
+    body.append(el('p', { class: 'hint' }, `Platba ${order.payment_method === 'card_on_delivery' ? 'kartou' : 'hotově'} při doručení. ${payments[order.payment_status]}. Stav: ${statuses[order.status]}. Vytvořeno ${dateTime(order.created_at)}.`))
+    const sequence = ['new', 'confirmed', 'preparing', 'out_for_delivery', 'delivered']
+    const terminal = ['delivered', 'cancelled'].includes(order.status)
+    const allowed = [order.status]
+    if (!terminal) allowed.push(sequence[sequence.indexOf(order.status) + 1])
+    if (!terminal && order.payment_status !== 'paid') allowed.push('cancelled')
+    const form = el('form', { onsubmit: event => saveForm(event, async data => {
+      const status = data.get('status')
+      if (status === 'cancelled' && !confirm(`Opravdu zrušit objednávku ${order.number}? Rezervované kusy se vrátí na sklad.`)) return
+      if (data.get('payment_status') === 'paid' && order.payment_status !== 'paid' && !confirm(`Potvrzujete přijetí platby ${money(order.total_cents)} ${order.payment_method === 'card_on_delivery' ? 'kartou' : 'v hotovosti'} za objednávku ${order.number}?`)) return
+      await api(`/api/admin/orders/${order.id}`, { method: 'PATCH', body: JSON.stringify({ status, payment_status: data.get('payment_status'), version: order.version }) })
+      notify('Objednávka byla uložena.')
+      await orderDialog(order.id)
+      renderPage()
+    }) }, el('h3', {}, 'Průběh objednávky'), el('div', { class: 'form-grid' }, selectField('Stav', 'status', allowed.map(key => [key, statuses[key]]), order.status), selectField('Platba', 'payment_status', Object.entries(payments), order.payment_status)), el('p', { class: 'hint' }, terminal ? 'Objednávka má konečný stav a nelze ji dále měnit.' : 'Platbu lze přijmout při rozvozu. Označení Doručená vyžaduje potvrzení přijetí platby. Změnu stavu oznámíme zákazníkovi e-mailem.'), el('div', { class: 'actions' }, el('button', { class: 'button primary', type: 'submit' }, 'Uložit změny')))
+    const orderStatus = form.querySelector('[name=status]')
+    const paymentStatus = form.querySelector('[name=payment_status]')
+    const updatePaymentOptions = () => {
+      const paidOption = paymentStatus.querySelector('option[value=paid]')
+      const canPay = ['out_for_delivery', 'delivered'].includes(orderStatus.value)
+      paidOption.disabled = !canPay
+      paymentStatus.querySelector('option[value=unpaid]').disabled = order.payment_status === 'paid' || orderStatus.value === 'delivered'
+      if (orderStatus.value === 'delivered') paymentStatus.value = 'paid'
+      else if (!canPay) paymentStatus.value = 'unpaid'
+    }
+    orderStatus.addEventListener('change', updatePaymentOptions)
+    updatePaymentOptions()
+    if (terminal) {
+      orderStatus.disabled = true
+      paymentStatus.disabled = true
+      form.querySelector('[type=submit]').disabled = true
+    }
+    body.append(form)
+    if (order.history?.length) body.append(el('h3', {}, 'Historie změn'), el('ol', { class: 'history' }, order.history.map(item => el('li', {}, `${statuses[item.status] || item.status} · ${payments[item.payment_status] || item.payment_status}`, el('small', {}, `${dateTime(item.created_at)}${item.changed_by ? ` · ${item.changed_by}` : ''}`)))))
+  } catch (error) { body.replaceChildren(errorBox(error), button('Načíst znovu', () => orderDialog(id))) }
+}
+
+async function productsPage() {
+  const products = await api('/api/admin/products')
+  const rows = products.map(product => el('tr', {}, el('td', {}, el('strong', {}, product.name), el('small', {}, `${product.category} · ${product.weight || 'Bez uvedené hmotnosti'}`)), el('td', { class: 'number' }, money(product.price_cents)), el('td', {}, product.stock === null ? 'Bez omezení' : `${product.stock} ks`), el('td', {}, badge(product.active ? 'V prodeji' : 'Archivováno', product.active ? '' : 'archived')), el('td', {}, el('div', { class: 'cell-actions' }, button('Upravit', () => productDialog(product), 'small'), button('Ceny', () => priceDialog(product), 'small')))))
+  return [header('Zboží a ceny', 'Sortiment, dostupnost a přehled každé změny ceny.', button('+ Přidat zboží', () => productDialog(), 'primary')), button('Obnovit', renderPage, 'small'), el('div', { style: 'height:16px' }), rows.length ? table(['Zboží', 'Cena', 'Sklad', 'Dostupnost', 'Akce'], rows) : empty('Zatím žádné zboží', 'Přidejte první produkt do nabídky.'), el('p', { class: 'section-note' }, 'Archivované zboží se nezobrazuje v obchodě. Objednávky uchovávají původní názvy a ceny.')]
+}
+function productDialog(product = null) {
+  const body = openDialog(product ? 'Upravit zboží' : 'Přidat zboží')
+  const data = product || { name: '', description: '', category: 'Slané', tag: '', weight: '', price_cents: 0, vegan: false, ingredients: '', allergens: '', image: '', active: true, stock: null }
+  const form = el('form', { onsubmit: event => saveForm(event, async values => {
+    const payload = Object.fromEntries(['name', 'description', 'category', 'tag', 'weight', 'ingredients', 'allergens', 'image'].map(key => [key, String(values.get(key)).trim()]))
+    payload.price_cents = cents(values.get('price'))
+    payload.stock = String(values.get('stock')).trim() === '' ? null : Number(values.get('stock'))
+    payload.vegan = values.has('vegan')
+    payload.active = values.has('active')
+    if (product) payload.version = product.version
+    await api(product ? `/api/admin/products/${product.id}` : '/api/admin/products', { method: product ? 'PUT' : 'POST', body: JSON.stringify(payload) })
+    dialog.close()
+    notify(product ? 'Zboží bylo upraveno.' : 'Nové zboží bylo přidáno.')
+    renderPage()
+  }) }, el('div', { class: 'form-grid' }, field('Název', 'name', data.name, { required: true, maxlength: 150, full: true }), field('Popis', 'description', data.description, { kind: 'textarea', maxlength: 2000, full: true }), field('Kategorie', 'category', data.category, { required: true, maxlength: 80, list: 'categories' }), field('Štítek', 'tag', data.tag, { maxlength: 80, placeholder: 'Např. Z naší pece' }), field('Cena v Kč', 'price', (data.price_cents / 100).toFixed(2), { required: true, inputmode: 'decimal', placeholder: '119,00' }), field('Hmotnost / objem', 'weight', data.weight, { maxlength: 80, placeholder: 'Např. 180 g' }), field('Počet dostupných kusů', 'stock', data.stock, { type: 'number', min: 0, max: 1000000, step: 1, hint: 'Prázdné pole znamená neomezené množství. Nula znamená vyprodáno.' }), field('Obrázek', 'image', data.image, { maxlength: 500, placeholder: '/images/produkt.webp', hint: 'Cesta k obrázku na tomto webu. Pro výchozí vzhled ponechte prázdné.' }), field('Složení', 'ingredients', data.ingredients, { kind: 'textarea', maxlength: 2000, full: true }), field('Alergeny', 'allergens', data.allergens, { kind: 'textarea', maxlength: 1000, full: true }), field('Vegan', 'vegan', data.vegan, { type: 'checkbox' }), field('Zobrazovat v nabídce', 'active', data.active, { type: 'checkbox' })), el('datalist', { id: 'categories' }, ['Slané', 'Sladké', 'Bowls', 'Nápoje'].map(category => el('option', { value: category }))), el('p', { class: 'hint' }, 'Odškrtnutím nabídky zboží archivujete. Historie cen i dřívější objednávky zůstanou zachovány.'), el('div', { class: 'actions' }, button('Zrušit', () => dialog.close()), el('button', { type: 'submit', class: 'button primary' }, 'Uložit zboží')))
+  const imageField = form.querySelector('[name=image]')
+  const preview = el('div', { class: 'image-preview' })
+  const showPreview = () => {
+    const value = imageField.value.trim()
+    preview.replaceChildren()
+    if (value && !value.startsWith('//') && !value.includes(':')) preview.append(el('img', { src: value, alt: 'Náhled fotografie produktu', loading: 'lazy' }))
+  }
+  imageField.addEventListener('change', showPreview)
+  showPreview()
+  const uploadStatus = el('p', { class: 'hint', role: 'status' }, 'JPG, PNG nebo WebP, maximálně 2 MB a 4096 px na stranu.')
+  const upload = el('input', { type: 'file', accept: 'image/jpeg,image/png,image/webp', 'aria-label': 'Nahrát fotografii' })
+  upload.addEventListener('change', async () => {
+    const file = upload.files[0]
+    if (!file) return
+    if (file.size > 2 * 1024 * 1024) {
+      uploadStatus.textContent = 'Fotografie je příliš velká. Vyberte soubor do 2 MB.'
+      uploadStatus.className = 'error'
+      upload.value = ''
+      return
+    }
+    const submit = form.querySelector('[type=submit]')
+    upload.disabled = true
+    submit.disabled = true
+    uploadStatus.className = 'hint'
+    uploadStatus.textContent = 'Nahrávám fotografii…'
+    try {
+      const encoded = await new Promise((resolve, reject) => {
+        const reader = new FileReader()
+        reader.onload = () => resolve(String(reader.result).split(',')[1])
+        reader.onerror = () => reject(new Error('Fotografii nelze přečíst. Zkuste soubor vybrat znovu.'))
+        reader.readAsDataURL(file)
+      })
+      const result = await api('/api/admin/images', { method: 'POST', body: JSON.stringify({ filename: file.name, content_base64: encoded }) })
+      imageField.value = result.url
+      showPreview()
+      uploadStatus.textContent = 'Fotografie je nahraná. Pro přiřazení produktu uložte zboží.'
+    } catch (error) {
+      uploadStatus.textContent = error.message
+      uploadStatus.className = 'error'
+    } finally {
+      upload.disabled = false
+      submit.disabled = false
+      upload.value = ''
+    }
+  })
+  imageField.closest('label').after(el('div', { class: 'field full' }, el('label', {}, el('span', {}, 'Nahrát fotografii'), upload), uploadStatus, preview))
+  body.append(form)
+}
+async function priceDialog(product) {
+  const body = openDialog(`Historie cen: ${product.name}`)
+  body.append(el('p', { class: 'loading' }, 'Načítám historii cen…'))
+  try {
+    const history = await api(`/api/admin/products/${product.id}/prices`)
+    if (!body.isConnected) return
+    body.replaceChildren(history.length ? table(['Od kdy', 'Cena', 'Změnil'], history.map(item => el('tr', {}, el('td', {}, dateTime(item.created_at)), el('td', { class: 'number' }, money(item.price_cents)), el('td', {}, item.changed_by || 'Počáteční cena')))) : empty('Bez změn ceny', 'Historie ceny ještě není dostupná.'))
+  } catch (error) { body.replaceChildren(errorBox(error)) }
+}
+
+async function settingsPage() {
+  const settings = await api('/api/admin/settings')
+  const form = el('form', { class: 'panel settings-panel', onsubmit: event => saveForm(event, async data => {
+    await api('/api/admin/settings', { method: 'PUT', body: JSON.stringify({ delivery_fee_cents: cents(data.get('delivery_fee')), free_delivery_from_cents: cents(data.get('free_delivery_from'), true), order_email: String(data.get('order_email')).trim(), version: settings.version }) })
+    notify('Nastavení bylo uloženo.')
+    renderPage()
+  }) }, el('p', { class: 'hint' }, 'Změny se použijí pro nové objednávky. Již přijaté objednávky uchovají původní dopravu a celkovou cenu.'), field('Cena dopravy v Kč', 'delivery_fee', (settings.delivery_fee_cents / 100).toFixed(2), { required: true, inputmode: 'decimal' }), field('Doprava zdarma od částky v Kč', 'free_delivery_from', settings.free_delivery_from_cents === null ? '' : (settings.free_delivery_from_cents / 100).toFixed(2), { inputmode: 'decimal', hint: 'Prázdné pole vypne dopravu zdarma. Limit se vztahuje na cenu zboží.' }), field('E-mail pro příjem objednávek', 'order_email', settings.order_email, { type: 'email', required: true, maxlength: 254, autocomplete: 'off', hint: 'Sem dorazí nové objednávky. Potvrzení dostane i zákazník.' }), el('div', { class: 'actions' }, el('button', { type: 'submit', class: 'button primary' }, 'Uložit nastavení')))
+  return [header('Doprava a nastavení', 'Cena dopravy a doručování objednávek do vaší schránky.', button('Obnovit', renderPage)), form]
+}
+async function customersPage() {
+  const data = await api(`/api/admin/customers?page=${state.customerPage}`)
+  return [header('Zákazníci', 'Ověřené účty a jejich přihlášené objednávky.', button('Obnovit', renderPage)), data.customers.length ? table(['E-mail', 'Registrace', 'Objednávky', 'Oprávnění'], data.customers.map(customer => el('tr', {}, el('td', {}, customer.email), el('td', {}, dateTime(customer.created_at)), el('td', {}, customer.order_count), el('td', {}, badge(customer.is_admin ? 'Správce' : 'Zákazník'))))) : empty('Zatím žádné účty', 'Zákazník se zaregistruje ověřením odkazu v e-mailu.'), pager(data.page, data.total, page => { state.customerPage = page; renderPage() }), el('p', { class: 'section-note' }, 'Objednávky bez přihlášení najdete v přehledu objednávek. Historické nákupy hosta se automaticky nepřipojují k účtu.')]
+}
+async function mailPage() {
+  const messages = await api('/api/admin/mail')
+  const rows = messages.map(message => el('tr', {}, el('td', { class: 'mail-subject' }, el('strong', {}, message.subject), el('small', {}, message.to_email)), el('td', {}, badge(mailStates[message.status] || message.status, message.status), el('small', {}, `Pokusy: ${message.attempts}`)), el('td', {}, dateTime(message.created_at), message.sent_at ? el('small', {}, `Odesláno ${dateTime(message.sent_at)}`) : null), el('td', {}, message.last_error ? el('small', { class: 'mail-error' }, message.last_error) : 'Bez chyby'), el('td', {}, message.status === 'failed' && message.subject !== 'Přihlášení do Brunch' ? button('Zkusit znovu', async event => {
+    const retryButton = event.currentTarget
+    retryButton.disabled = true
+    try {
+      await api(`/api/admin/mail/${message.id}/retry`, { method: 'POST', body: '{}' })
+      notify('E-mail byl znovu zařazen k odeslání.')
+      renderPage()
+    } catch (error) { notify(error.message, true); retryButton.disabled = false }
+  }, 'small') : message.status === 'failed' ? el('small', {}, 'Vyžádejte nový přihlašovací odkaz.') : null)))
+  return [header('E-maily', 'Posledních 100 zpráv, jejich doručení a případné chyby.', button('Obnovit', renderPage)), rows.length ? table(['Zpráva / příjemce', 'Stav', 'Čas', 'Poslední chyba', 'Akce'], rows) : empty('Žádné zprávy', 'Zde se zobrazí přihlášení, potvrzení objednávek a zprávy provozovateli.'), el('p', { class: 'section-note' }, 'Stav Odesláno potvrzuje převzetí poštovním serverem. Nezaručuje doručení do doručené pošty příjemce.')]
+}
+
+window.addEventListener('hashchange', () => { if (dialog.open) dialog.close(); renderPage() })
+document.addEventListener('visibilitychange', () => { if (!document.hidden && !state.user) checkAuth() })
+checkAuth()

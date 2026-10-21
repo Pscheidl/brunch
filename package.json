@@ -1,0 +1,14 @@
+{
+  "name": "brunch-browser-tests",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Local browser verification for the Rust Brunch application",
+  "scripts": {
+    "test:storefront": "node scripts/test-storefront-browser.cjs",
+    "test:admin": "node scripts/test-admin-browser.cjs",
+    "test:recovery": "node scripts/test-checkout-recovery.cjs"
+  },
+  "devDependencies": {
+    "playwright": "1.62.1"
+  }
+}
