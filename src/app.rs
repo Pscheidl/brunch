@@ -44,7 +44,8 @@ impl Details {
             .set(order.organization.clone().unwrap_or_default());
         self.street.set(order.street.clone());
         self.city.set(order.city.clone());
-        self.postal.set(order.postal_code.clone());
+        self.postal
+            .set(catalog::normalize_postal_code(&order.postal_code));
         self.notes.set(order.notes.clone().unwrap_or_default());
     }
 }
@@ -92,6 +93,15 @@ fn close_dialog(dialog: NodeRef<html::Dialog>) {
     if let Some(d) = dialog.get() {
         d.close();
     }
+}
+fn update_postal_input(event: &leptos::ev::Event, postal: RwSignal<String>) {
+    let input = event_target::<web_sys::HtmlInputElement>(event);
+    let value = input.value();
+    let normalized = catalog::normalize_postal_code(&value);
+    if normalized != value {
+        input.set_value(&normalized);
+    }
+    postal.set(normalized);
 }
 fn storage_get(key: &str, session: bool) -> Option<String> {
     #[cfg(target_arch = "wasm32")]
@@ -240,6 +250,10 @@ impl Shop {
             None => format!("Doručení {}.", money(s.delivery_fee_cents)),
         }
     }
+    fn delivers_to_postal(self) -> bool {
+        self.ready.get()
+            && catalog::delivery_available(&self.details.postal.get(), &self.settings.get())
+    }
     fn refresh(self) {
         self.loading.set(true);
         self.error.set(String::new());
@@ -314,6 +328,13 @@ impl Shop {
         if self.submitting.get_untracked() || !self.ready.get_untracked() {
             return;
         }
+        if !catalog::delivery_available(
+            &self.details.postal.get_untracked(),
+            &self.settings.get_untracked(),
+        ) {
+            self.go(1);
+            return;
+        }
         let details = self.details;
         let mut body = OrderRequest {
             idempotency_key: String::new(),
@@ -323,7 +344,7 @@ impl Shop {
             organization: details.organization.get_untracked().trim().into(),
             street: details.street.get_untracked().trim().into(),
             city: details.city.get_untracked().trim().into(),
-            postal_code: details.postal.get_untracked().trim().into(),
+            postal_code: catalog::normalize_postal_code(&details.postal.get_untracked()),
             notes: details.notes.get_untracked().trim().into(),
             delivery_date: self.day.get_untracked(),
             delivery_slot: self.slot.get_untracked(),
@@ -379,6 +400,9 @@ impl Shop {
                 Err(err) => {
                     if err.status == 409 {
                         self.order_error.set(format!("{} Zkontrolujte prosím aktualizovanou nabídku, cenu i termín a poté objednávku znovu potvrďte.",err.message));
+                        self.refresh();
+                    } else if err.status == 400 {
+                        self.order_error.set(err.message);
                         self.refresh();
                     } else {
                         self.order_error.set(format!("{} Pokud se spojení přerušilo, opakujte stejnou objednávku tímto tlačítkem. Opakované odeslání stejné objednávky ji nevytvoří podruhé.",err.message));
@@ -593,13 +617,39 @@ fn DeliveryFields(shop: Shop, prefix: &'static str) -> impl IntoView {
             view! {<label class:selected=move ||shop.day.get()==selected><input type="radio" name=format!("{prefix}-day") value=date.value prop:checked=move ||shop.day.get()==checked on:change=move |_|shop.day.set(choose.clone())/><span>{date.label}</span></label>}
         }).collect_view()}</div>
         <label class="form-field checkout-time">"Čas doručení"<select required name=format!("{prefix}-time") prop:value=move ||shop.slot.get() on:change=move |ev|shop.slot.set(event_target_value(&ev))>{move ||shop.options.get().slots.into_iter().map(|slot|view! {<option value=slot.clone() selected=move ||shop.slot.get()==slot>{slot.clone()}</option>}).collect_view()}</select></label>
-        <p class="field-hint">"Vyberte požadované časové okno. Dostupnost rozvozu na vaši adresu a přesný termín potvrdíme po přijetí objednávky."</p>
+        <p class="field-hint">"Vyberte požadované časové okno. Přesný termín potvrdíme po přijetí objednávky."</p>
+    }
+}
+#[component]
+fn PostalAvailability(shop: Shop, id: &'static str) -> impl IntoView {
+    let message = move || {
+        if !shop.ready.get() {
+            return "Ověřujeme dostupnost rozvozu…";
+        }
+        if shop.settings.get().delivery_postal_codes.is_empty() {
+            return "Rozvoz zatím není k dispozici. Zkuste to prosím později.";
+        }
+        let postal = shop.details.postal.get();
+        if postal.is_empty() {
+            return "Zadejte PSČ a ověřte si dostupnost rozvozu.";
+        }
+        if !catalog::valid_postal_code(&postal) {
+            return "PSČ musí obsahovat pět číslic.";
+        }
+        if shop.delivers_to_postal() {
+            "Sem rozvážíme."
+        } else {
+            "Na toto PSČ zatím nerozvážíme."
+        }
+    };
+    view! {
+        <p id=id class="postal-availability" role="status" class:available=move ||shop.delivers_to_postal() class:unavailable=move ||shop.ready.get() && (shop.settings.get().delivery_postal_codes.is_empty() || (catalog::valid_postal_code(&shop.details.postal.get()) && !shop.delivers_to_postal()))>{message}</p>
     }
 }
 #[component]
 fn DeliveryDialog(shop: Shop) -> impl IntoView {
     view! {
-        <dialog node_ref=shop.delivery_dialog class="delivery-dialog" aria-labelledby="delivery-title"><div class="dialog-heading"><div><p class="eyebrow">"DOBRÁ PAUZA V PRAVÝ ČAS"</p><h2 id="delivery-title">"Kam a kdy to bude?"</h2></div><button class="icon-button" aria-label="Zavřít nastavení doručení" on:click=move |_|close_dialog(shop.delivery_dialog)><Icon name="close"/></button></div><p class="dialog-intro">"Vše můžete ještě změnit v košíku."</p><form on:submit=move |ev|{ev.prevent_default();close_dialog(shop.delivery_dialog);}><label class="form-field">"PSČ"<input name="delivery-postal" autocomplete="postal-code" inputmode="numeric" placeholder="Např. 110 00" pattern="[0-9]{3} ?[0-9]{2}" title="Zadejte pět číslic" required prop:value=move ||shop.details.postal.get() on:input=move |ev|shop.details.postal.set(event_target_value(&ev))/></label><DeliveryFields shop prefix="delivery"/><div class="info-note"><Icon name="truck"/><p>{move ||shop.delivery_info()}</p></div><button class="button primary full-width" type="submit" disabled=move ||!shop.ready.get()>"Uložit a vybírat"<Icon/></button></form></dialog>
+        <dialog node_ref=shop.delivery_dialog class="delivery-dialog" aria-labelledby="delivery-title"><div class="dialog-heading"><div><p class="eyebrow">"DOBRÁ PAUZA V PRAVÝ ČAS"</p><h2 id="delivery-title">"Kam a kdy to bude?"</h2></div><button class="icon-button" aria-label="Zavřít nastavení doručení" on:click=move |_|close_dialog(shop.delivery_dialog)><Icon name="close"/></button></div><p class="dialog-intro">"Vše můžete ještě změnit v košíku."</p><form on:submit=move |ev|{ev.prevent_default();if shop.delivers_to_postal() {close_dialog(shop.delivery_dialog);}}><label class="form-field">"PSČ"<input name="delivery-postal" aria-describedby="delivery-postal-status" autocomplete="postal-code" inputmode="numeric" placeholder="Např. 110 00" pattern="[0-9]{5}" title="Zadejte pět číslic" required prop:value=move ||shop.details.postal.get() on:input=move |ev|update_postal_input(&ev,shop.details.postal)/></label><PostalAvailability shop id="delivery-postal-status"/><DeliveryFields shop prefix="delivery"/><div class="info-note"><Icon name="truck"/><p>{move ||shop.delivery_info()}</p></div><button class="button primary full-width" type="submit" disabled=move ||!shop.delivers_to_postal()>"Uložit a vybírat"<Icon/></button></form></dialog>
     }
 }
 #[component]
@@ -638,25 +688,25 @@ fn CartDialog(shop: Shop) -> impl IntoView {
                     <section data-checkout-step="delivery" hidden=move ||shop.step.get()!=1 aria-label="Doručovací údaje">
                         <div class="checkout-guest"><span class="checkout-guest-icon"><Icon name="person"/></span><div><strong>{move ||if shop.user.get().is_some() {"Jste přihlášeni"} else {"Nakoupíte i bez účtu"}}</strong><span>"Povinný je jen e-mail a doručovací adresa."</span></div></div>
                         <Show when=move ||shop.user.get().is_none()><button class="text-button optional-login" type="button" on:click=move |_|shop.open_account()>"Mám účet, přihlásit se"</button></Show>
-                        <form class="checkout-form" on:submit=move |ev|{ev.prevent_default();shop.go(2);}>
+                        <form class="checkout-form" on:submit=move |ev|{ev.prevent_default();if shop.delivers_to_postal() {shop.go(2);}}>
                             <fieldset class="checkout-fieldset"><legend>"Kam poslat potvrzení"</legend><label class="form-field">"E-mail"<input type="email" name="email" autocomplete="email" required maxlength="254" prop:value=move ||d.email.get() on:input=move |ev|d.email.set(event_target_value(&ev))/></label></fieldset>
-                            <fieldset class="checkout-fieldset"><legend>"Doručovací adresa"</legend><label class="form-field">"Ulice a číslo domu"<input name="street-address" autocomplete="street-address" pattern=r".*\S.*" required maxlength="300" prop:value=move ||d.street.get() on:input=move |ev|d.street.set(event_target_value(&ev))/></label><div class="form-row address-row"><label class="form-field">"Město"<input name="city" autocomplete="address-level2" pattern=r".*\S.*" required maxlength="120" prop:value=move ||d.city.get() on:input=move |ev|d.city.set(event_target_value(&ev))/></label><label class="form-field">"PSČ"<input name="postal-code" autocomplete="postal-code" inputmode="numeric" pattern="[0-9]{3} ?[0-9]{2}" title="Zadejte pět číslic, například 110 00" required prop:value=move ||d.postal.get() on:input=move |ev|d.postal.set(event_target_value(&ev))/></label></div><label class="form-field">"Pokyny pro doručení (nepovinné)"<textarea name="notes" rows="3" maxlength="2000" placeholder="Např. 3. patro, zvonek Novákovi, předat na recepci" prop:value=move ||d.notes.get() on:input=move |ev|d.notes.set(event_target_value(&ev))></textarea></label>
+                            <fieldset class="checkout-fieldset"><legend>"Doručovací adresa"</legend><label class="form-field">"Ulice a číslo domu"<input name="street-address" autocomplete="street-address" pattern=r".*\S.*" required maxlength="300" prop:value=move ||d.street.get() on:input=move |ev|d.street.set(event_target_value(&ev))/></label><div class="form-row address-row"><label class="form-field">"Město"<input name="city" autocomplete="address-level2" pattern=r".*\S.*" required maxlength="120" prop:value=move ||d.city.get() on:input=move |ev|d.city.set(event_target_value(&ev))/></label><label class="form-field">"PSČ"<input name="postal-code" aria-describedby="checkout-postal-status" autocomplete="postal-code" inputmode="numeric" pattern="[0-9]{5}" title="Zadejte pět číslic, například 110 00" required prop:value=move ||d.postal.get() on:input=move |ev|update_postal_input(&ev,d.postal)/></label></div><PostalAvailability shop id="checkout-postal-status"/><label class="form-field">"Pokyny pro doručení (nepovinné)"<textarea name="notes" rows="3" maxlength="2000" placeholder="Např. 3. patro, zvonek Novákovi, předat na recepci" prop:value=move ||d.notes.get() on:input=move |ev|d.notes.set(event_target_value(&ev))></textarea></label>
                             <details class="optional-details"><summary>"Přidat jméno, telefon nebo firmu"</summary><label class="form-field">"Jméno (nepovinné)"<input name="name" autocomplete="name" maxlength="120" prop:value=move ||d.name.get() on:input=move |ev|d.name.set(event_target_value(&ev))/></label><label class="form-field">"Telefon pro kurýra (nepovinné)"<input type="tel" name="tel" autocomplete="tel" maxlength="40" prop:value=move ||d.phone.get() on:input=move |ev|d.phone.set(event_target_value(&ev))/></label><label class="form-field">"Firma (nepovinné)"<input name="organization" autocomplete="organization" maxlength="200" prop:value=move ||d.organization.get() on:input=move |ev|d.organization.set(event_target_value(&ev))/></label></details></fieldset>
                             <fieldset class="checkout-fieldset"><legend>"Kdy se vám to hodí?"</legend><DeliveryFields shop prefix="checkout"/></fieldset>
-                            <div class="checkout-next-total"><span>"Celkem včetně doručení"</span><strong>{move ||money(shop.total())}</strong></div><button class="button primary full-width" type="submit" disabled=move ||!shop.ready.get() ||shop.day.get().is_empty() ||shop.slot.get().is_empty()>"Zkontrolovat objednávku"<Icon/></button><button class="text-button checkout-back" type="button" on:click=move |_|shop.go(0)><Icon name="back"/>"Zpět do košíku"</button>
+                            <div class="checkout-next-total"><span>"Celkem včetně doručení"</span><strong>{move ||money(shop.total())}</strong></div><button class="button primary full-width" type="submit" disabled=move ||!shop.delivers_to_postal() ||shop.day.get().is_empty() ||shop.slot.get().is_empty()>"Zkontrolovat objednávku"<Icon/></button><button class="text-button checkout-back" type="button" on:click=move |_|shop.go(0)><Icon name="back"/>"Zpět do košíku"</button>
                         </form>
                     </section>
                     <section data-checkout-step="payment" hidden=move ||shop.step.get()!=2 aria-label="Platba a kontrola objednávky">
-                        <div class="checkout-review"><div class="checkout-section-heading"><h3>"Vaše dobrá pauza"</h3><button class="text-button" disabled=move ||shop.submitting.get() type="button" on:click=move |_|shop.go(1)>"Upravit doručení"</button></div><CheckoutAddress shop/><CheckoutItems shop/></div>
+                        <div class="checkout-review"><div class="checkout-section-heading"><h3>"Vaše dobrá pauza"</h3><button class="text-button" disabled=move ||shop.submitting.get() type="button" on:click=move |_|shop.go(1)>"Upravit doručení"</button></div><CheckoutAddress shop/><PostalAvailability shop id="review-postal-status"/><CheckoutItems shop/></div>
                         <fieldset class="payment-options" disabled=move ||shop.submitting.get()><legend>"Jak zaplatíte při doručení?"</legend><label class="payment-option" class:selected=move ||shop.payment.get()=="card_on_delivery"><input type="radio" name="payment-method" value="card_on_delivery" prop:checked=move ||shop.payment.get()=="card_on_delivery" on:change=move |_|shop.payment.set("card_on_delivery".into())/><Icon name="card"/><span><strong>"Kartou při doručení"</strong><small>"Přiložíte kartu nebo telefon k terminálu"</small></span></label><label class="payment-option" class:selected=move ||shop.payment.get()=="cash_on_delivery"><input type="radio" name="payment-method" value="cash_on_delivery" prop:checked=move ||shop.payment.get()=="cash_on_delivery" on:change=move |_|shop.payment.set("cash_on_delivery".into())/><Icon name="wallet"/><span><strong>"Hotově při doručení"</strong><small>"Zaplatíte kurýrovi při převzetí"</small></span></label></fieldset>
                         <CartTotals shop/>
                         <Show when=move ||!shop.order_error.get().is_empty()><div class="api-message error" role="alert">{move ||shop.order_error.get()}</div></Show>
                         <p class="field-hint checkout-order-info">"Odesláním vytvoříte objednávku s povinností platby při doručení. Přijetí vám potvrdíme e-mailem. Požadovaný termín ještě potvrdí obsluha."</p>
-                        <button class="button primary full-width payment-submit" type="button" disabled=move ||shop.submitting.get() ||!shop.ready.get() ||shop.day.get().is_empty() ||shop.slot.get().is_empty() on:click=move |_|shop.submit()><Icon name="check"/>{move ||if shop.submitting.get() {"Odesíláme objednávku…".into()} else {format!("Objednat s povinností platby · {}",money(shop.total()))}}</button><button class="text-button checkout-back" type="button" disabled=move ||shop.submitting.get() on:click=move |_|shop.go(1)><Icon name="back"/>"Zpět k doručení"</button>
+                        <button class="button primary full-width payment-submit" type="button" disabled=move ||shop.submitting.get() ||!shop.delivers_to_postal() ||shop.day.get().is_empty() ||shop.slot.get().is_empty() on:click=move |_|shop.submit()><Icon name="check"/>{move ||if shop.submitting.get() {"Odesíláme objednávku…".into()} else {format!("Objednat s povinností platby · {}",money(shop.total()))}}</button><button class="text-button checkout-back" type="button" disabled=move ||shop.submitting.get() on:click=move |_|shop.go(1)><Icon name="back"/>"Zpět k doručení"</button>
                     </section>
                     <section data-checkout-step="confirmation" hidden=move ||shop.step.get()!=3 class="checkout-confirmation" aria-label="Potvrzení objednávky">
                         {move ||shop.confirmation.get().map(|order|view! {<div class="confirmation-intro"><span class="confirmation-mark"><Icon name="check"/></span><p class="eyebrow">"DĚKUJEME ZA OBJEDNÁVKU"</p><h3>"Dobrá pauza je na dohled."</h3><p>"Číslo objednávky "<strong>{order.number.clone()}</strong><br/>"Přijetí vám potvrdíme e-mailem."</p></div><OrderSummary order/>})}
-                        <p class="confirmation-note">"Platíte až při doručení. Požadovaný termín a dostupnost rozvozu ještě potvrdíme."</p><Show when=move ||shop.user.get().is_none()><button class="button secondary full-width" on:click=move |_|shop.open_account()>"Příště rychleji? Vytvořit účet e-mailem"</button><p class="field-hint">"Účet ukládá objednávky vytvořené po přihlášení. Tato objednávka vám zůstane v e-mailu."</p></Show><button class="button primary full-width" on:click=move |_|{shop.confirmation.set(None);shop.go(0);close_dialog(shop.cart_dialog);}>"Zpátky na svačiny"<Icon/></button>
+                        <p class="confirmation-note">"Platíte až při doručení. Požadovaný termín ještě potvrdíme."</p><Show when=move ||shop.user.get().is_none()><button class="button secondary full-width" on:click=move |_|shop.open_account()>"Příště rychleji? Vytvořit účet e-mailem"</button><p class="field-hint">"Účet ukládá objednávky vytvořené po přihlášení. Tato objednávka vám zůstane v e-mailu."</p></Show><button class="button primary full-width" on:click=move |_|{shop.confirmation.set(None);shop.go(0);close_dialog(shop.cart_dialog);}>"Zpátky na svačiny"<Icon/></button>
                     </section>
                 </div>
             </Show>

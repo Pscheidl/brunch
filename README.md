@@ -5,6 +5,7 @@ Obchod s rozvozem svačin. Frontend používá Rust, Leptos CSR a Trunk. Backend
 ## Objednávka a účet
 
 - Dynamický katalog, kategorie, rostlinný filtr, složení a alergeny, dostupné množství a košík zachovaný po obnovení stránky.
+- Nabídka zboží a přidávání do košíku jsou dostupné i bez PSČ. Povolené PSČ je nutné až pro dokončení objednávky.
 - Nákup bez registrace. Povinné jsou e-mail, ulice, město a PSČ. Jméno, telefon, firma a pokyny pro kurýra jsou volitelné.
 - Výběr požadovaného dne a časového okna. Nabízejí se nejbližší tři pracovní dny podle pražského času, bez českých státních svátků.
 - Platba kartou přes terminál při doručení nebo hotově při doručení. Online platební brána není součástí této verze.
@@ -22,6 +23,7 @@ Na `/admin/` se správce přihlásí stejným e-mailovým odkazem. Tato verze m�
 - Ceny: časová historie každé změny a identifikace správce. Starší objednávky si uchovají původní název, cenu a dopravu.
 - Objednávky: hledání a filtrování, detail kontaktu a doručení, poznámka, položky, změny stavu, evidence přijaté platby a historie změn.
 - Doprava: cena, volitelná hranice pro dopravu zdarma a e-mail příjemce objednávek.
+- Oblasti rozvozu: přidávání a úpravy PSČ s volitelným názvem oblasti, vyhledávání, vypnutí a opětovné zapnutí. Rozvoz je povolen pouze na aktivní PSČ. Všechny bílé znaky se při zadávání ignorují, například `110 00` a `11000` jsou stejné PSČ.
 - Zákazníci: ověřené účty a počty jejich objednávek.
 - E-maily: přehled fronty, výsledků odeslání a opakování selhaných objednávkových zpráv.
 
@@ -40,6 +42,8 @@ docker compose up -d
 Obchod a administrace běží na `http://127.0.0.1:3100`, místní e-mailová schránka na `http://127.0.0.1:18026`. Všechny zprávy z výchozího místního nastavení zůstávají v Mailpitu. Správce má adresu `admin@example.test`, objednávky chodí na `orders@example.test`.
 
 Při prvním spuštění se automaticky provedou migrace, založí správce a vloží původních šest ukázkových produktů. Výchozí doprava stojí 49 Kč, od 350 Kč je zdarma. Existující data se při dalších startech nepřepisují. Ukázkové zboží, složení a fotografie je před skutečným prodejem potřeba upravit v administraci.
+
+Před první objednávkou nastavte v administraci v sekci **Oblasti rozvozu** skutečně obsluhovaná PSČ. Migrace žádná PSČ nepovoluje automaticky. Prázdný seznam nebo seznam bez aktivních PSČ znamená, že nové objednávky nelze přijmout. Zákazník uvidí dostupnost při zadávání adresy a server ji znovu ověří při odeslání. Změna oblastí neovlivní dříve přijaté objednávky ani jejich bezpečné opakování při ztrátě odpovědi.
 
 Pro nativní PostgreSQL nastavte `DATABASE_URL`, pro vlastní místní SMTP odpovídající proměnné. Backend čte `.env` v kořeni projektu. `./scripts/dev.sh` sestaví frontend a spustí backend. Po změně frontendu skript znovu spusťte. Statický výstup musí být pro tento backend sestaven s cestou `/`.
 
@@ -80,7 +84,7 @@ Pro doručování mimo počítač nastavte skutečné `SMTP_HOST`, `SMTP_PORT`, 
 
 Fronta opakuje selhané odeslání s prodlužujícím se odstupem, po osmi pokusech zůstane zpráva jako selhaná v administraci. E-mail se považuje za odeslaný až po přijetí SMTP serverem, nikoli za prokazatelně doručený do schránky. Při pádu přesně mezi SMTP přijetím a uložením výsledku může přijít duplikát. Opakované odeslání má stejné Message-ID. Objednávka se při potížích s e-mailem neztratí.
 
-Časová okna jsou požadavkem zákazníka, nikoli rezervací kapacity kurýra. Tato verze nemá napojení na dopravce, GPS sledování, ověření adresy, zónování rozvozu, online platby ani automatické plánování tras. Obsluha potvrzuje přijetí a proveditelnost doručení v administraci. Veřejné spuštění vyžaduje doplnění skutečných kontaktních a obchodních údajů provozovatele, podmínek a pravidel zpracování zákaznických údajů.
+Časová okna jsou požadavkem zákazníka, nikoli rezervací kapacity kurýra. Oblast rozvozu se kontroluje podle PSČ, existence konkrétní ulice nebo shoda města s PSČ se neověřuje. Tato verze nemá napojení na dopravce, GPS sledování, online platby ani automatické plánování tras. Obsluha potvrzuje přijetí a proveditelnost doručení v administraci. Veřejné spuštění vyžaduje doplnění skutečných kontaktních a obchodních údajů provozovatele, podmínek a pravidel zpracování zákaznických údajů.
 
 GitHub Pages neumí spustit PostgreSQL ani tento backend. CI nyní ověřuje frontend i backend, publikace vyžaduje samostatný aplikační server. V tomto úkolu se nic nenasazuje.
 

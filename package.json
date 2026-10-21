@@ -6,7 +6,8 @@
   "scripts": {
     "test:storefront": "node scripts/test-storefront-browser.cjs",
     "test:admin": "node scripts/test-admin-browser.cjs",
-    "test:recovery": "node scripts/test-checkout-recovery.cjs"
+    "test:recovery": "node scripts/test-checkout-recovery.cjs",
+    "test:postal": "node scripts/test-postal-browser.cjs"
   },
   "devDependencies": {
     "playwright": "1.62.1"

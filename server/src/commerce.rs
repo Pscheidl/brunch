@@ -47,6 +47,11 @@ pub fn routes() -> Router<AppState> {
             "/api/admin/settings",
             get(admin_settings).put(update_settings),
         )
+        .route(
+            "/api/admin/delivery-areas",
+            get(admin_delivery_areas).post(create_delivery_area),
+        )
+        .route("/api/admin/delivery-areas/{id}", put(update_delivery_area))
         .route("/api/admin/customers", get(customers))
 }
 
@@ -268,12 +273,127 @@ struct Settings {
 }
 
 async fn settings(State(state): State<AppState>) -> ApiResult<Json<Value>> {
-    let settings: Settings = sqlx::query_as("SELECT * FROM shop_settings WHERE id=1")
-        .fetch_one(&state.pool)
-        .await?;
+    let (delivery_fee_cents, free_delivery_from_cents, delivery_postal_codes):
+        (i64, Option<i64>, Vec<String>) = sqlx::query_as(
+            "SELECT delivery_fee_cents,free_delivery_from_cents,ARRAY(SELECT postal_code FROM delivery_areas WHERE active ORDER BY postal_code) AS delivery_postal_codes FROM shop_settings WHERE id=1",
+        ).fetch_one(&state.pool).await?;
     Ok(Json(
-        json!({"delivery_fee_cents": settings.delivery_fee_cents,"free_delivery_from_cents":settings.free_delivery_from_cents}),
+        json!({"delivery_fee_cents":delivery_fee_cents,"free_delivery_from_cents":free_delivery_from_cents,"delivery_postal_codes":delivery_postal_codes}),
     ))
+}
+
+fn normalize_postal_code(value: &str) -> ApiResult<String> {
+    let postal_code: String = value
+        .chars()
+        .filter(|character| !character.is_whitespace() && *character != '\u{feff}')
+        .collect();
+    if postal_code.len() != 5
+        || !postal_code
+            .bytes()
+            .all(|character| character.is_ascii_digit())
+    {
+        return Err(ApiError::bad_request("PSČ musí obsahovat pět číslic."));
+    }
+    Ok(postal_code)
+}
+
+#[derive(Serialize, FromRow)]
+struct DeliveryArea {
+    id: i64,
+    postal_code: String,
+    label: String,
+    active: bool,
+    version: i64,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct DeliveryAreaInput {
+    postal_code: String,
+    #[serde(default)]
+    label: String,
+    #[serde(default = "default_true")]
+    active: bool,
+    version: Option<i64>,
+}
+
+impl DeliveryAreaInput {
+    fn normalize(&mut self) -> ApiResult<()> {
+        self.postal_code = normalize_postal_code(&self.postal_code)?;
+        self.label = clean(&self.label, "popis oblasti rozvozu", 100, false)?;
+        Ok(())
+    }
+}
+
+fn delivery_area_error(error: sqlx::Error) -> ApiError {
+    if matches!(&error, sqlx::Error::Database(database) if database.is_unique_violation()) {
+        ApiError::conflict("Toto PSČ už je v oblastech rozvozu uvedeno. Upravte existující záznam.")
+    } else {
+        error.into()
+    }
+}
+
+async fn admin_delivery_areas(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> ApiResult<Json<Vec<DeliveryArea>>> {
+    auth::require_admin(&state, &headers).await?;
+    Ok(Json(sqlx::query_as("SELECT id,postal_code,label,active,version FROM delivery_areas ORDER BY postal_code,id")
+        .fetch_all(&state.pool).await?))
+}
+
+async fn create_delivery_area(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(mut input): Json<DeliveryAreaInput>,
+) -> ApiResult<Json<DeliveryArea>> {
+    auth::require_admin(&state, &headers).await?;
+    input.normalize()?;
+    let mut tx = state.pool.begin().await?;
+    // All coverage changes serialize with checkout's shared settings lock.
+    sqlx::query("SELECT id FROM shop_settings WHERE id=1 FOR UPDATE")
+        .fetch_one(&mut *tx)
+        .await?;
+    let area = sqlx::query_as("INSERT INTO delivery_areas(postal_code,label,active) VALUES ($1,$2,$3) RETURNING id,postal_code,label,active,version")
+        .bind(input.postal_code).bind(input.label).bind(input.active)
+        .fetch_one(&mut *tx).await.map_err(delivery_area_error)?;
+    tx.commit().await?;
+    Ok(Json(area))
+}
+
+async fn update_delivery_area(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(id): Path<i64>,
+    Json(mut input): Json<DeliveryAreaInput>,
+) -> ApiResult<Json<DeliveryArea>> {
+    auth::require_admin(&state, &headers).await?;
+    input.normalize()?;
+    let version = input
+        .version
+        .filter(|version| *version > 0)
+        .ok_or_else(|| ApiError::bad_request("Chybí platná verze oblasti rozvozu."))?;
+    let mut tx = state.pool.begin().await?;
+    sqlx::query("SELECT id FROM shop_settings WHERE id=1 FOR UPDATE")
+        .fetch_one(&mut *tx)
+        .await?;
+    let old: DeliveryArea = sqlx::query_as(
+        "SELECT id,postal_code,label,active,version FROM delivery_areas WHERE id=$1 FOR UPDATE",
+    )
+    .bind(id)
+    .fetch_optional(&mut *tx)
+    .await?
+    .ok_or_else(|| ApiError::not_found("Oblast rozvozu neexistuje."))?;
+    if old.version != version {
+        return Err(ApiError::conflict(
+            "Oblast rozvozu se mezitím změnila. Načtěte aktuální údaje.",
+        ));
+    }
+    let area = sqlx::query_as("UPDATE delivery_areas SET postal_code=$2,label=$3,active=$4,version=version+1 WHERE id=$1 RETURNING id,postal_code,label,active,version")
+        .bind(id).bind(input.postal_code).bind(input.label).bind(input.active)
+        .fetch_one(&mut *tx).await.map_err(delivery_area_error)?;
+    tx.commit().await?;
+    Ok(Json(area))
 }
 
 async fn admin_settings(
@@ -417,14 +537,7 @@ impl OrderInput {
         self.street = clean(&self.street, "ulice a číslo", 250, true)?;
         self.city = clean(&self.city, "obec", 100, true)?;
         self.notes = clean(&self.notes, "poznámka k doručení", 2000, false)?;
-        self.postal_code = self
-            .postal_code
-            .chars()
-            .filter(|c| !c.is_whitespace())
-            .collect();
-        if self.postal_code.len() != 5 || !self.postal_code.bytes().all(|c| c.is_ascii_digit()) {
-            return Err(ApiError::bad_request("PSČ musí obsahovat pět číslic."));
-        }
+        self.postal_code = normalize_postal_code(&self.postal_code)?;
         if !matches!(
             self.payment_method.as_str(),
             "card_on_delivery" | "cash_on_delivery"
@@ -600,6 +713,17 @@ async fn create_order(
     let settings: Settings = sqlx::query_as("SELECT * FROM shop_settings WHERE id=1 FOR SHARE")
         .fetch_one(&mut *tx)
         .await?;
+    let supported: bool = sqlx::query_scalar(
+        "SELECT EXISTS(SELECT 1 FROM delivery_areas WHERE postal_code=$1 AND active)",
+    )
+    .bind(&input.postal_code)
+    .fetch_one(&mut *tx)
+    .await?;
+    if !supported {
+        return Err(ApiError::bad_request(
+            "Na zadané PSČ momentálně nerozvážíme. Zadejte adresu v podporované oblasti rozvozu.",
+        ));
+    }
     let ids: Vec<_> = input.items.iter().map(|i| i.product_id).collect();
     // The stable lock order prevents concurrent checkouts from overselling or deadlocking.
     let products: Vec<Product> =
@@ -1080,6 +1204,46 @@ pub async fn seed(pool: &PgPool, order_email: &str) -> ApiResult<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn postal_codes_normalize_whitespace_and_bom_but_require_ascii_digits() {
+        for input in [
+            "11000",
+            " 110 00 ",
+            "\t11\n0\r00",
+            "\u{a0}110\u{202f}00",
+            "\u{feff}11\u{feff}000\u{feff}",
+        ] {
+            assert_eq!(normalize_postal_code(input).unwrap(), "11000");
+        }
+        for input in [
+            "",
+            "1100",
+            "110000",
+            "11-000",
+            "11a00",
+            "１１０００",
+            "١١٠٠٠",
+            "11\u{200b}000",
+        ] {
+            assert!(
+                normalize_postal_code(input).is_err(),
+                "accepted invalid postal code {input:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn delivery_area_normalization_preserves_default_flags_and_limits_labels() {
+        let mut input: DeliveryAreaInput =
+            serde_json::from_value(json!({"postal_code":"\u{feff}110 00"})).unwrap();
+        input.normalize().unwrap();
+        assert_eq!(input.postal_code, "11000");
+        assert!(input.label.is_empty());
+        assert!(input.active);
+        input.label = "a".repeat(101);
+        assert!(input.normalize().is_err());
+    }
 
     #[test]
     fn delivery_skips_weekends_and_czech_holidays() {

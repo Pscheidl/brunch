@@ -5,13 +5,15 @@ const nav = document.querySelector('#navigation')
 const identity = document.querySelector('#identity')
 const dialog = document.querySelector('#editor')
 const notice = document.querySelector('#notice')
-const state = { user: null, page: 'orders', generation: 0, orderPage: 1, customerPage: 1, orderStatus: '', orderQuery: '' }
+const state = { user: null, page: 'orders', generation: 0, orderPage: 1, customerPage: 1, orderStatus: '', orderQuery: '', deliveryAreaQuery: '' }
 const money = value => new Intl.NumberFormat('cs-CZ', { style: 'currency', currency: 'CZK' }).format(value / 100)
 const dateTime = value => value ? new Intl.DateTimeFormat('cs-CZ', { dateStyle: 'medium', timeStyle: 'short', timeZone: 'Europe/Prague' }).format(new Date(value)) : 'Dosud neodesláno'
 const statuses = { new: 'Nová', confirmed: 'Potvrzená', preparing: 'Připravuje se', out_for_delivery: 'Na cestě', delivered: 'Doručená', cancelled: 'Zrušená' }
 const payments = { unpaid: 'Nezaplaceno', paid: 'Zaplaceno' }
 const mailStates = { pending: 'Čeká na odeslání', sent: 'Odesláno', failed: 'Odeslání selhalo' }
-const routes = [['orders', 'Objednávky'], ['products', 'Zboží a ceny'], ['customers', 'Zákazníci'], ['settings', 'Doprava a nastavení'], ['mail', 'E-maily']]
+const routes = [['orders', 'Objednávky'], ['products', 'Zboží a ceny'], ['customers', 'Zákazníci'], ['delivery-areas', 'Oblasti rozvozu'], ['settings', 'Doprava a nastavení'], ['mail', 'E-maily']]
+const normalizePostalCode = value => String(value ?? '').replace(/[\s\u0085]/g, '')
+const formatPostalCode = value => normalizePostalCode(value).replace(/^([0-9]{3})([0-9]{2})$/, '$1 $2')
 
 function el(tag, attributes = {}, ...children) {
   const node = document.createElement(tag)
@@ -157,7 +159,7 @@ async function renderPage() {
   }
   content.replaceChildren(el('p', { class: 'loading', role: 'status' }, 'Načítám data…'))
   try {
-    const page = await ({ orders: ordersPage, products: productsPage, customers: customersPage, settings: settingsPage, mail: mailPage })[state.page]()
+    const page = await ({ orders: ordersPage, products: productsPage, customers: customersPage, 'delivery-areas': deliveryAreasPage, settings: settingsPage, mail: mailPage })[state.page]()
     if (generation === state.generation) content.replaceChildren(...page)
   } catch (error) {
     if (generation !== state.generation) return
@@ -309,6 +311,71 @@ async function priceDialog(product) {
     if (!body.isConnected) return
     body.replaceChildren(history.length ? table(['Od kdy', 'Cena', 'Změnil'], history.map(item => el('tr', {}, el('td', {}, dateTime(item.created_at)), el('td', { class: 'number' }, money(item.price_cents)), el('td', {}, item.changed_by || 'Počáteční cena')))) : empty('Bez změn ceny', 'Historie ceny ještě není dostupná.'))
   } catch (error) { body.replaceChildren(errorBox(error)) }
+}
+
+async function deliveryAreasPage() {
+  const areas = await api('/api/admin/delivery-areas')
+  const results = el('div', { class: 'delivery-area-results', 'aria-live': 'polite' })
+  const search = field('Vyhledat PSČ nebo název oblasti', 'delivery_area_search', state.deliveryAreaQuery, { type: 'search', placeholder: 'Např. 110 00 nebo Praha', maxlength: 200 })
+  const renderResults = () => {
+    const query = normalizePostalCode(state.deliveryAreaQuery).toLocaleLowerCase('cs-CZ')
+    const matching = areas.filter(area => normalizePostalCode(area.postal_code).includes(query) || normalizePostalCode(area.label).toLocaleLowerCase('cs-CZ').includes(query))
+    if (!matching.length) {
+      results.replaceChildren(areas.length ? empty('Žádná odpovídající oblast', 'Zkuste jiné PSČ nebo název oblasti.') : empty('Zatím žádná oblast rozvozu', 'Přidejte první povolené PSČ a nechte rozvoz zapnutý. Bez aktivních oblastí nelze přijímat objednávky.'))
+      return
+    }
+    const rows = matching.map(area => el('tr', {}, el('td', { class: 'postal-code' }, el('strong', {}, formatPostalCode(area.postal_code))), el('td', {}, area.label || 'Bez názvu'), el('td', {}, badge(area.active ? 'Rozvážíme' : 'Pozastaveno', area.active ? '' : 'archived')), el('td', {}, el('div', { class: 'cell-actions' }, button('Upravit', () => deliveryAreaDialog(area), 'small'), button(area.active ? 'Pozastavit' : 'Zapnout', async event => {
+      const toggle = event.currentTarget
+      toggle.disabled = true
+      try {
+        await api(`/api/admin/delivery-areas/${area.id}`, { method: 'PUT', body: JSON.stringify({ postal_code: normalizePostalCode(area.postal_code), label: area.label || '', active: !area.active, version: area.version }) })
+        notify(area.active ? `Rozvoz pro PSČ ${formatPostalCode(area.postal_code)} byl pozastaven.` : `Rozvoz pro PSČ ${formatPostalCode(area.postal_code)} byl zapnut.`)
+        renderPage()
+      } catch (error) { notify(error.message, true); toggle.disabled = false }
+    }, 'small')))))
+    results.replaceChildren(table(['PSČ', 'Název oblasti', 'Rozvoz', 'Akce'], rows), el('p', { class: 'section-note' }, `Zobrazeno ${matching.length} z ${areas.length} oblastí.`))
+  }
+  search.querySelector('input').addEventListener('input', event => {
+    state.deliveryAreaQuery = event.currentTarget.value
+    renderResults()
+  })
+  renderResults()
+  const activeCount = areas.filter(area => area.active).length
+  const guidance = el('p', { class: activeCount ? 'section-note delivery-area-guidance' : 'note delivery-area-guidance', role: activeCount ? 'note' : 'status' }, activeCount ? `Rozvoz je povolen pouze do aktivních PSČ. Aktivních oblastí: ${activeCount}. Pozastavení ovlivní nové objednávky, již přijaté objednávky zůstanou zachovány.` : 'Rozvoz není povolen do žádného PSČ. Pro příjem objednávek přidejte první oblast nebo zapněte některou z existujících.')
+  return [header('Oblasti rozvozu', 'Určete přesná PSČ, na která přijímáte objednávky.', button('+ Přidat oblast', () => deliveryAreaDialog(), 'primary')), guidance, el('div', { class: 'filters delivery-area-filters' }, search, button('Obnovit', renderPage)), results]
+}
+function deliveryAreaDialog(area = null) {
+  const body = openDialog(area ? 'Upravit oblast rozvozu' : 'Přidat oblast rozvozu')
+  const form = el('form', { onsubmit: event => saveForm(event, async values => {
+    const postalCode = normalizePostalCode(values.get('postal_code'))
+    if (!/^[0-9]{5}$/.test(postalCode)) throw new Error('PSČ musí obsahovat právě pět číslic. Mezery můžete vynechat.')
+    const payload = { postal_code: postalCode, label: String(values.get('label') || '').trim(), active: values.has('active') }
+    if (area) payload.version = area.version
+    await api(area ? `/api/admin/delivery-areas/${area.id}` : '/api/admin/delivery-areas', { method: area ? 'PUT' : 'POST', body: JSON.stringify(payload) })
+    dialog.close()
+    notify(area ? 'Oblast rozvozu byla upravena.' : 'Oblast rozvozu byla přidána.')
+    renderPage()
+  }) }, field('PSČ', 'postal_code', area?.postal_code || '', { required: true, inputmode: 'numeric', autocomplete: 'off', pattern: '[0-9]{5}', placeholder: '11000', hint: 'Pět číslic, například 110 00. Při psaní a vložení mezery odstraníme.' }), field('Název oblasti', 'label', area?.label || '', { maxlength: 100, placeholder: 'Např. Praha 1', hint: 'Nepovinné označení pro snadnou orientaci.' }), field('Povolit rozvoz do tohoto PSČ', 'active', area ? area.active : true, { type: 'checkbox' }), el('p', { class: 'hint' }, 'Zákazník může objednat pouze na aktivní PSČ. Oblast můžete kdykoli pozastavit a později znovu zapnout.'), el('div', { class: 'actions' }, button('Zrušit', () => dialog.close()), el('button', { class: 'button primary', type: 'submit' }, 'Uložit oblast')))
+  const postal = form.querySelector('[name=postal_code]')
+  const normalizeInput = () => {
+    const start = postal.selectionStart ?? postal.value.length
+    const normalizedStart = normalizePostalCode(postal.value.slice(0, start)).length
+    const normalized = normalizePostalCode(postal.value)
+    if (postal.value !== normalized) {
+      postal.value = normalized
+      postal.setSelectionRange(normalizedStart, normalizedStart)
+    }
+    postal.setCustomValidity(postal.value && !/^[0-9]{5}$/.test(postal.value) ? 'PSČ musí obsahovat právě pět číslic.' : '')
+  }
+  postal.addEventListener('input', normalizeInput)
+  postal.addEventListener('paste', event => {
+    if (!event.clipboardData) return
+    event.preventDefault()
+    postal.setRangeText(normalizePostalCode(event.clipboardData.getData('text')), postal.selectionStart ?? 0, postal.selectionEnd ?? postal.value.length, 'end')
+    normalizeInput()
+  })
+  normalizeInput()
+  body.append(form)
 }
 
 async function settingsPage() {

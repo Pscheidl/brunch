@@ -1,6 +1,6 @@
 # Místní ověření 21. 10. 2026
 
-Výsledek: všechny níže uvedené kontroly prošly. Neproběhl commit, push ani nasazení na vzdálený server.
+Výsledek: kontroly správy PSČ a navazující kontroly objednávek prošly. Rozšíření navazuje na původní backend v commitu `6627d19`. Neproběhl push ani nasazení na vzdálený server.
 
 ## Prostředí
 
@@ -14,7 +14,7 @@ PostgreSQL pro toto ověření byl spuštěn nativně z dočasného adresáře `
 
 ## Automatické kontroly
 
-Závěrečný příkaz:
+Příkaz pro opakování kompletní sady:
 
 ```bash
 TEST_DATABASE_URL=postgres://brunch:brunch-local@127.0.0.1:55434/brunch CARGO_NET_OFFLINE=true ./scripts/test.sh
@@ -22,20 +22,31 @@ TEST_DATABASE_URL=postgres://brunch:brunch-local@127.0.0.1:55434/brunch CARGO_NE
 
 | Sada | Výsledek |
 | --- | --- |
-| Frontendové testy košíku a dopravy | 3 prošly |
-| Backendové jednotkové testy | 6 prošlo |
-| HTTP integrační scénáře na PostgreSQL | 8 prošlo |
+| Frontendové testy košíku, dopravy a PSČ | 5 prošlo |
+| Backendové jednotkové testy | 8 prošlo |
+| HTTP integrační scénáře na PostgreSQL | 10 prošlo |
 | Skutečné SMTP, výpadek a opakování | 1 prošel |
 | Bezpečnost relací, práv a poštovní fronty | 4 prošly |
 | Nahrávání a poskytování obrázků | 2 prošly |
-| Celkem | 24 prošlo, 0 selhalo, 0 přeskočeno v explicitně spuštěných sadách |
-| Formátování, Clippy se zákazem varování | Prošlo |
+| Celkem | 30 prošlo, 0 selhalo, 0 přeskočeno v explicitně spuštěných sadách |
+| Formátování, backendový Clippy se zákazem varování | Prošlo |
 | Optimalizované WebAssembly sestavení a kontrola souborů | Prošlo |
 | Syntaxe administrace a kontrola změn | Prošlo |
 
 Při sestavení frontendových závislostí Rust upozorňuje na budoucí nekompatibilitu balíčku `proc-macro-error2 2.0.1`. Aktuální připnutý toolchain sestavení dokončuje úspěšně.
 
 ## Skutečné prohlížečové ověření
+
+Po rozšíření o PSČ znovu prošly skripty `test-storefront-browser.cjs` a `test-checkout-recovery.cjs`. Nový `scripts/test-postal-browser.cjs` ověřil také:
+
+- Zobrazení katalogu a přidání do košíku bez PSČ i při prázdném seznamu aktivních oblastí.
+- Správu oblastí, normalizaci Unicode whitespace při zadávání i vložení, vyhledání, odmítnutí duplicity, úpravu a pozastavení/zapnutí.
+- Oba zákaznické formuláře, blokování nepodporovaného PSČ a přijetí povoleného PSČ s bílými znaky.
+- Vypnutí oblasti po zobrazení závěrečné kontroly. Server vrátil 400, nevytvořil objednávku ani zákaznický e-mail.
+- Zapnutí oblasti a opakování se stejným klíčem vytvořilo právě jednu objednávku. Test ji následně stornoval.
+- Mobilní šířku 390 px a nepřítomnost neošetřených výjimek prohlížeče. Snímky byly vizuálně zkontrolovány.
+
+Testovací oblast byla po ověření odstraněna. Pro ruční místní ukázku je povoleno PSČ `11000` s názvem „Místní ukázka“. Tato hodnota je pouze v místní databázi, migrace ani seed aplikace žádná PSČ automaticky nepovolují.
 
 `scripts/test-storefront-browser.cjs` prošel celý nákup bez účtu s hotovostí při doručení, doručení potvrzení do Mailpitu, registraci a přihlášení odkazem, nákup s účtem a kartou při doručení, vlastní historii, opakování objednávky, zachování košíku po obnovení stránky a odhlášení. Obchod ani objednávkový dialog nepřetékají při šířce 390 px. Žádná neošetřená chyba JavaScriptu.
 
@@ -45,9 +56,9 @@ Při sestavení frontendových závislostí Rust upozorňuje na budoucí nekompa
 2. Server objednávku uložil, ale prohlížeč její odpověď ztratil. Opakování poslalo stejný obsah a klíč a vrátilo stejné ID. Přímá SQL kontrola našla právě jednu objednávku.
 3. Prohlížeč zobrazil starší cenu. Server vrátil skutečný konflikt 409. Stránka obnovila nabídku a až další výslovné potvrzení vytvořilo objednávku za aktuální cenu. V databázi zůstal jeden záznam.
 
-`scripts/test-admin-browser.cjs` ověřil skutečné přihlášení správce, nahrání a načtení fotografie, vytvoření produktu, změnu a historii ceny, archivaci, nastavení dopravy, hledání objednávky, adresu a pokyny, odkazy do mapy a telefonu, tisk rozvozového listu na jednu stranu A4, postupné změny až do doručení s potvrzením platby, zákazníky, e-mailovou frontu a mobilní administraci. Žádná neošetřená chyba JavaScriptu. Testovací produkt je po ověření archivovaný.
+Při původním ověření backendu `scripts/test-admin-browser.cjs` ověřil skutečné přihlášení správce, nahrání a načtení fotografie, vytvoření produktu, změnu a historii ceny, archivaci, nastavení dopravy, hledání objednávky, adresu a pokyny, odkazy do mapy a telefonu, tisk rozvozového listu na jednu stranu A4, postupné změny až do doručení s potvrzením platby, zákazníky, e-mailovou frontu a mobilní administraci. Žádná neošetřená chyba JavaScriptu. Testovací produkt je po ověření archivovaný.
 
-Snímky obrazovky a testovací PDF jsou v ignorovaných složkách `output/browser/` a `output/admin-browser/`. Nejsou součástí veřejného sestavení.
+Snímky obrazovky a testovací PDF jsou v ignorovaných složkách `output/browser/`, `output/admin-browser/` a `output/postal-browser/`. Nejsou součástí veřejného sestavení.
 
 ## Hranice ověření
 

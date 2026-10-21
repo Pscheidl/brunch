@@ -248,6 +248,9 @@ legend { margin-bottom: 9px; padding: 0; font-size: 12px; font-weight: 500; }
 .demo-note { margin-block: 16px; color: var(--muted); font-size: 11px; line-height: 1.7; }
 .button.full-width { width: 100%; }
 .field-hint { margin: -7px 0 17px; color: var(--muted); font-size: 10px; line-height: 1.5; }
+.postal-availability { margin: -7px 0 17px; color: var(--muted); font-size: 12px; line-height: 1.6; }
+.postal-availability.available { color: var(--accent-hover); }
+.postal-availability.unavailable { color: #8b362d; }
 .product-dialog { width: min(640px, calc(100% - 32px)); }
 .product-dialog { padding: 0; }
 .floating-close { position: absolute; z-index: 1; top: 16px; right: 16px; background: var(--surface); }

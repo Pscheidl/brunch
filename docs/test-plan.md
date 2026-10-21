@@ -23,11 +23,15 @@ Při selhání testu může zůstat izolované schéma `brunch_test_<uuid>` pro 
 | Relace a oprávnění | Odhlášení a expirace zneplatní relaci, všechny administrační cesty vyžadují správce, požadavky z cizího původu jsou odmítnuty |
 | Soukromí | Zákazník nevidí cizí objednávky, starší nákup hosta se nepřipojí podle pouhého e-mailu, odpovědi používají `no-store`, seznam e-mailů neodhaluje přihlašovací odkazy |
 | Doprava | Nová cena dopravy, vypnutý a dosažený limit dopravy zdarma, změna provozního e-mailu |
+| Oblasti rozvozu | Správa pouze pro správce, normalizace všech bílých znaků, unikátní PSČ i při souběhu, konflikt starší verze, úprava a vypnutí/zapnutí oblasti, veřejný seznam pouze aktivních PSČ |
+| Kontrola PSČ objednávky | Prázdný seznam a nepovolené PSČ odmítnou nákup bez změny skladu či e-mailů, povolené PSČ projde, opakování přijaté objednávky funguje i po vypnutí oblasti a změně mezer |
 | Objednávky | Postupné stavy, oddělená platba kartou/hotovostí při doručení, audit změn, zakázané storno zaplacené objednávky, filtrování |
 | E-mailová fronta | Potvrzení zákazníkovi a provozovateli ve stejné transakci s objednávkou, chyba při ukládání druhého e-mailu vrátí i objednávku a sklad, opakování selhané zprávy |
 | Neplatná data | Chybné kontakty, prázdná adresa, datum mimo nabídku, chybná platba a množství neuloží objednávku ani e-mail |
 
 ## Ruční ověření rozhraní
+
+Nejprve v administraci povolit testovací PSČ `110 00`. V poli i při hledání vyzkoušet mezery, tabulátor, nezalomitelnou mezeru a jejich kombinace. Duplikát se nesmí založit. Ověřit dostupnost v dialogu adresy i objednávky, vypnutí oblasti před konečným odesláním a zobrazení chyby bez vzniku objednávky. Po testu vrátit původní nastavení oblastí.
 
 1. V anonymním okně přidat zboží, změnit množství a odeslat nákup pouze s adresou a e-mailem. Vyplnit například patro, zvonek a pokyn k předání. Ověřit zobrazený součet a potvrzení.
 2. Zkontrolovat obě zprávy v místním poštovním serveru. Vypnout SMTP a ověřit, že objednávka zůstane přijatá a e-mail čeká na opakované odeslání.
@@ -57,7 +61,7 @@ Ověřeno 21. 10. 2026: tento scénář úspěšně prošel proti místnímu ser
 
 ## Prohlížečové testy
 
-Vyžadují běžící místní obchod se vzorovým katalogem, Mailpit, Node.js a Playwright 1.62.1. Pro test obnovy spojení je potřeba také klient `psql` a URL stejné místní databáze, kterou používá server. Skripty odmítnou veřejnou adresu webu. Vytvářejí skutečné testovací objednávky v místním obchodě, nepoužívejte je na produkčních datech.
+Vyžadují běžící místní obchod se vzorovým katalogem, aktivním testovacím PSČ `11000`, Mailpit, Node.js a Playwright 1.62.1. Pro test obnovy spojení je potřeba také klient `psql` a URL stejné místní databáze, kterou používá server. Skripty odmítnou veřejnou adresu webu. Vytvářejí skutečné testovací objednávky v místním obchodě, nepoužívejte je na produkčních datech. Integrační HTTP testy si povolené PSČ zakládají samy pouze ve svých izolovaných schématech.
 
 ```bash
 npm install
@@ -70,6 +74,8 @@ BRUNCH_TEST_DATABASE_URL=postgres://brunch:brunch-local@127.0.0.1:55434/brunch n
 - Obchod: nákup hosta, obě platby při doručení, skutečný potvrzovací e-mail, registrace odkazem, oddělení historie hosta, nákup s účtem, opakování nákupu, košík po obnovení, odhlášení a mobilní rozměry.
 - Administrace: přihlášení, nahrání fotografie, vytvoření a archivace zboží, změna a historie ceny, uložení dopravy, hledání objednávky, mapa, tisk rozvozového listu, postupné doručení a přijetí platby, zákazníci a pošta, mobilní zobrazení.
 - Obnova: výpadek katalogu, ztracená odpověď po skutečně uložené objednávce a bezpečné opakování, skutečný konflikt ceny 409 a nové potvrzení.
+
+Samostatný `npm run test:postal` vyžaduje místní databázi bez aktivních oblastí rozvozu. Přihlásí správce, přidá vlastní testovací PSČ a ověří zadávání i vkládání Unicode whitespace, hledání, duplicity, editaci a vypnutí/zapnutí. Nabídka i přidávání do košíku musí fungovat bez zadaného PSČ a bez aktivních oblastí. Na šířce 390 px test projde oběma zákaznickými formuláři, ověří odmítnutí objednávky po vypnutí oblasti během nákupu a úspěšné opakování po zapnutí. Na konci vlastní objednávku stornuje a oblast pozastaví. Existující aktivní oblasti test sám nemění, při jejich přítomnosti skončí s vysvětlením. Snímky jsou v `output/postal-browser/`.
 
 Snímky a místní výsledky jsou v ignorované složce `output/`. `BRUNCH_PSQL_BIN` umožňuje zadat vlastní cestu k psql. Databázové kontroly ověřují jeden skutečně uložený záznam po opakování požadavku.
 

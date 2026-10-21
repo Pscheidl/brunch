@@ -24,6 +24,9 @@ fn product_input(value: &Value) -> Value {
 
 impl TestApp {
     async fn new() -> Self {
+        Self::with_delivery_area(true).await
+    }
+    async fn with_delivery_area(allow_delivery: bool) -> Self {
         let database_url = std::env::var("TEST_DATABASE_URL")
             .expect("Set TEST_DATABASE_URL to a disposable local PostgreSQL database before running integration tests");
         let database = PgPoolOptions::new()
@@ -46,6 +49,12 @@ impl TestApp {
             .unwrap();
         migrate(&pool).await.unwrap();
         commerce::seed(&pool, "orders@example.test").await.unwrap();
+        if allow_delivery {
+            sqlx::query("INSERT INTO delivery_areas (postal_code,label) VALUES ('11000','Testovací oblast')")
+                .execute(&pool)
+                .await
+                .unwrap();
+        }
         auth::bootstrap_admin(&pool, "admin@example.test")
             .await
             .unwrap();
@@ -970,5 +979,252 @@ async fn failed_outbox_insert_rolls_back_order_items_stock_and_first_email() {
     app.post(&guest, "/api/orders", &input).await;
     assert_eq!(app.count("orders").await, 1);
     assert_eq!(app.count("outbox").await, before_mail + 2);
+    app.close().await;
+}
+
+#[tokio::test]
+#[ignore = "requires real PostgreSQL via TEST_DATABASE_URL"]
+async fn delivery_area_management_permissions_normalization_and_conflicts() {
+    let app = TestApp::with_delivery_area(false).await;
+    let guest = app.client();
+    let customer = app.login("area-customer@example.test").await;
+    let admin = app.login("admin@example.test").await;
+    let input = json!({"postal_code":"\t1\u{00a0}10\u{2003}0\r\n0\u{0085}\u{feff}","label":" Centrum ","active":true});
+    for (client, status) in [
+        (&guest, StatusCode::UNAUTHORIZED),
+        (&customer, StatusCode::FORBIDDEN),
+    ] {
+        app.call(
+            client,
+            Method::GET,
+            "/api/admin/delivery-areas",
+            None,
+            status,
+        )
+        .await;
+        app.call(
+            client,
+            Method::POST,
+            "/api/admin/delivery-areas",
+            Some(&input),
+            status,
+        )
+        .await;
+        let mut update = input.clone();
+        update["version"] = json!(1);
+        app.call(
+            client,
+            Method::PUT,
+            "/api/admin/delivery-areas/1",
+            Some(&update),
+            status,
+        )
+        .await;
+    }
+    let created = app.post(&admin, "/api/admin/delivery-areas", &input).await;
+    assert_eq!(created["postal_code"], "11000");
+    assert_eq!(created["label"], "Centrum");
+    assert_eq!(created["version"], 1);
+    assert_eq!(
+        app.get(&guest, "/api/settings").await["delivery_postal_codes"],
+        json!(["11000"])
+    );
+    let duplicate = json!({"postal_code":"110 00"});
+    app.call(
+        &admin,
+        Method::POST,
+        "/api/admin/delivery-areas",
+        Some(&duplicate),
+        StatusCode::CONFLICT,
+    )
+    .await;
+    for invalid in [
+        "",
+        "1100",
+        "110000",
+        "110-00",
+        "11a00",
+        "１１０００",
+        "110\u{200b}00",
+    ] {
+        app.call(
+            &admin,
+            Method::POST,
+            "/api/admin/delivery-areas",
+            Some(&json!({"postal_code":invalid})),
+            StatusCode::BAD_REQUEST,
+        )
+        .await;
+    }
+    app.call(
+        &admin,
+        Method::POST,
+        "/api/admin/delivery-areas",
+        Some(&json!({"postal_code":"12000","label":"x".repeat(101)})),
+        StatusCode::BAD_REQUEST,
+    )
+    .await;
+    let path = format!("/api/admin/delivery-areas/{}", created["id"]);
+    let stale = json!({"postal_code":"11000","label":"Původní verze","active":true,"version":1});
+    let updated = app.call(&admin, Method::PUT, &path, Some(&json!({"postal_code":" 1\t2\u{202f}000 ","label":"Nová oblast","active":false,"version":1})), StatusCode::OK).await;
+    assert_eq!(updated["postal_code"], "12000");
+    assert_eq!(updated["version"], 2);
+    assert_eq!(
+        app.get(&guest, "/api/settings").await["delivery_postal_codes"],
+        json!([])
+    );
+    app.call(
+        &admin,
+        Method::PUT,
+        &path,
+        Some(&stale),
+        StatusCode::CONFLICT,
+    )
+    .await;
+    let codes = app.get(&admin, "/api/admin/delivery-areas").await;
+    assert_eq!(codes.as_array().unwrap().len(), 1);
+    assert_eq!(codes[0]["active"], false);
+    let mut reactivated = product_input(&updated);
+    reactivated["active"] = json!(true);
+    app.call(
+        &admin,
+        Method::PUT,
+        &path,
+        Some(&reactivated),
+        StatusCode::OK,
+    )
+    .await;
+
+    // Canonical uniqueness holds even when two administrators add different whitespace variants.
+    let (first, second) = tokio::join!(
+        admin
+            .post(format!("{}/api/admin/delivery-areas", app.url))
+            .json(&json!({"postal_code":"13000"}))
+            .send(),
+        admin
+            .post(format!("{}/api/admin/delivery-areas", app.url))
+            .json(&json!({"postal_code":"13\t0 00"}))
+            .send()
+    );
+    let mut statuses = [
+        first.unwrap().status().as_u16(),
+        second.unwrap().status().as_u16(),
+    ];
+    statuses.sort_unstable();
+    assert_eq!(statuses, [200, 409]);
+    assert_eq!(
+        app.get(&guest, "/api/settings").await["delivery_postal_codes"],
+        json!(["12000", "13000"])
+    );
+    let duplicate_edit =
+        json!({"postal_code":"130 00","label":"Duplicitní","active":true,"version":3});
+    app.call(
+        &admin,
+        Method::PUT,
+        &path,
+        Some(&duplicate_edit),
+        StatusCode::CONFLICT,
+    )
+    .await;
+    assert_eq!(
+        app.get(&guest, "/api/settings").await["delivery_postal_codes"],
+        json!(["12000", "13000"])
+    );
+    app.close().await;
+}
+
+#[tokio::test]
+#[ignore = "requires real PostgreSQL via TEST_DATABASE_URL"]
+async fn delivery_allowlist_blocks_new_orders_preserves_replays_and_has_no_side_effects() {
+    let app = TestApp::with_delivery_area(false).await;
+    let guest = app.client();
+    let admin = app.login("admin@example.test").await;
+    let products = app.get(&guest, "/api/products").await;
+    let product = &products[0];
+    sqlx::query("UPDATE products SET stock=5 WHERE id=$1")
+        .bind(product["id"].as_i64().unwrap())
+        .execute(&app.pool)
+        .await
+        .unwrap();
+    let baseline_mail = app.count("outbox").await;
+    let mut input = app.order(&guest, "postal@example.test", product, 1).await;
+    input["postal_code"] = json!("\u{feff}\t11\u{00a0}0\r\n0\u{2003}0\u{0085}");
+    assert_eq!(
+        app.get(&guest, "/api/settings").await["delivery_postal_codes"],
+        json!([])
+    );
+    app.call(
+        &guest,
+        Method::POST,
+        "/api/orders",
+        Some(&input),
+        StatusCode::BAD_REQUEST,
+    )
+    .await;
+    let area = app
+        .post(
+            &admin,
+            "/api/admin/delivery-areas",
+            &json!({"postal_code":"110 00","label":"Test"}),
+        )
+        .await;
+    let mut unsupported = input.clone();
+    unsupported["postal_code"] = json!("120 00");
+    app.call(
+        &guest,
+        Method::POST,
+        "/api/orders",
+        Some(&unsupported),
+        StatusCode::BAD_REQUEST,
+    )
+    .await;
+    assert_eq!(app.count("orders").await, 0);
+    assert_eq!(app.count("order_items").await, 0);
+    assert_eq!(app.count("outbox").await, baseline_mail);
+    let stock: i32 = sqlx::query_scalar("SELECT stock FROM products WHERE id=$1")
+        .bind(product["id"].as_i64().unwrap())
+        .fetch_one(&app.pool)
+        .await
+        .unwrap();
+    assert_eq!(stock, 5);
+    let created = app.post(&guest, "/api/orders", &input).await;
+    assert_eq!(created["postal_code"], "11000");
+    let path = format!("/api/admin/delivery-areas/{}", area["id"]);
+    let mut update = product_input(&area);
+    update["active"] = json!(false);
+    let deactivated = app
+        .call(&admin, Method::PUT, &path, Some(&update), StatusCode::OK)
+        .await;
+    input["postal_code"] = json!("1 1 0\t0 0");
+    let replayed = app.post(&guest, "/api/orders", &input).await;
+    assert_eq!(
+        created["id"], replayed["id"],
+        "changing whitespace preserves idempotency even after area deactivation"
+    );
+    input["idempotency_key"] = json!(Uuid::new_v4());
+    app.call(
+        &guest,
+        Method::POST,
+        "/api/orders",
+        Some(&input),
+        StatusCode::BAD_REQUEST,
+    )
+    .await;
+    assert_eq!(app.count("orders").await, 1);
+    assert_eq!(app.count("order_items").await, 1);
+    assert_eq!(app.count("outbox").await, baseline_mail + 2);
+    let stock: i32 = sqlx::query_scalar("SELECT stock FROM products WHERE id=$1")
+        .bind(product["id"].as_i64().unwrap())
+        .fetch_one(&app.pool)
+        .await
+        .unwrap();
+    assert_eq!(stock, 4);
+    let mut update = product_input(&deactivated);
+    update["active"] = json!(true);
+    app.call(&admin, Method::PUT, &path, Some(&update), StatusCode::OK)
+        .await;
+    let second = app.post(&guest, "/api/orders", &input).await;
+    assert_ne!(second["id"], created["id"]);
+    assert_eq!(app.count("orders").await, 2);
     app.close().await;
 }

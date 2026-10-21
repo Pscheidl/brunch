@@ -24,6 +24,7 @@ pub struct Product {
 pub struct Settings {
     pub delivery_fee_cents: i64,
     pub free_delivery_from_cents: Option<i64>,
+    pub delivery_postal_codes: Vec<String>,
 }
 
 #[derive(Clone, Debug, Default, Deserialize)]
@@ -112,6 +113,20 @@ pub struct OrderRequest {
 }
 
 pub type Cart = BTreeMap<i64, u16>;
+
+pub fn normalize_postal_code(value: &str) -> String {
+    value
+        .chars()
+        .filter(|c| !c.is_whitespace() && *c != '\u{feff}')
+        .collect()
+}
+pub fn valid_postal_code(value: &str) -> bool {
+    value.len() == 5 && value.bytes().all(|c| c.is_ascii_digit())
+}
+pub fn delivery_available(value: &str, settings: &Settings) -> bool {
+    let normalized = normalize_postal_code(value);
+    valid_postal_code(&normalized) && settings.delivery_postal_codes.contains(&normalized)
+}
 
 pub fn subtotal(cart: &Cart, products: &[Product]) -> i64 {
     products
@@ -206,12 +221,39 @@ mod tests {
         let mut settings = Settings {
             delivery_fee_cents: 4900,
             free_delivery_from_cents: Some(35000),
+            delivery_postal_codes: vec!["11000".into()],
         };
         assert_eq!(delivery_fee(34999, &settings), 4900);
         assert_eq!(delivery_fee(35000, &settings), 0);
         settings.free_delivery_from_cents = None;
         assert_eq!(delivery_fee(99000, &settings), 4900);
         assert_eq!(delivery_fee(0, &settings), 0);
+    }
+    #[test]
+    fn postal_codes_ignore_unicode_whitespace_and_require_five_ascii_digits() {
+        for value in [
+            "11000",
+            " 110 00 ",
+            "\t11\n0\r00\t",
+            "1\u{a0}1\u{2003}0\u{202f}0\u{0085}0\u{feff}",
+        ] {
+            let normalized = normalize_postal_code(value);
+            assert_eq!(normalized, "11000");
+            assert!(valid_postal_code(&normalized));
+        }
+        for value in ["", "1100", "110000", "110-00", "11x00", "１１０００"] {
+            assert!(!valid_postal_code(&normalize_postal_code(value)));
+        }
+    }
+    #[test]
+    fn only_configured_postal_codes_allow_delivery() {
+        let mut settings = Settings::default();
+        assert!(!delivery_available("11000", &settings));
+        settings.delivery_postal_codes = vec!["11000".into(), "60200".into()];
+        assert!(delivery_available("110\u{a0}00", &settings));
+        assert!(delivery_available("602 00", &settings));
+        assert!(!delivery_available("12000", &settings));
+        assert!(!delivery_available("11x00", &settings));
     }
     #[test]
     fn persisted_cart_recovers_safely_and_reconciles_stock() {
