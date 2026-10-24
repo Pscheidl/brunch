@@ -42,7 +42,7 @@ Nejprve v administraci povolit testovací PSČ `110 00`. V poli i při hledání
 7. Změnit dopravu a limit zdarma, ověřit součet nové objednávky. Dřívější objednávka musí zachovat původní částky.
 8. Vyzkoušet ovládání klávesnicí, zavírání dialogu klávesou Escape, chybové a prázdné stavy. Zkontrolovat mobilní šířku 390 px i desktop. Tabulky mohou mít vlastní vodorovný posuv.
 
-Online platební brána ani rezervace skutečné rozvozové kapacity nejsou součástí první verze. Časové okno je požadavek zákazníka, který provozovatel potvrdí.
+Rezervace skutečné rozvozové kapacity není součástí této verze. Online platby Teya mají samostatné scénáře níže. Časové okno je požadavek zákazníka, který provozovatel potvrdí.
 
 ## Opakovatelné ověření administrace v prohlížeči
 
@@ -80,3 +80,28 @@ Samostatný `npm run test:postal` vyžaduje místní databázi bez aktivních ob
 Snímky a místní výsledky jsou v ignorované složce `output/`. `BRUNCH_PSQL_BIN` umožňuje zadat vlastní cestu k psql. Databázové kontroly ověřují jeden skutečně uložený záznam po opakování požadavku.
 
 Další integrační testy ověřují ochranu poštovní fronty proti pozdnímu výsledku starého pracovníka, odstranění prošlých přihlašovacích odkazů, okamžité odebrání práv původnímu správci, úplný rollback při selhání vložení e-mailu a bezpečné nahrání obrázků včetně formátu, velikosti, rozměrů a orientace fotografie.
+
+## Online platby Teya
+
+`server/tests/payments.rs` používá izolovaná PostgreSQL schémata, skutečné HTTP a místní simulátor Teya. Ověřuje ztrátu odpovědi při založení relace, opakování stejného klíče i těla po restartu, obnovu přes API při chybějícím webhooku, podpis původních bajtů, nesoulad částky/měny/provozovny/reference/relace/typu, opakovaná oznámení, ochranu oprávnění a přechodů objednávky. Testy jsou součástí `scripts/test.sh` i backendového CI.
+
+`scripts/test-payment-browser.cjs` spouští skutečnou sestavenou WASM aplikaci s řízenými odpověďmi API a vlastním místním webovým serverem. Ověřuje dostupnost online metody, uchování objednávky před přesměrováním, ztracenou odpověď, návrat bez falešného potvrzení, obnovení stránky, výpadek stavového API a omezení administrace. Vyžaduje sestavený `dist`, Node.js, Playwright a Chromium. Výsledky zapisuje do `output/browser/payment-results.json`.
+
+```bash
+TEST_DATABASE_URL=postgres://user@127.0.0.1:5432/test_db cargo test --locked --manifest-path server/Cargo.toml --test payments -- --ignored --test-threads=1
+npm run test:payments
+```
+
+Před produkcí je nutné opakovat úspěch, odmítnutí, restart a webhook přes skutečný Teya staging účet a veřejné HTTPS. Lokální simulátor neověřuje aktivaci obchodníka ani skutečné karetní platby.
+
+### Odmítnutí, expirace a opožděná úhrada
+
+Simulátor rozlišuje zamítnutý pokus v aktivní relaci od konečného odmítnutí a od síťového výpadku. Testy ověřují zachování rezervace při pokračující relaci, úspěch dalšího pokusu bez druhé relace, konečné odmítnutí a expiraci bez falešného přijetí. Storno vrací sklad právě jednou, pozdní úhrada uzavřenou objednávku neotevře a vytvoří jedinečný doklad i upozornění.
+
+Lhůta objednávky se testuje posunem uloženého termínu v izolované databázi, bez čekání hodinu. Kontroly zahrnují výchozích 60 minut, jinou konfiguraci, neměnnost po restartu, okamžik před a po termínu, vypnutou konfiguraci Teya, již zaplacené objednávky a platby při doručení, souběžné pracovníky, selhání ukládání e-mailu a opožděný úspěch. Prohlížeč ověřuje konečný stav, skrytí platebního odkazu, ukončení automatického dotazování, nové ID nové objednávky a zamčené ovládání expirované objednávky ve správě.
+
+Samostatný test drží databázový zámek, nechá na něm čekat potvrzení platby a během čekání posune termín. Ověřuje skutečný čas po získání zámku, uzavření objednávky a evidenci pozdní úhrady bez přijetí k vyřízení.
+
+Další test pozastaví již načtenou úlohu při OAuth požadavku, během čekání doručí platný webhook s dosud neznámou relací a nechá uplynout lhůtu. Starší rozhodnutí pracovníka nesmí ztratit již potvrzené oznámení. Původní relace se ověří, úhrada se uloží a nová platba se nezaloží.
+
+Doklad úhrady se porovnává s uloženým záznamem v PostgreSQL a znovu načítá po restartu. Nepřihlášený návštěvník i zákazník mají administrační detail zakázaný, veřejné vytvoření, opakování objednávky, zákaznická historie ani stavové API nevracejí identifikátory transakce a relace. Prohlížečové scénáře ověřují částku, měnu, oba identifikátory a čas ověření v detailu zaplacené i expirované objednávky s pozdní platbou.

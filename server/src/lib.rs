@@ -3,6 +3,7 @@ pub mod commerce;
 pub mod config;
 pub mod mail;
 pub mod media;
+pub mod payments;
 
 use axum::{
     Json, Router,
@@ -85,6 +86,7 @@ pub fn app(state: AppState) -> Router {
         .merge(commerce::routes())
         .merge(mail::routes())
         .merge(media::routes())
+        .merge(payments::routes())
         .route(
             "/api/{*path}",
             get(|| async { ApiError::not_found("Rozhraní neexistuje") }),
@@ -102,6 +104,8 @@ async fn health(State(state): State<AppState>) -> ApiResult<Json<serde_json::Val
 async fn security(State(state): State<AppState>, request: Request, next: Next) -> Response {
     let is_api = request.uri().path().starts_with("/api/");
     if is_api
+        && !(request.method() == Method::POST
+            && request.uri().path() == "/api/payments/teya/webhook")
         && !matches!(
             *request.method(),
             Method::GET | Method::HEAD | Method::OPTIONS

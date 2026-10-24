@@ -25,6 +25,8 @@ pub struct Settings {
     pub delivery_fee_cents: i64,
     pub free_delivery_from_cents: Option<i64>,
     pub delivery_postal_codes: Vec<String>,
+    #[serde(default)]
+    pub online_payment_enabled: bool,
 }
 
 #[derive(Clone, Debug, Default, Deserialize)]
@@ -47,12 +49,16 @@ pub struct User {
 pub struct UserResponse {
     pub user: User,
 }
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct Order {
     pub id: String,
     pub number: String,
     pub status: String,
     pub payment_method: String,
+    #[serde(default)]
+    pub payment_status: String,
+    #[serde(default)]
+    pub payment_expires_at: Option<String>,
     pub subtotal_cents: i64,
     pub delivery_fee_cents: i64,
     pub total_cents: i64,
@@ -81,13 +87,29 @@ pub struct Order {
     #[serde(default)]
     pub items: Vec<OrderItem>,
 }
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct OrderItem {
     pub product_id: i64,
     pub name: String,
     pub quantity: u16,
     pub unit_price_cents: i64,
     pub total_cents: i64,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+pub struct PaymentResponse {
+    pub status: String,
+    pub payment_status: String,
+    pub checkout_url: Option<String>,
+    pub payment_state: String,
+    #[serde(default)]
+    pub expires_at: Option<String>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct PaymentRecovery {
+    pub order: Order,
+    pub idempotency_key: String,
 }
 #[derive(Clone, Debug, Serialize)]
 pub struct RequestedItem {
@@ -177,12 +199,14 @@ pub fn money(cents: i64) -> String {
 }
 pub fn status_label(value: &str) -> &'static str {
     match value {
+        "awaiting_payment" => "Čeká na zaplacení",
         "new" => "Přijato",
         "confirmed" => "Potvrzeno",
         "preparing" => "Připravujeme",
         "out_for_delivery" => "Na cestě",
         "delivered" => "Doručeno",
         "cancelled" => "Zrušeno",
+        "expired" => "Vypršela",
         _ => "Zpracovává se",
     }
 }
@@ -222,6 +246,7 @@ mod tests {
             delivery_fee_cents: 4900,
             free_delivery_from_cents: Some(35000),
             delivery_postal_codes: vec!["11000".into()],
+            online_payment_enabled: false,
         };
         assert_eq!(delivery_fee(34999, &settings), 4900);
         assert_eq!(delivery_fee(35000, &settings), 0);

@@ -32,6 +32,8 @@ async fn smtp_delivery_retry_and_crashed_worker_lease() {
     // First attempt targets a closed port. No message is lost or falsely marked sent.
     drop(listener);
     let config = Config {
+        payment_timeout_minutes: 60,
+        teya: None,
         database_url: url,
         bind: "127.0.0.1:0".parse().unwrap(),
         public_url: "http://localhost".into(),

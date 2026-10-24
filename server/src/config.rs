@@ -2,6 +2,8 @@ use std::{env, net::SocketAddr};
 
 #[derive(Clone)]
 pub struct Config {
+    pub payment_timeout_minutes: u32,
+    pub teya: Option<crate::payments::TeyaConfig>,
     pub database_url: String,
     pub bind: SocketAddr,
     pub public_url: String,
@@ -65,6 +67,10 @@ impl Config {
             return Err("SMTP bez TLS je dovoleno jen pro místní poštovní server".into());
         }
         Ok(Self {
+            payment_timeout_minutes: payment_timeout(
+                env::var("ONLINE_PAYMENT_TIMEOUT_MINUTES").ok().as_deref(),
+            )?,
+            teya: crate::payments::TeyaConfig::from_env(&public_url)?,
             database_url: required("DATABASE_URL")?,
             bind: env::var("BIND_ADDR")
                 .unwrap_or_else(|_| "127.0.0.1:3100".into())
@@ -85,5 +91,39 @@ impl Config {
             secure_cookies,
             dist_dir: env::var("DIST_DIR").unwrap_or_else(|_| "dist".into()),
         })
+    }
+}
+
+fn payment_timeout(value: Option<&str>) -> Result<u32, String> {
+    match value {
+        None => Ok(60),
+        Some(value) => value
+            .parse::<u32>()
+            .ok()
+            .filter(|minutes| (1..=1440).contains(minutes))
+            .ok_or_else(|| {
+                "ONLINE_PAYMENT_TIMEOUT_MINUTES musí být celé číslo od 1 do 1440".into()
+            }),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::payment_timeout;
+    #[test]
+    fn online_order_timeout_defaults_to_one_hour_and_rejects_invalid_values() {
+        assert_eq!(payment_timeout(None).unwrap(), 60);
+        for minutes in [1, 15, 60, 120, 1440] {
+            assert_eq!(
+                payment_timeout(Some(&minutes.to_string())).unwrap(),
+                minutes
+            );
+        }
+        for invalid in ["", "0", "-1", "1.5", "1441", "4294967296", "minute"] {
+            assert!(
+                payment_timeout(Some(invalid)).is_err(),
+                "accepted {invalid}"
+            );
+        }
     }
 }

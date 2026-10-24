@@ -1,3 +1,25 @@
+# Online platby: místní ověření 24. 10. 2026
+
+Integrace Teya Hosted Checkout je implementovaná lokálně. Bez přístupových údajů je online metoda vypnutá. Neproběhl push ani nasazení. Produkční konfigurace a skutečný účet Teya nebyly použity.
+
+## Ověřený rozsah
+
+- Frontendové jednotkové testy: 5 prošlo.
+- Backendové jednotkové testy: 16 prošlo, včetně přesné domény přesměrování, zákazu veřejně čitelného souboru tajného klíče, zákazu jeho umístění ve veřejných souborech webu a validace nastavitelné lhůty objednávky.
+- Dosavadní PostgreSQL/HTTP/SMTP sady: 17 prošlo.
+- Nové testy plateb: 25 prošlo. Používají PostgreSQL 18.6 v izolovaných schématech a místní HTTP simulátor Teya. Zkoušejí obnovu se stejným klíčem po ztracené odpovědi a novém startu aplikace, výpadek webhooku, RSA podpis přes původní tělo, nesoulad údajů, souběžné pracovníky, cizí relaci podepsanou společným klíčem a opakované transakce. Zpracovávaná platba nevrací URL k novému otevření brány. Vynucené selhání druhého potvrzovacího e-mailu vrátí úhradu, objednávku, historii i první zprávu. Další pokus pak vše přijme právě jednou.
+- Platební sada dále pokrývá odmítnutí, síťový výpadek, nastavitelnou expiraci, vrácení skladu právě jednou, pozdní úhradu a upozornění, souběh expirace s potvrzením a překročení termínu během čekání na databázový zámek. Přijatý webhook neztratí práci ani při současném rozhodnutí starého pracovníka o ruční kontrole. Doklad odpovídá uloženému záznamu v databázi a zůstává dostupný správci po restartu. Nepřihlášený návštěvník ani zákazník nemají přístup k administračnímu detailu, identifikátory dokladu neunikají do veřejných odpovědí.
+- Prohlížečové testy skutečného WASM frontendu s řízenými odpověďmi API: 16 prošlo. Online metoda bez konfigurace skrytá, uchování původní objednávky před přesměrováním, ztracená odpověď se stejným klíčem, návratová URL bez důkazu zaplacení, obnovení stránky, výpadek API, stav vyžadující kontrolu a omezení administrace včetně ověřeného storna. Expirace skryje platební odkaz a zastaví dotazování, nová objednávka dostane nový klíč. Administrace zobrazuje doklad uhrazené i pozdě uhrazené expirované objednávky, včetně částky, měny, identifikátorů Teya a času ověření.
+- Optimalizované sestavení frontendu, kontrola veřejných souborů, formátování a kontrola změn prošly. Backendový Clippy se zákazem varování prošel.
+
+Databáze byla spuštěná pouze místně na portu 58434 z existujících PostgreSQL binárních souborů s daty v `/tmp/brunch-payments-runtime`. Testy nepřepisovaly dosavadní aplikační databázi. Výsledky prohlížeče jsou v `output/browser/payment-results.json`.
+
+## Zbývající vnější ověření
+
+Skutečná transakce v Teya stagingu, aktivace provozovny, konkrétní staging URL a doručení webhooku přes produkční HTTPS proxy nejsou místním simulátorem ověřené. Získání údajů a postup spuštění popisuje [teya-payments.md](teya-payments.md). Aplikace nepovažuje samotný návrat z brány ani podpis webhooku bez ověření relace za přijetí platby. Doba uchování idempotentních požadavků Teya není ve veřejné dokumentaci stanovená, nejasný starý výsledek se proto zastaví k prověření obsluhou.
+
+Níže zůstává původní záznam ověření před přidáním online plateb.
+
 # Místní ověření 21. 10. 2026
 
 Výsledek: kontroly správy PSČ a navazující kontroly objednávek prošly. Rozšíření navazuje na původní backend v commitu `6627d19`. Neproběhl push ani nasazení na vzdálený server.

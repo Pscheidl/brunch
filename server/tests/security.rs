@@ -43,6 +43,8 @@ impl Fixture {
             .unwrap();
         migrate(&pool).await.unwrap();
         let config = Config {
+            payment_timeout_minutes: 60,
+            teya: None,
             database_url,
             bind: "127.0.0.1:0".parse().unwrap(),
             public_url: "http://127.0.0.1:3100".into(),

@@ -1,4 +1,4 @@
-use brunch_server::{AppState, Config, app, auth, commerce, mail, migrate};
+use brunch_server::{AppState, Config, app, auth, commerce, mail, migrate, payments};
 use sqlx::postgres::PgPoolOptions;
 use std::{sync::Arc, time::Duration};
 
@@ -39,6 +39,28 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     });
     let listener = tokio::net::TcpListener::bind(config.bind).await?;
+    let expiry_state = state.clone();
+    let expiry_worker = tokio::spawn(async move {
+        let mut tick = tokio::time::interval(Duration::from_secs(1));
+        tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        loop {
+            tick.tick().await;
+            if let Err(error) = payments::expire_orders(&expiry_state).await {
+                tracing::error!(%error, "Online order expiry unavailable");
+            }
+        }
+    });
+    let payment_state = state.clone();
+    let payment_worker = tokio::spawn(async move {
+        let mut tick = tokio::time::interval(Duration::from_secs(5));
+        tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        loop {
+            tick.tick().await;
+            if let Err(error) = payments::process_batch(&payment_state).await {
+                tracing::error!(%error, "Payment queue unavailable");
+            }
+        }
+    });
     tracing::info!(address=%config.bind,"Brunch server ready");
     axum::serve(listener, app(state))
         .with_graceful_shutdown(async {
@@ -46,5 +68,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         })
         .await?;
     worker.abort();
+    payment_worker.abort();
+    expiry_worker.abort();
     Ok(())
 }

@@ -16,13 +16,15 @@ const MAX_PRICE: i64 = 10_000_000;
 const MAX_TOTAL: i64 = 1_000_000_000;
 const MAX_STOCK: i32 = 1_000_000;
 const SLOTS: [&str; 3] = ["07:00–09:00", "09:00–11:00", "11:00–13:00"];
-const STATUSES: [&str; 6] = [
+const STATUSES: [&str; 8] = [
+    "awaiting_payment",
     "new",
     "confirmed",
     "preparing",
     "out_for_delivery",
     "delivered",
     "cancelled",
+    "expired",
 ];
 
 pub fn routes() -> Router<AppState> {
@@ -278,7 +280,7 @@ async fn settings(State(state): State<AppState>) -> ApiResult<Json<Value>> {
             "SELECT delivery_fee_cents,free_delivery_from_cents,ARRAY(SELECT postal_code FROM delivery_areas WHERE active ORDER BY postal_code) AS delivery_postal_codes FROM shop_settings WHERE id=1",
         ).fetch_one(&state.pool).await?;
     Ok(Json(
-        json!({"delivery_fee_cents":delivery_fee_cents,"free_delivery_from_cents":free_delivery_from_cents,"delivery_postal_codes":delivery_postal_codes}),
+        json!({"delivery_fee_cents":delivery_fee_cents,"free_delivery_from_cents":free_delivery_from_cents,"delivery_postal_codes":delivery_postal_codes,"online_payment_enabled":state.config.teya.is_some()}),
     ))
 }
 
@@ -540,10 +542,10 @@ impl OrderInput {
         self.postal_code = normalize_postal_code(&self.postal_code)?;
         if !matches!(
             self.payment_method.as_str(),
-            "card_on_delivery" | "cash_on_delivery"
+            "card" | "card_on_delivery" | "cash_on_delivery"
         ) {
             return Err(ApiError::bad_request(
-                "Vyberte platbu kartou nebo hotově při doručení.",
+                "Vyberte platbu online nebo při doručení.",
             ));
         }
         if self.items.is_empty() || self.items.len() > 50 {
@@ -612,6 +614,32 @@ struct Order {
     #[sqlx(skip)]
     #[serde(skip_serializing_if = "Option::is_none")]
     history: Option<Vec<OrderHistory>>,
+    #[sqlx(skip)]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    online_payment: Option<OnlinePayment>,
+    #[sqlx(skip)]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub payment_expires_at: Option<DateTime<Utc>>,
+}
+
+#[derive(Serialize, FromRow)]
+struct OnlinePayment {
+    state: String,
+    expires_at: DateTime<Utc>,
+    checked_at: Option<DateTime<Utc>>,
+    last_error: Option<String>,
+    cancellable: bool,
+    #[sqlx(skip)]
+    receipt: Option<PaymentReceipt>,
+}
+
+#[derive(Serialize, FromRow)]
+struct PaymentReceipt {
+    transaction_id: String,
+    session_id: String,
+    amount_cents: i64,
+    currency: String,
+    verified_at: DateTime<Utc>,
 }
 
 #[derive(Serialize, FromRow)]
@@ -639,13 +667,31 @@ async fn attach_items(conn: &mut PgConnection, orders: &mut [Order]) -> ApiResul
     }
     let ids: Vec<_> = orders.iter().map(|o| o.id).collect();
     let items: Vec<OrderItem> = sqlx::query_as("SELECT order_id,product_id,name,quantity,unit_price_cents,total_cents FROM order_items WHERE order_id=ANY($1) ORDER BY id")
-        .bind(&ids).fetch_all(conn).await?;
+        .bind(&ids).fetch_all(&mut *conn).await?;
+    let online_ids: Vec<_> = orders
+        .iter()
+        .filter(|order| order.payment_method == "card")
+        .map(|order| order.id)
+        .collect();
+    let mut deadlines: HashMap<Uuid, DateTime<Utc>> = if online_ids.is_empty() {
+        HashMap::new()
+    } else {
+        sqlx::query_as::<_, (Uuid, DateTime<Utc>)>(
+            "SELECT order_id,expires_at FROM payment_attempts WHERE order_id=ANY($1)",
+        )
+        .bind(&online_ids)
+        .fetch_all(&mut *conn)
+        .await?
+        .into_iter()
+        .collect()
+    };
     let mut grouped: HashMap<Uuid, Vec<OrderItem>> = HashMap::new();
     for item in items {
         grouped.entry(item.order_id).or_default().push(item);
     }
     for order in orders {
         order.items = grouped.remove(&order.id).unwrap_or_default();
+        order.payment_expires_at = deadlines.remove(&order.id);
     }
     Ok(())
 }
@@ -660,6 +706,14 @@ async fn read_order(conn: &mut PgConnection, id: Uuid, history: bool) -> ApiResu
     if history {
         order.history = Some(sqlx::query_as("SELECT status,payment_status,created_at,changed_by FROM order_history WHERE order_id=$1 ORDER BY id")
             .bind(id).fetch_all(&mut *conn).await?);
+        if order.payment_method == "card" {
+            order.online_payment = sqlx::query_as("SELECT state,expires_at,checked_at,last_error,(state IN ('failed','expired') AND checked_at IS NOT NULL) AS cancellable FROM payment_attempts WHERE order_id=$1")
+                .bind(id).fetch_optional(&mut *conn).await?;
+            if let Some(payment) = &mut order.online_payment {
+                payment.receipt = sqlx::query_as("SELECT transaction_id,session_id,amount_cents,currency,verified_at FROM payment_receipts WHERE order_id=$1")
+                    .bind(id).fetch_optional(&mut *conn).await?;
+            }
+        }
     }
     Ok(order)
 }
@@ -708,6 +762,12 @@ async fn create_order(
         let order = read_order(&mut tx, id, false).await?;
         tx.commit().await?;
         return Ok(Json(order));
+    }
+    let online = input.payment_method == "card";
+    if online && state.config.teya.is_none() {
+        return Err(ApiError::conflict(
+            "Online platba momentálně není dostupná. Zvolte platbu při doručení.",
+        ));
     }
     input.validate_delivery()?;
     let settings: Settings = sqlx::query_as("SELECT * FROM shop_settings WHERE id=1 FOR SHARE")
@@ -761,6 +821,11 @@ async fn create_order(
             "Cena objednávky se změnila. Aktualizujte košík a potvrďte aktuální cenu.",
         ));
     }
+    if online && total == 0 {
+        return Err(ApiError::bad_request(
+            "Objednávku s nulovou částkou potvrďte s platbou při doručení.",
+        ));
+    }
     // Counters share this transaction, so replays and rejected orders do not consume limits.
     for (key, limit) in [
         ("checkout:global".to_owned(), 500_i32),
@@ -776,11 +841,13 @@ async fn create_order(
         }
     }
     let id = Uuid::new_v4();
-    sqlx::query("INSERT INTO orders(id,idempotency_key,request_payload,user_id,email,name,phone,organization,street,city,postal_code,notes,delivery_date,delivery_slot,payment_method,subtotal_cents,delivery_fee_cents,total_cents) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18)")
+    let initial_status = if online { "awaiting_payment" } else { "new" };
+    sqlx::query("INSERT INTO orders(id,idempotency_key,request_payload,user_id,email,name,phone,organization,street,city,postal_code,notes,delivery_date,delivery_slot,payment_method,subtotal_cents,delivery_fee_cents,total_cents,status) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19)")
         .bind(id).bind(input.idempotency_key).bind(payload).bind(user_id).bind(&input.email)
         .bind(&input.name).bind(&input.phone).bind(&input.organization).bind(&input.street)
         .bind(&input.city).bind(&input.postal_code).bind(&input.notes).bind(input.delivery_date)
         .bind(&input.delivery_slot).bind(&input.payment_method).bind(subtotal).bind(fee).bind(total)
+        .bind(initial_status)
         .execute(&mut *tx).await?;
     for item in &input.items {
         let product = &by_id[&item.product_id];
@@ -797,28 +864,177 @@ async fn create_order(
             .await?;
         }
     }
-    sqlx::query("INSERT INTO order_history(order_id,status,payment_status,changed_by) VALUES ($1,'new','unpaid',$2)")
-        .bind(id).bind(user_id).execute(&mut *tx).await?;
+    sqlx::query("INSERT INTO order_history(order_id,status,payment_status,changed_by) VALUES ($1,$2,'unpaid',$3)")
+        .bind(id).bind(initial_status).bind(user_id).execute(&mut *tx).await?;
+    if online {
+        crate::payments::enqueue_configured(&mut tx, id, &state).await?;
+    }
     let order = read_order(&mut tx, id, false).await?;
     let summary = order_summary(&order);
-    mail::enqueue(
-        &mut tx,
-        &settings.order_email,
-        &format!("Nová objednávka {}", order.number),
-        &format!(
-            "Nová objednávka k vyřízení.\n\n{summary}\n\nAdministrace: {}/admin/",
-            state.config.public_url.trim_end_matches('/')
-        ),
-    )
-    .await?;
-    mail::enqueue(&mut tx, &order.email, &format!("Přijali jsme objednávku {}", order.number),
-        &format!("Děkujeme za objednávku. Přijali jsme ji ke zpracování.\nZvolený čas doručení je požadované okno, které potvrdíme při vyřízení.\n\n{summary}\n\nPotřebujete něco změnit? Napište nám na {} a uveďte číslo objednávky.", settings.order_email)).await?;
+    if online {
+        mail::enqueue(&mut tx, &order.email, &format!("Objednávka {} čeká na zaplacení", order.number),
+            &format!("Objednávku jsme uložili a čekáme na potvrzení online platby. K vyřízení ji přijmeme až po úspěšné úhradě. Platbu dokončete v platební bráně otevřené z objednávky.\n\n{summary}\n\nPokud už jste zaplatili, další platbu neprovádějte a vyčkejte na potvrzení. S dotazy napište na {} a uveďte číslo objednávky.", settings.order_email)).await?;
+    } else {
+        mail::enqueue(
+            &mut tx,
+            &settings.order_email,
+            &format!("Nová objednávka {}", order.number),
+            &format!(
+                "Nová objednávka k vyřízení.\n\n{summary}\n\nAdministrace: {}/admin/",
+                state.config.public_url.trim_end_matches('/')
+            ),
+        )
+        .await?;
+        mail::enqueue(&mut tx, &order.email, &format!("Přijali jsme objednávku {}", order.number),
+            &format!("Děkujeme za objednávku. Přijali jsme ji ke zpracování.\nZvolený čas doručení je požadované okno, které potvrdíme při vyřízení.\n\n{summary}\n\nPotřebujete něco změnit? Napište nám na {} a uveďte číslo objednávky.", settings.order_email)).await?;
+    }
     tx.commit().await?;
     Ok(Json(order))
 }
 
 fn money(cents: i64) -> String {
     format!("{},{:02} Kč", cents / 100, cents % 100)
+}
+
+// The caller keeps restoration and the terminal order transition in one transaction.
+async fn restore_order_stock(conn: &mut PgConnection, id: Uuid) -> ApiResult<()> {
+    let restored: bool =
+        sqlx::query_scalar("SELECT stock_restored FROM orders WHERE id=$1 FOR UPDATE")
+            .bind(id)
+            .fetch_one(&mut *conn)
+            .await?;
+    if restored {
+        return Ok(());
+    }
+    // Restore only quantities deducted at checkout. Unlimited stock stays unlimited.
+    let items: Vec<(i64, i32)> = sqlx::query_as("SELECT product_id,quantity FROM order_items WHERE order_id=$1 AND tracked_stock ORDER BY product_id")
+        .bind(id).fetch_all(&mut *conn).await?;
+    for (product_id, quantity) in items {
+        let stock: Option<i32> =
+            sqlx::query_scalar("SELECT stock FROM products WHERE id=$1 FOR UPDATE")
+                .bind(product_id)
+                .fetch_one(&mut *conn)
+                .await?;
+        if let Some(stock) = stock {
+            if stock > MAX_STOCK - quantity {
+                return Err(ApiError::conflict(
+                    "Zásoba po vrácení překračuje limit. Upravte skladové množství.",
+                ));
+            }
+            sqlx::query(
+                "UPDATE products SET stock=stock+$2,version=version+1,updated_at=now() WHERE id=$1",
+            )
+            .bind(product_id)
+            .bind(quantity)
+            .execute(&mut *conn)
+            .await?;
+        }
+    }
+    sqlx::query("UPDATE orders SET stock_restored=true WHERE id=$1")
+        .bind(id)
+        .execute(&mut *conn)
+        .await?;
+    Ok(())
+}
+
+// Called in the maintenance transaction after its deadline check and payment-attempt lock.
+pub(crate) async fn expire_unpaid_order(conn: &mut PgConnection, id: Uuid) -> ApiResult<bool> {
+    let Some(order) = sqlx::query_as::<_, Order>("SELECT * FROM orders WHERE id=$1 FOR UPDATE")
+        .bind(id)
+        .fetch_optional(&mut *conn)
+        .await?
+    else {
+        return Ok(false);
+    };
+    if order.payment_method != "card"
+        || order.status != "awaiting_payment"
+        || order.payment_status != "unpaid"
+    {
+        return Ok(false);
+    }
+    let has_receipt: bool =
+        sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM payment_receipts WHERE order_id=$1)")
+            .bind(id)
+            .fetch_one(&mut *conn)
+            .await?;
+    if has_receipt {
+        return Ok(false);
+    }
+    restore_order_stock(conn, id).await?;
+    sqlx::query("UPDATE orders SET status='expired',stock_restored=true,version=version+1,updated_at=now() WHERE id=$1")
+        .bind(id).execute(&mut *conn).await?;
+    sqlx::query(
+        "INSERT INTO order_history(order_id,status,payment_status) VALUES ($1,'expired','unpaid')",
+    )
+    .bind(id)
+    .execute(&mut *conn)
+    .await?;
+    let order_email: String =
+        sqlx::query_scalar("SELECT order_email FROM shop_settings WHERE id=1")
+            .fetch_one(&mut *conn)
+            .await?;
+    mail::enqueue(conn, &order.email, &format!("Objednávka {}: Vypršela", order.number),
+        &format!("Vypršela lhůta pro online zaplacení objednávky {}. Objednávku už nepřijmeme k vyřízení a rezervované zboží jsme uvolnili.\n\nPokud jste již zaplatili, další platbu neprovádějte. Napište na {} a uveďte číslo objednávky, abychom mohli přijatou platbu prověřit.\n\nPokud jste nezaplatili a máte o zboží zájem, vytvořte novou objednávku.", order.number, order_email)).await?;
+    Ok(true)
+}
+
+// The caller must hold a transaction containing the verified payment record.
+// Repeated provider notifications cannot produce duplicate confirmations.
+pub(crate) async fn payment_received(conn: &mut PgConnection, id: Uuid) -> ApiResult<()> {
+    let old: Order = sqlx::query_as("SELECT * FROM orders WHERE id=$1 FOR UPDATE")
+        .bind(id)
+        .fetch_optional(&mut *conn)
+        .await?
+        .ok_or_else(|| ApiError::not_found("Objednávka neexistuje."))?;
+    if old.payment_method != "card" {
+        return Err(ApiError::conflict(
+            "Objednávka není určena k online platbě.",
+        ));
+    }
+    let receipt_matches: bool = sqlx::query_scalar(
+        "SELECT EXISTS(SELECT 1 FROM payment_receipts WHERE order_id=$1 AND amount_cents=$2 AND currency='CZK')",
+    )
+    .bind(id)
+    .bind(old.total_cents)
+    .fetch_one(&mut *conn)
+    .await?;
+    if !receipt_matches {
+        return Err(ApiError::conflict(
+            "Chybí ověřený záznam platby odpovídající částce objednávky.",
+        ));
+    }
+    if old.payment_status == "paid"
+        && matches!(
+            old.status.as_str(),
+            "new" | "confirmed" | "preparing" | "out_for_delivery" | "delivered"
+        )
+    {
+        return Ok(());
+    }
+    if old.status != "awaiting_payment" || old.payment_status != "unpaid" {
+        return Err(ApiError::conflict(
+            "Platbu nelze přiřadit k aktuálnímu stavu objednávky. Je nutná kontrola obsluhou.",
+        ));
+    }
+    sqlx::query("UPDATE orders SET status='new',payment_status='paid',version=version+1,updated_at=now() WHERE id=$1")
+        .bind(id).execute(&mut *conn).await?;
+    sqlx::query(
+        "INSERT INTO order_history(order_id,status,payment_status) VALUES ($1,'new','paid')",
+    )
+    .bind(id)
+    .execute(&mut *conn)
+    .await?;
+    let order = read_order(conn, id, false).await?;
+    let order_email: String =
+        sqlx::query_scalar("SELECT order_email FROM shop_settings WHERE id=1")
+            .fetch_one(&mut *conn)
+            .await?;
+    let summary = order_summary(&order);
+    mail::enqueue(conn, &order_email, &format!("Zaplacená objednávka {} k vyřízení", order.number),
+        &format!("Online platba byla ověřena. Objednávka je přijata k vyřízení. Při doručení již nic nevybírejte.\n\n{summary}")).await?;
+    mail::enqueue(conn, &order.email, &format!("Přijali jsme platbu a objednávku {}", order.number),
+        &format!("Děkujeme, online platba byla přijata a objednávku jsme přijali ke zpracování. Při doručení již nic neplatíte.\nZvolený čas doručení je požadované okno, které potvrdíme při vyřízení.\n\n{summary}\n\nPotřebujete něco změnit? Napište nám na {order_email} a uveďte číslo objednávky.")).await?;
+    Ok(())
 }
 
 fn order_summary(order: &Order) -> String {
@@ -836,17 +1052,25 @@ fn order_summary(order: &Order) -> String {
         })
         .collect::<Vec<_>>()
         .join("\n");
-    let payment = if order.payment_method == "card_on_delivery" {
-        "Kartou při doručení"
+    let payment = match order.payment_method.as_str() {
+        "card" => "Online kartou",
+        "card_on_delivery" => "Kartou při doručení",
+        _ => "Hotově při doručení",
+    };
+    let total_label = if order.payment_status == "paid" {
+        "Celkem uhrazeno"
+    } else if order.payment_method == "card" {
+        "Celkem k úhradě online"
     } else {
-        "Hotově při doručení"
+        "Celkem k úhradě při doručení"
     };
     format!(
-        "Objednávka: {}\n\n{}\n\nZboží: {}\nDoprava: {}\nCelkem k úhradě při doručení: {}\nPlatba: {}\n\nDoručení: {} {}\nJméno: {}\nFirma: {}\nAdresa: {}, {} {}\nE-mail: {}\nTelefon: {}\nPokyny k doručení: {}",
+        "Objednávka: {}\n\n{}\n\nZboží: {}\nDoprava: {}\n{}: {}\nPlatba: {}\n\nDoručení: {} {}\nJméno: {}\nFirma: {}\nAdresa: {}, {} {}\nE-mail: {}\nTelefon: {}\nPokyny k doručení: {}",
         order.number,
         lines,
         money(order.subtotal_cents),
         money(order.delivery_fee_cents),
+        total_label,
         money(order.total_cents),
         payment,
         order.delivery_date,
@@ -940,7 +1164,12 @@ struct OrderUpdate {
     version: i64,
 }
 
-fn validate_transition(old_status: &str, old_payment: &str, input: &OrderUpdate) -> ApiResult<()> {
+fn validate_transition(
+    payment_method: &str,
+    old_status: &str,
+    old_payment: &str,
+    input: &OrderUpdate,
+) -> ApiResult<()> {
     if !STATUSES.contains(&input.status.as_str())
         || !matches!(input.payment_status.as_str(), "unpaid" | "paid")
     {
@@ -948,9 +1177,19 @@ fn validate_transition(old_status: &str, old_payment: &str, input: &OrderUpdate)
             "Neplatný stav objednávky nebo platby.",
         ));
     }
-    if old_status == "cancelled" || old_status == "delivered" {
+    if matches!(old_status, "cancelled" | "delivered" | "expired") {
         return Err(ApiError::conflict(
-            "Dokončenou nebo zrušenou objednávku nelze měnit.",
+            "Dokončenou, zrušenou nebo vypršelou objednávku nelze měnit.",
+        ));
+    }
+    if input.status == "expired" {
+        return Err(ApiError::conflict(
+            "Vypršení online objednávky nastavuje systém po uplynutí lhůty k zaplacení.",
+        ));
+    }
+    if payment_method == "card" && old_payment != input.payment_status {
+        return Err(ApiError::conflict(
+            "Stav online platby může potvrdit pouze platební brána.",
         ));
     }
     if old_payment == "paid" && input.payment_status != "paid" {
@@ -966,6 +1205,20 @@ fn validate_transition(old_status: &str, old_payment: &str, input: &OrderUpdate)
         }
         return Ok(());
     }
+    if old_status == "awaiting_payment" {
+        if payment_method == "card" && old_payment == "unpaid" && input.status == "awaiting_payment"
+        {
+            return Ok(());
+        }
+        return Err(ApiError::conflict(
+            "Objednávku lze přijmout k vyřízení až po potvrzení online platby.",
+        ));
+    }
+    if payment_method == "card" && old_payment != "paid" {
+        return Err(ApiError::conflict(
+            "Objednávku lze vyřizovat až po potvrzení online platby.",
+        ));
+    }
     let next = match old_status {
         "new" => "confirmed",
         "confirmed" => "preparing",
@@ -978,7 +1231,8 @@ fn validate_transition(old_status: &str, old_payment: &str, input: &OrderUpdate)
             "Stavy objednávky je nutné měnit postupně.",
         ));
     }
-    if input.payment_status == "paid"
+    if old_payment != "paid"
+        && input.payment_status == "paid"
         && input.status != "out_for_delivery"
         && input.status != "delivered"
     {
@@ -996,11 +1250,13 @@ fn validate_transition(old_status: &str, old_payment: &str, input: &OrderUpdate)
 
 fn status_label(status: &str) -> &'static str {
     match status {
+        "awaiting_payment" => "Čeká na zaplacení",
         "confirmed" => "Potvrzena",
         "preparing" => "Připravujeme",
         "out_for_delivery" => "Na cestě",
         "delivered" => "Doručena",
         "cancelled" => "Zrušena",
+        "expired" => "Vypršela",
         _ => "Přijata",
     }
 }
@@ -1023,32 +1279,24 @@ async fn update_order(
             "Objednávka se mezitím změnila. Načtěte aktuální údaje.",
         ));
     }
-    validate_transition(&old.status, &old.payment_status, &input)?;
+    validate_transition(
+        &old.payment_method,
+        &old.status,
+        &old.payment_status,
+        &input,
+    )?;
     if old.status == input.status && old.payment_status == input.payment_status {
         let order = read_order(&mut tx, id, true).await?;
         tx.commit().await?;
         return Ok(Json(order));
     }
     if input.status == "cancelled" {
-        // Only quantities actually deducted at checkout are restored. Unlimited stock stays unlimited.
-        let items: Vec<(i64, i32)> = sqlx::query_as("SELECT product_id,quantity FROM order_items WHERE order_id=$1 AND tracked_stock ORDER BY product_id")
-            .bind(id).fetch_all(&mut *tx).await?;
-        for (product_id, quantity) in items {
-            let stock: Option<i32> =
-                sqlx::query_scalar("SELECT stock FROM products WHERE id=$1 FOR UPDATE")
-                    .bind(product_id)
-                    .fetch_one(&mut *tx)
-                    .await?;
-            if let Some(stock) = stock {
-                if stock > MAX_STOCK - quantity {
-                    return Err(ApiError::conflict(
-                        "Zásoba po vrácení překračuje limit. Upravte skladové množství.",
-                    ));
-                }
-                sqlx::query("UPDATE products SET stock=stock+$2,version=version+1,updated_at=now() WHERE id=$1")
-                    .bind(product_id).bind(quantity).execute(&mut *tx).await?;
-            }
+        if old.payment_method == "card" && !crate::payments::can_cancel(&mut tx, id).await? {
+            return Err(ApiError::conflict(
+                "Online platba ještě může být dokončena. Objednávku lze zrušit až po ověřeném ukončení platby.",
+            ));
         }
+        restore_order_stock(&mut tx, id).await?;
     }
     sqlx::query("UPDATE orders SET status=$2,payment_status=$3,version=version+1,updated_at=now(),stock_restored=($2='cancelled') WHERE id=$1")
         .bind(id).bind(&input.status).bind(&input.payment_status).execute(&mut *tx).await?;
@@ -1273,23 +1521,223 @@ mod tests {
             payment_status: payment.to_owned(),
             version: 1,
         };
-        assert!(validate_transition("new", "unpaid", &update("confirmed", "unpaid")).is_ok());
-        assert!(validate_transition("new", "unpaid", &update("delivered", "paid")).is_err());
-        assert!(validate_transition("confirmed", "unpaid", &update("confirmed", "paid")).is_err());
         assert!(
-            validate_transition("out_for_delivery", "unpaid", &update("delivered", "unpaid"))
-                .is_err()
+            validate_transition(
+                "cash_on_delivery",
+                "new",
+                "unpaid",
+                &update("confirmed", "unpaid")
+            )
+            .is_ok()
         );
         assert!(
-            validate_transition("out_for_delivery", "unpaid", &update("delivered", "paid")).is_ok()
+            validate_transition(
+                "cash_on_delivery",
+                "new",
+                "unpaid",
+                &update("delivered", "paid")
+            )
+            .is_err()
         );
-        assert!(validate_transition("preparing", "unpaid", &update("cancelled", "unpaid")).is_ok());
         assert!(
-            validate_transition("out_for_delivery", "paid", &update("cancelled", "unpaid"))
-                .is_err()
+            validate_transition(
+                "cash_on_delivery",
+                "confirmed",
+                "unpaid",
+                &update("confirmed", "paid")
+            )
+            .is_err()
         );
-        assert!(validate_transition("delivered", "paid", &update("cancelled", "unpaid")).is_err());
-        assert!(validate_transition("cancelled", "unpaid", &update("new", "unpaid")).is_err());
+        assert!(
+            validate_transition(
+                "cash_on_delivery",
+                "out_for_delivery",
+                "unpaid",
+                &update("delivered", "unpaid")
+            )
+            .is_err()
+        );
+        assert!(
+            validate_transition(
+                "cash_on_delivery",
+                "out_for_delivery",
+                "unpaid",
+                &update("delivered", "paid")
+            )
+            .is_ok()
+        );
+        assert!(
+            validate_transition(
+                "cash_on_delivery",
+                "preparing",
+                "unpaid",
+                &update("cancelled", "unpaid")
+            )
+            .is_ok()
+        );
+        assert!(
+            validate_transition(
+                "cash_on_delivery",
+                "out_for_delivery",
+                "paid",
+                &update("cancelled", "unpaid")
+            )
+            .is_err()
+        );
+        assert!(
+            validate_transition(
+                "cash_on_delivery",
+                "delivered",
+                "paid",
+                &update("cancelled", "unpaid")
+            )
+            .is_err()
+        );
+        assert!(
+            validate_transition(
+                "cash_on_delivery",
+                "cancelled",
+                "unpaid",
+                &update("new", "unpaid")
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn online_orders_wait_for_verified_payment_and_admin_cannot_record_it() {
+        let update = |status: &str, payment: &str| OrderUpdate {
+            status: status.to_owned(),
+            payment_status: payment.to_owned(),
+            version: 1,
+        };
+        assert!(
+            validate_transition(
+                "card",
+                "awaiting_payment",
+                "unpaid",
+                &update("awaiting_payment", "unpaid")
+            )
+            .is_ok()
+        );
+        for status in [
+            "new",
+            "confirmed",
+            "preparing",
+            "out_for_delivery",
+            "delivered",
+        ] {
+            for payment in ["unpaid", "paid"] {
+                assert!(
+                    validate_transition(
+                        "card",
+                        "awaiting_payment",
+                        "unpaid",
+                        &update(status, payment)
+                    )
+                    .is_err(),
+                    "admin advanced unpaid online order to {status}/{payment}"
+                );
+            }
+        }
+        assert!(
+            validate_transition(
+                "card",
+                "out_for_delivery",
+                "unpaid",
+                &update("delivered", "paid")
+            )
+            .is_err()
+        );
+        assert!(
+            validate_transition(
+                "card",
+                "awaiting_payment",
+                "unpaid",
+                &update("awaiting_payment", "paid")
+            )
+            .is_err()
+        );
+        // Cancellation requires an additional provider-terminal check in update_order.
+        assert!(
+            validate_transition(
+                "card",
+                "awaiting_payment",
+                "unpaid",
+                &update("cancelled", "unpaid")
+            )
+            .is_ok()
+        );
+    }
+
+    #[test]
+    fn online_payment_stays_paid_while_order_advances() {
+        for (before, after) in [
+            ("new", "confirmed"),
+            ("confirmed", "preparing"),
+            ("preparing", "out_for_delivery"),
+            ("out_for_delivery", "delivered"),
+        ] {
+            let mut update = OrderUpdate {
+                status: after.to_owned(),
+                payment_status: "paid".to_owned(),
+                version: 1,
+            };
+            assert!(validate_transition("card", before, "paid", &update).is_ok());
+            update.payment_status = "unpaid".to_owned();
+            assert!(validate_transition("card", before, "paid", &update).is_err());
+            update.status = "cancelled".to_owned();
+            update.payment_status = "paid".to_owned();
+            assert!(validate_transition("card", before, "paid", &update).is_err());
+        }
+    }
+
+    #[test]
+    fn delivery_orders_cannot_enter_online_waiting_state() {
+        let update = OrderUpdate {
+            status: "awaiting_payment".to_owned(),
+            payment_status: "unpaid".to_owned(),
+            version: 1,
+        };
+        for payment_method in ["cash_on_delivery", "card_on_delivery"] {
+            assert!(validate_transition(payment_method, "new", "unpaid", &update).is_err());
+        }
+    }
+
+    #[test]
+    fn expired_online_orders_are_terminal_for_every_admin_transition() {
+        for status in STATUSES {
+            for payment_status in ["unpaid", "paid"] {
+                let update = OrderUpdate {
+                    status: status.to_owned(),
+                    payment_status: payment_status.to_owned(),
+                    version: 1,
+                };
+                assert!(
+                    validate_transition("card", "expired", "unpaid", &update).is_err(),
+                    "expired order changed to {status}/{payment_status}"
+                );
+            }
+        }
+        assert_eq!(status_label("expired"), "Vypršela");
+    }
+
+    #[test]
+    fn only_maintenance_can_expire_an_online_order() {
+        let update = OrderUpdate {
+            status: "expired".to_owned(),
+            payment_status: "unpaid".to_owned(),
+            version: 1,
+        };
+        assert!(validate_transition("card", "awaiting_payment", "unpaid", &update).is_err());
+        for payment_method in ["cash_on_delivery", "card_on_delivery"] {
+            for before in ["new", "confirmed", "preparing", "out_for_delivery"] {
+                assert!(
+                    validate_transition(payment_method, before, "unpaid", &update).is_err(),
+                    "delivery order expired from {before}"
+                );
+            }
+        }
     }
 
     #[test]
@@ -1298,6 +1746,8 @@ mod tests {
         assert!(input.normalize().is_ok());
         assert_eq!(input.email, "guest@example.cz");
         assert_eq!(input.postal_code, "11000");
+        input.payment_method = "card".to_owned();
+        assert!(input.normalize().is_ok());
         input.items.push(CartItem {
             product_id: 1,
             quantity: 1,

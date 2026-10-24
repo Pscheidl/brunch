@@ -47,6 +47,8 @@ impl Fixture {
         let address = listener.local_addr().unwrap();
         let url = format!("http://{address}");
         let config = Config {
+            payment_timeout_minutes: 60,
+            teya: None,
             database_url,
             bind: address,
             public_url: url.clone(),

@@ -8,8 +8,9 @@ const notice = document.querySelector('#notice')
 const state = { user: null, page: 'orders', generation: 0, orderPage: 1, customerPage: 1, orderStatus: '', orderQuery: '', deliveryAreaQuery: '' }
 const money = value => new Intl.NumberFormat('cs-CZ', { style: 'currency', currency: 'CZK' }).format(value / 100)
 const dateTime = value => value ? new Intl.DateTimeFormat('cs-CZ', { dateStyle: 'medium', timeStyle: 'short', timeZone: 'Europe/Prague' }).format(new Date(value)) : 'Dosud neodesláno'
-const statuses = { new: 'Nová', confirmed: 'Potvrzená', preparing: 'Připravuje se', out_for_delivery: 'Na cestě', delivered: 'Doručená', cancelled: 'Zrušená' }
+const statuses = { awaiting_payment: 'Čeká na zaplacení', new: 'Přijatá', confirmed: 'Potvrzená', preparing: 'Připravuje se', out_for_delivery: 'Na cestě', delivered: 'Doručená', cancelled: 'Zrušená', expired: 'Vypršela' }
 const payments = { unpaid: 'Nezaplaceno', paid: 'Zaplaceno' }
+const onlinePaymentStates = { pending: 'Čeká na přípravu nebo ověření', ready: 'Platební brána je připravena, platba čeká', paid: 'Platba ověřena', failed: 'Platba neproběhla', expired: 'Platnost platby skončila', review: 'Vyžaduje kontrolu obsluhy' }
 const mailStates = { pending: 'Čeká na odeslání', sent: 'Odesláno', failed: 'Odeslání selhalo' }
 const routes = [['orders', 'Objednávky'], ['products', 'Zboží a ceny'], ['customers', 'Zákazníci'], ['delivery-areas', 'Oblasti rozvozu'], ['settings', 'Doprava a nastavení'], ['mail', 'E-maily']]
 const normalizePostalCode = value => String(value ?? '').replace(/[\s\u0085]/g, '')
@@ -198,24 +199,41 @@ async function orderDialog(id) {
     body.replaceChildren(el('div', { class: 'summary-grid' }, el('section', {}, el('h3', {}, 'Zákazník'), contact), el('section', {}, el('h3', {}, 'Doručení'), el('p', {}, `${order.street}\n${order.postal_code} ${order.city}\n${order.delivery_date} · ${order.delivery_slot}`))), el('div', { class: 'actions no-print' }, el('a', { class: 'button small', href: mapUrl, target: '_blank', rel: 'noopener noreferrer' }, 'Otevřít adresu v mapě ↗'), button('Vytisknout rozvozový list', () => window.print(), 'small')))
     if (order.notes) body.append(el('div', { class: 'note' }, el('strong', {}, 'Pokyny pro doručení\n'), order.notes))
     body.append(el('h3', {}, 'Položky objednávky'), table(['Zboží', 'Množství', 'Cena za kus', 'Celkem'], order.items.map(item => el('tr', {}, el('td', {}, item.name), el('td', {}, `${item.quantity} ks`), el('td', { class: 'number' }, money(item.unit_price_cents)), el('td', { class: 'number' }, money(item.total_cents)))), true), el('div', { class: 'totals' }, el('div', {}, el('span', {}, 'Zboží'), money(order.subtotal_cents)), el('div', {}, el('span', {}, 'Doprava'), money(order.delivery_fee_cents)), el('div', {}, el('span', {}, 'Celkem'), money(order.total_cents))))
-    body.append(el('p', { class: 'hint' }, `Platba ${order.payment_method === 'card_on_delivery' ? 'kartou' : 'hotově'} při doručení. ${payments[order.payment_status]}. Stav: ${statuses[order.status]}. Vytvořeno ${dateTime(order.created_at)}.`))
+    body.append(el('p', { class: 'hint' }, `${order.payment_method === 'card' ? 'Online platba kartou přes Teya' : `Platba ${order.payment_method === 'card_on_delivery' ? 'kartou' : 'hotově'} při doručení`}. ${payments[order.payment_status]}. Stav: ${statuses[order.status]}. Vytvořeno ${dateTime(order.created_at)}.`))
     const sequence = ['new', 'confirmed', 'preparing', 'out_for_delivery', 'delivered']
-    const terminal = ['delivered', 'cancelled'].includes(order.status)
+    const terminal = ['delivered', 'cancelled', 'expired'].includes(order.status)
+    const online = order.payment_method === 'card'
+    const awaitingPayment = online && order.payment_status !== 'paid'
+    const onlineCancellable = online && order.online_payment?.cancellable === true
+    if (online && order.online_payment) {
+      const payment = order.online_payment
+      if (payment.expires_at) body.append(el('p', { class: 'hint' }, `Lhůta pro online platbu: ${dateTime(payment.expires_at)}.`))
+      if (payment.receipt) {
+        const receipt = payment.receipt
+        body.append(el('section', { class: 'note', 'aria-label': 'Přijatá online platba' }, el('h3', {}, 'Přijatá online platba'), el('p', {}, el('strong', {}, `Částka: ${money(receipt.amount_cents)}`)), el('p', {}, `Měna: ${receipt.currency}`), el('p', {}, `Transakce Teya: ${receipt.transaction_id}`), el('p', {}, `Platební relace: ${receipt.session_id}`), el('p', {}, `Ověřeno: ${dateTime(receipt.verified_at)}.`), terminal && payment.state === 'review' ? el('p', {}, 'Přijatá částka vyžaduje ruční vyřešení. Objednávka zůstává uzavřená.') : null))
+      }
+      body.append(el('section', { class: 'note', role: payment.state === 'review' ? 'alert' : 'status' }, el('strong', {}, `Teya: ${onlinePaymentStates[payment.state] || 'Čeká na ověření'}`), el('p', {}, payment.checked_at ? `Poslední ověření: ${dateTime(payment.checked_at)}.` : 'Platba ještě nebyla ověřena.'), payment.state === 'review' ? el('p', {}, 'Platba vyžaduje ruční kontrolu v portálu Teya. Ověřte číslo objednávky, částku a měnu. Dokud není výsledek vyřešen, objednávku nevyřizujte a zákazníka nežádejte o další platbu.') : null, payment.last_error ? el('small', {}, `Provozní informace: ${payment.last_error}`) : null))
+    }
     const allowed = [order.status]
-    if (!terminal) allowed.push(sequence[sequence.indexOf(order.status) + 1])
-    if (!terminal && order.payment_status !== 'paid') allowed.push('cancelled')
+    if (!terminal && !awaitingPayment && sequence.includes(order.status)) allowed.push(sequence[sequence.indexOf(order.status) + 1])
+    if (!terminal && ((!online && order.payment_status !== 'paid') || onlineCancellable)) allowed.push('cancelled')
     const form = el('form', { onsubmit: event => saveForm(event, async data => {
       const status = data.get('status')
       if (status === 'cancelled' && !confirm(`Opravdu zrušit objednávku ${order.number}? Rezervované kusy se vrátí na sklad.`)) return
       if (data.get('payment_status') === 'paid' && order.payment_status !== 'paid' && !confirm(`Potvrzujete přijetí platby ${money(order.total_cents)} ${order.payment_method === 'card_on_delivery' ? 'kartou' : 'v hotovosti'} za objednávku ${order.number}?`)) return
-      await api(`/api/admin/orders/${order.id}`, { method: 'PATCH', body: JSON.stringify({ status, payment_status: data.get('payment_status'), version: order.version }) })
+      await api(`/api/admin/orders/${order.id}`, { method: 'PATCH', body: JSON.stringify({ status, payment_status: online ? order.payment_status : data.get('payment_status'), version: order.version }) })
       notify('Objednávka byla uložena.')
       await orderDialog(order.id)
       renderPage()
-    }) }, el('h3', {}, 'Průběh objednávky'), el('div', { class: 'form-grid' }, selectField('Stav', 'status', allowed.map(key => [key, statuses[key]]), order.status), selectField('Platba', 'payment_status', Object.entries(payments), order.payment_status)), el('p', { class: 'hint' }, terminal ? 'Objednávka má konečný stav a nelze ji dále měnit.' : 'Platbu lze přijmout při rozvozu. Označení Doručená vyžaduje potvrzení přijetí platby. Změnu stavu oznámíme zákazníkovi e-mailem.'), el('div', { class: 'actions' }, el('button', { class: 'button primary', type: 'submit' }, 'Uložit změny')))
+    }) }, el('h3', {}, 'Průběh objednávky'), el('div', { class: 'form-grid' }, selectField('Stav', 'status', allowed.map(key => [key, statuses[key]]), order.status), selectField('Platba', 'payment_status', Object.entries(payments), order.payment_status)), el('p', { class: 'hint' }, terminal ? 'Objednávka má konečný stav a nelze ji dále měnit.' : awaitingPayment && onlineCancellable ? 'Platební brána potvrdila, že platba skončila bez zaplacení. Objednávku můžete zrušit a vrátit rezervované kusy na sklad. Platbu nelze ručně označit jako přijatou.' : awaitingPayment ? 'Čekáme na ověření online platby. Do té doby nelze objednávku přijmout, připravovat ani ručně označit jako zaplacenou. Stav aktualizujte tlačítkem Obnovit stav platby.' : online ? 'Online platba byla ověřena platební bránou. Její stav nelze měnit ručně. Změnu stavu objednávky oznámíme zákazníkovi e-mailem.' : 'Platbu lze přijmout při rozvozu. Označení Doručená vyžaduje potvrzení přijetí platby. Změnu stavu oznámíme zákazníkovi e-mailem.'), el('div', { class: 'actions' }, el('button', { class: 'button primary', type: 'submit' }, 'Uložit změny')))
     const orderStatus = form.querySelector('[name=status]')
     const paymentStatus = form.querySelector('[name=payment_status]')
     const updatePaymentOptions = () => {
+      if (online) {
+        paymentStatus.value = order.payment_status
+        paymentStatus.disabled = true
+        return
+      }
       const paidOption = paymentStatus.querySelector('option[value=paid]')
       const canPay = ['out_for_delivery', 'delivered'].includes(orderStatus.value)
       paidOption.disabled = !canPay
@@ -225,12 +243,13 @@ async function orderDialog(id) {
     }
     orderStatus.addEventListener('change', updatePaymentOptions)
     updatePaymentOptions()
-    if (terminal) {
+    if (terminal || (awaitingPayment && !onlineCancellable)) {
       orderStatus.disabled = true
       paymentStatus.disabled = true
       form.querySelector('[type=submit]').disabled = true
     }
     body.append(form)
+    if (online) body.append(button('Obnovit stav platby', () => orderDialog(id)))
     if (order.history?.length) body.append(el('h3', {}, 'Historie změn'), el('ol', { class: 'history' }, order.history.map(item => el('li', {}, `${statuses[item.status] || item.status} · ${payments[item.payment_status] || item.payment_status}`, el('small', {}, `${dateTime(item.created_at)}${item.changed_by ? ` · ${item.changed_by}` : ''}`)))))
   } catch (error) { body.replaceChildren(errorBox(error), button('Načíst znovu', () => orderDialog(id))) }
 }
