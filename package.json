@@ -8,7 +8,8 @@
     "test:admin": "node scripts/test-admin-browser.cjs",
     "test:recovery": "node scripts/test-checkout-recovery.cjs",
     "test:postal": "node scripts/test-postal-browser.cjs",
-    "test:payments": "node scripts/test-payment-browser.cjs"
+    "test:payments": "node scripts/test-payment-browser.cjs",
+    "test:order-dates": "node scripts/test-order-dates-browser.cjs"
   },
   "devDependencies": {
     "playwright": "1.62.1"

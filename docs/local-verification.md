@@ -1,3 +1,15 @@
+# Den doručení a objednávkové e-maily: místní ověření 24. 10. 2026
+
+Administrace nově filtruje objednávky podle požadovaného dne doručení. Nabízí konkrétní datum a volby Dnes, Zítra a Všechny dny. Filtr lze kombinovat se stavem i hledáním, zůstává zachovaný při stránkování, obnovení a navigaci. Dny se počítají v Europe/Prague.
+
+- HTTP integrační sada: 12 testů prošlo. Nové testy ověřují 54 objednávek napříč dvěma dny, kombinace filtrů, stránkování, odlišení od data vytvoření, neplatná data a ochranu přístupu.
+- SMTP: 1 test prošel včetně síťového výpadku a obnovy pracovní fronty.
+- Platby: 25 testů prošlo. Doplněné kontroly ověřují příjemce a obsah e-mailů před úhradou a po ní, včetně termínu, položek a částky. Stejné obsahové kontroly prošly v HTTP testu platby při doručení.
+- Backendové jednotkové testy: 16 prošlo. Formátování, Clippy se zákazem varování, release sestavení a kontrola veřejných souborů prošly.
+- Prohlížečové scénáře filtru: 5 prošlo. Kombinování filtrů, stránkování, navigace, chyba API a obnova, pražská půlnoc, změna času a roku při jiném pásmu prohlížeče, šířka 390 px bez přetečení celé stránky. Žádné neošetřené chyby. Desktopové a mobilní snímky byly vizuálně zkontrolovány.
+
+Výsledky a snímky jsou v `output/order-dates-browser/`. Testy běžely v izolovaných schématech dočasné místní PostgreSQL na portu 58434. Skutečná konfigurace `.env` nebyla čtena ani měněna. Ověřeno je místní SMTP, nikoli doručení přes externí server do skutečné schránky. Nedošlo k nasazení ani pushi.
+
 # Online platby: místní ověření 24. 10. 2026
 
 Integrace Teya Hosted Checkout je implementovaná lokálně. Bez přístupových údajů je online metoda vypnutá. Neproběhl push ani nasazení. Produkční konfigurace a skutečný účet Teya nebyly použity.

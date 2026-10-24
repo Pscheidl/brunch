@@ -530,6 +530,28 @@ async fn restart_recovers_lost_create_response_and_missed_webhook_without_duplic
     assert_eq!(order["status"], "awaiting_payment");
     assert_eq!(order["payment_status"], "unpaid");
     assert_eq!(app.payment_counts().await, (0, 0, 1, 1));
+    let pending_mail: (String, String, String) =
+        sqlx::query_as("SELECT to_email,subject,body FROM outbox")
+            .fetch_one(&app.state.pool)
+            .await
+            .unwrap();
+    assert_eq!(pending_mail.0, "customer@example.test");
+    assert!(pending_mail.1.contains("čeká na zaplacení"));
+    assert!(
+        pending_mail
+            .2
+            .contains("K vyřízení ji přijmeme až po úspěšné úhradě")
+    );
+    assert!(
+        pending_mail
+            .2
+            .contains(input["delivery_date"].as_str().unwrap())
+    );
+    assert!(
+        pending_mail
+            .2
+            .contains(input["delivery_slot"].as_str().unwrap())
+    );
     provider.state.lock().unwrap().fail_create_response_once = true;
     app.run_due().await;
     let stored_session: Option<String> =
@@ -578,6 +600,33 @@ async fn restart_recovers_lost_create_response_and_missed_webhook_without_duplic
     assert_eq!(status["payment_status"], "paid");
     assert!(status["checkout_url"].is_null());
     assert_eq!(app.payment_counts().await, (1, 0, 2, 3));
+    let confirmations: Vec<(String, String)> = sqlx::query_as("SELECT to_email,body FROM outbox WHERE subject LIKE 'Zaplacená objednávka%' OR subject LIKE 'Přijali jsme platbu%' ORDER BY to_email")
+        .fetch_all(&app.state.pool).await.unwrap();
+    assert_eq!(
+        confirmations
+            .iter()
+            .map(|(email, _)| email.as_str())
+            .collect::<Vec<_>>(),
+        vec!["customer@example.test", "orders@example.test"]
+    );
+    for (_, body) in confirmations {
+        for expected in [
+            format!(
+                "Doručení: {} {}",
+                input["delivery_date"].as_str().unwrap(),
+                input["delivery_slot"].as_str().unwrap()
+            ),
+            format!("1 × {}", order["items"][0]["name"].as_str().unwrap()),
+            "Celkem uhrazeno: 168,00 Kč".into(),
+            "Platba: Online kartou".into(),
+            "Adresa: Testovací 12, 11000 Praha".into(),
+        ] {
+            assert!(
+                body.contains(&expected),
+                "payment confirmation is missing {expected}: {body}"
+            );
+        }
+    }
     let session = provider.session();
     let payload = provider.webhook(session["transaction_id"].as_str().unwrap());
     let body = serde_json::to_vec(&payload).unwrap();

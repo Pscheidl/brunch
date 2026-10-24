@@ -5,7 +5,7 @@ const nav = document.querySelector('#navigation')
 const identity = document.querySelector('#identity')
 const dialog = document.querySelector('#editor')
 const notice = document.querySelector('#notice')
-const state = { user: null, page: 'orders', generation: 0, orderPage: 1, customerPage: 1, orderStatus: '', orderQuery: '', deliveryAreaQuery: '' }
+const state = { user: null, page: 'orders', generation: 0, orderPage: 1, customerPage: 1, orderStatus: '', orderQuery: '', orderDeliveryDate: '', deliveryAreaQuery: '' }
 const money = value => new Intl.NumberFormat('cs-CZ', { style: 'currency', currency: 'CZK' }).format(value / 100)
 const dateTime = value => value ? new Intl.DateTimeFormat('cs-CZ', { dateStyle: 'medium', timeStyle: 'short', timeZone: 'Europe/Prague' }).format(new Date(value)) : 'Dosud neodesláno'
 const statuses = { awaiting_payment: 'Čeká na zaplacení', new: 'Přijatá', confirmed: 'Potvrzená', preparing: 'Připravuje se', out_for_delivery: 'Na cestě', delivered: 'Doručená', cancelled: 'Zrušená', expired: 'Vypršela' }
@@ -15,6 +15,13 @@ const mailStates = { pending: 'Čeká na odeslání', sent: 'Odesláno', failed:
 const routes = [['orders', 'Objednávky'], ['products', 'Zboží a ceny'], ['customers', 'Zákazníci'], ['delivery-areas', 'Oblasti rozvozu'], ['settings', 'Doprava a nastavení'], ['mail', 'E-maily']]
 const normalizePostalCode = value => String(value ?? '').replace(/[\s\u0085]/g, '')
 const formatPostalCode = value => normalizePostalCode(value).replace(/^([0-9]{3})([0-9]{2})$/, '$1 $2')
+
+function pragueCalendarDate(offset = 0) {
+  const parts = new Intl.DateTimeFormat('en', { timeZone: 'Europe/Prague', year: 'numeric', month: '2-digit', day: '2-digit' }).formatToParts(new Date())
+  const part = type => Number(parts.find(value => value.type === type).value)
+  // Add calendar days after finding the Prague date, so daylight saving changes do not shift the result.
+  return new Date(Date.UTC(part('year'), part('month') - 1, part('day') + offset)).toISOString().slice(0, 10)
+}
 
 function el(tag, attributes = {}, ...children) {
   const node = document.createElement(tag)
@@ -170,19 +177,34 @@ async function renderPage() {
 }
 
 async function ordersPage() {
-  const query = new URLSearchParams({ page: state.orderPage, status: state.orderStatus, q: state.orderQuery })
+  const query = new URLSearchParams({ page: state.orderPage, status: state.orderStatus, q: state.orderQuery, delivery_date: state.orderDeliveryDate })
   const data = await api(`/api/admin/orders?${query}`)
-  const filter = el('form', { class: 'filters', onsubmit: event => {
-    event.preventDefault()
-    const data = new FormData(event.currentTarget)
+  const applyFilters = form => {
+    const data = new FormData(form)
     state.orderQuery = String(data.get('q')).trim()
     state.orderStatus = String(data.get('status'))
+    state.orderDeliveryDate = String(data.get('delivery_date'))
     state.orderPage = 1
     renderPage()
+  }
+  const filter = el('form', { class: 'filters', onsubmit: event => {
+    event.preventDefault()
+    applyFilters(event.currentTarget)
   } }, field('Vyhledat objednávku', 'q', state.orderQuery, { type: 'search', placeholder: 'Číslo nebo e-mail', maxlength: 100 }), selectField('Stav objednávky', 'status', [['', 'Všechny stavy'], ...Object.entries(statuses)], state.orderStatus), el('button', { class: 'button', type: 'submit' }, 'Vyhledat'))
   filter.firstChild.classList.add('search')
+  const deliveryDate = field('Den doručení', 'delivery_date', state.orderDeliveryDate, { type: 'date', 'aria-describedby': 'order-delivery-date-hint', onchange: () => applyFilters(filter) })
+  const shortcuts = el('div', { class: 'date-shortcuts', role: 'group', 'aria-label': 'Rychlá volba dne doručení' }, [['Dnes', 0], ['Zítra', 1], ['Všechny dny', null]].map(([label, offset]) => {
+    const value = offset === null ? '' : pragueCalendarDate(offset)
+    const shortcut = button(label, () => {
+      deliveryDate.querySelector('input').value = offset === null ? '' : pragueCalendarDate(offset)
+      applyFilters(filter)
+    })
+    shortcut.setAttribute('aria-pressed', String(state.orderDeliveryDate === value))
+    return shortcut
+  }))
+  filter.prepend(el('div', { class: 'order-delivery-filter' }, deliveryDate, shortcuts, el('p', { class: 'hint', id: 'order-delivery-date-hint' }, 'Vybírá den doručení objednávky. Dnes a zítra se řídí českým časem.')))
   const rows = data.orders.map(order => el('tr', {}, el('td', {}, el('strong', {}, order.number), el('small', {}, dateTime(order.created_at))), el('td', {}, order.name || order.email, order.name ? el('small', {}, order.email) : null), el('td', {}, order.delivery_date, el('small', {}, order.delivery_slot), el('small', {}, order.city)), el('td', {}, badge(statuses[order.status] || order.status, order.status), el('small', {}, payments[order.payment_status] || order.payment_status)), el('td', { class: 'number' }, money(order.total_cents)), el('td', {}, button('Detail', () => orderDialog(order.id), 'small'))))
-  return [header('Objednávky', 'Od potvrzení až po předání zákazníkovi.', button('Obnovit', renderPage)), filter, rows.length ? table(['Objednávka', 'Zákazník', 'Doručení', 'Stav', 'Celkem', 'Akce'], rows) : empty('Žádné objednávky', state.orderStatus || state.orderQuery ? 'Zkuste změnit hledání nebo filtr.' : 'Nové objednávky se zobrazí na tomto místě.'), pager(data.page, data.total, page => { state.orderPage = page; renderPage() })]
+  return [header('Objednávky', 'Od potvrzení až po předání zákazníkovi.', button('Obnovit', renderPage)), filter, rows.length ? table(['Objednávka', 'Zákazník', 'Den doručení', 'Stav', 'Celkem', 'Akce'], rows) : empty('Žádné objednávky', state.orderStatus || state.orderQuery || state.orderDeliveryDate ? 'Zkuste změnit hledání nebo filtr.' : 'Nové objednávky se zobrazí na tomto místě.'), pager(data.page, data.total, page => { state.orderPage = page; renderPage() })]
 }
 async function orderDialog(id) {
   const body = openDialog('Detail objednávky')

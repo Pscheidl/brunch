@@ -220,7 +220,25 @@ async fn guest_checkout_totals_transactional_mail_idempotency_and_price_snapshot
             .iter()
             .all(|body| body.contains(created["number"].as_str().unwrap()))
     );
-    assert!(bodies.iter().any(|body| body.contains("3. patro")));
+    for body in &bodies {
+        for expected in [
+            format!(
+                "Doručení: {} {}",
+                input["delivery_date"].as_str().unwrap(),
+                input["delivery_slot"].as_str().unwrap()
+            ),
+            format!("2 × {}", product["name"].as_str().unwrap()),
+            "Celkem k úhradě při doručení: 287,00 Kč".into(),
+            "Platba: Kartou při doručení".into(),
+            "Adresa: Testovací 12, 11000 Praha".into(),
+            "3. patro, výtah vlevo. Zvoňte Novák.".into(),
+        ] {
+            assert!(
+                body.contains(&expected),
+                "order email is missing {expected}: {body}"
+            );
+        }
+    }
     let replay = app.post(&guest, "/api/orders", &input).await;
     assert_eq!(replay["id"], created["id"]);
     assert_eq!(app.count("orders").await, 1);
@@ -277,6 +295,162 @@ async fn guest_checkout_totals_transactional_mail_idempotency_and_price_snapshot
         product["price_cents"]
     );
     assert_eq!(detail["total_cents"], created["total_cents"]);
+    app.close().await;
+}
+
+#[tokio::test]
+#[ignore = "requires real PostgreSQL via TEST_DATABASE_URL"]
+async fn admin_filters_delivery_day_with_search_status_and_stable_pagination() {
+    let app = TestApp::new().await;
+    let guest = app.client();
+    let admin = app.login("admin@example.test").await;
+    let products = app.get(&guest, "/api/products").await;
+    let options = app.get(&guest, "/api/delivery-options").await;
+    let day = options["dates"][0]["value"].as_str().unwrap();
+    let other_day = options["dates"][1]["value"].as_str().unwrap();
+    let template = app
+        .order(&guest, "daily@example.test", &products[0], 1)
+        .await;
+    let mut accepted_ids = Vec::new();
+    let mut cancelled_id = Value::Null;
+    for index in 0..54 {
+        let mut input = template.clone();
+        input["idempotency_key"] = json!(Uuid::new_v4());
+        input["email"] = json!(format!("daily-{index}@example.test"));
+        if index == 53 {
+            input["delivery_date"] = json!(other_day);
+        }
+        let order = app.post(&guest, "/api/orders", &input).await;
+        if index < 52 {
+            accepted_ids.push(order["id"].as_str().unwrap().to_owned());
+        } else if index == 52 {
+            cancelled_id = order["id"].clone();
+            app.call(&admin, Method::PATCH, &format!("/api/admin/orders/{}", order["id"].as_str().unwrap()),
+                Some(&json!({"status":"cancelled","payment_status":"unpaid","version":order["version"]})), StatusCode::OK).await;
+        }
+    }
+    // Creation time must not drive the day filter. Equal timestamps also test the ID tiebreaker.
+    sqlx::query("UPDATE orders SET created_at='2000-01-01T00:00:00Z'")
+        .execute(&app.pool)
+        .await
+        .unwrap();
+    let filter = format!("/api/admin/orders?delivery_date={day}&status=new&q=daily-");
+    let first = app.get(&admin, &format!("{filter}&page=1")).await;
+    let second = app.get(&admin, &format!("{filter}&page=2")).await;
+    assert_eq!(first["total"], 52);
+    assert_eq!(second["total"], 52);
+    assert_eq!(first["orders"].as_array().unwrap().len(), 50);
+    assert_eq!(second["orders"].as_array().unwrap().len(), 2);
+    let found: Vec<String> = first["orders"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .chain(second["orders"].as_array().unwrap())
+        .map(|order| {
+            assert_eq!(order["delivery_date"], day);
+            assert_eq!(order["status"], "new");
+            assert_eq!(order["items"].as_array().unwrap().len(), 1);
+            order["id"].as_str().unwrap().to_owned()
+        })
+        .collect();
+    accepted_ids.sort_by(|a, b| b.cmp(a));
+    assert_eq!(found, accepted_ids);
+    assert_eq!(app.get(&admin, &filter).await, first);
+    let cancelled = app
+        .get(
+            &admin,
+            &format!("/api/admin/orders?delivery_date={day}&status=cancelled"),
+        )
+        .await;
+    assert_eq!(cancelled["total"], 1);
+    assert_eq!(cancelled["orders"][0]["id"], cancelled_id);
+    assert_eq!(
+        app.get(&admin, &format!("/api/admin/orders?delivery_date={day}"))
+            .await["total"],
+        53
+    );
+    assert_eq!(
+        app.get(
+            &admin,
+            &format!("/api/admin/orders?delivery_date={other_day}")
+        )
+        .await["total"],
+        1
+    );
+    assert_eq!(
+        app.get(
+            &admin,
+            &format!("/api/admin/orders?delivery_date={day}&q=daily-0%40example.test")
+        )
+        .await["total"],
+        1
+    );
+    assert_eq!(
+        app.get(&admin, "/api/admin/orders?delivery_date=2000-01-01")
+            .await["total"],
+        0
+    );
+    let all = app.get(&admin, "/api/admin/orders").await;
+    assert_eq!(all["total"], 54);
+    assert_eq!(
+        app.get(&admin, "/api/admin/orders?delivery_date=").await,
+        all
+    );
+    assert!(
+        app.get(&admin, &format!("{filter}&page=3")).await["orders"]
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
+    app.close().await;
+}
+
+#[tokio::test]
+#[ignore = "requires real PostgreSQL via TEST_DATABASE_URL"]
+async fn delivery_day_filter_rejects_invalid_dates_and_requires_admin() {
+    let app = TestApp::new().await;
+    let anonymous = app.client();
+    let customer = app.login("customer@example.test").await;
+    let admin = app.login("admin@example.test").await;
+    let path = "/api/admin/orders?delivery_date=2026-10-26";
+    app.call(
+        &anonymous,
+        Method::GET,
+        path,
+        None,
+        StatusCode::UNAUTHORIZED,
+    )
+    .await;
+    app.call(&customer, Method::GET, path, None, StatusCode::FORBIDDEN)
+        .await;
+    for value in [
+        "not-a-date",
+        "2026-02-30",
+        "2026-13-01",
+        "2026-1-1",
+        "26.10.2026",
+        "2026-10-26T00:00:00Z",
+        "0000-01-01",
+        "+10000-01-01",
+        "2026-10-26' OR true--",
+    ] {
+        let query = url::form_urlencoded::Serializer::new(String::new())
+            .append_pair("delivery_date", value)
+            .finish();
+        app.call(
+            &admin,
+            Method::GET,
+            &format!("/api/admin/orders?{query}"),
+            None,
+            StatusCode::BAD_REQUEST,
+        )
+        .await;
+    }
+    assert_eq!(
+        app.get(&admin, "/api/admin/orders?delivery_date=2028-02-29")
+            .await["total"],
+        0
+    );
     app.close().await;
 }
 

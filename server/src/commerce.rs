@@ -1106,6 +1106,7 @@ struct PageQuery {
     page: Option<i64>,
     status: Option<String>,
     q: Option<String>,
+    delivery_date: Option<String>,
 }
 
 fn page_number(page: Option<i64>) -> ApiResult<i64> {
@@ -1122,6 +1123,19 @@ async fn admin_orders(
 ) -> ApiResult<Json<Value>> {
     auth::require_admin(&state, &headers).await?;
     let page = page_number(query.page)?;
+    let delivery_date = query
+        .delivery_date
+        .filter(|value| !value.is_empty())
+        .map(|value| {
+            NaiveDate::parse_from_str(&value, "%Y-%m-%d")
+                .ok()
+                .filter(|date| {
+                    (1..=9999).contains(&date.year())
+                        && date.format("%Y-%m-%d").to_string() == value
+                })
+                .ok_or_else(|| ApiError::bad_request("Neplatný den doručení. Použijte RRRR-MM-DD."))
+        })
+        .transpose()?;
     let status = query.status.filter(|s| !s.is_empty());
     if status
         .as_ref()
@@ -1138,10 +1152,10 @@ async fn admin_orders(
             .replace('_', "\\_")
     );
     let mut conn = state.pool.acquire().await?;
-    let total: i64 = sqlx::query_scalar("SELECT count(*) FROM orders WHERE ($1::text IS NULL OR status=$1) AND (number ILIKE $2 OR email ILIKE $2 OR name ILIKE $2 OR street ILIKE $2 OR city ILIKE $2)")
-        .bind(&status).bind(&q).fetch_one(&mut *conn).await?;
-    let mut orders = sqlx::query_as("SELECT * FROM orders WHERE ($1::text IS NULL OR status=$1) AND (number ILIKE $2 OR email ILIKE $2 OR name ILIKE $2 OR street ILIKE $2 OR city ILIKE $2) ORDER BY created_at DESC,id DESC LIMIT 50 OFFSET $3")
-        .bind(&status).bind(&q).bind((page - 1) * 50).fetch_all(&mut *conn).await?;
+    let total: i64 = sqlx::query_scalar("SELECT count(*) FROM orders WHERE ($1::text IS NULL OR status=$1) AND (number ILIKE $2 OR email ILIKE $2 OR name ILIKE $2 OR street ILIKE $2 OR city ILIKE $2) AND ($3::date IS NULL OR delivery_date=$3)")
+        .bind(&status).bind(&q).bind(delivery_date).fetch_one(&mut *conn).await?;
+    let mut orders = sqlx::query_as("SELECT * FROM orders WHERE ($1::text IS NULL OR status=$1) AND (number ILIKE $2 OR email ILIKE $2 OR name ILIKE $2 OR street ILIKE $2 OR city ILIKE $2) AND ($3::date IS NULL OR delivery_date=$3) ORDER BY created_at DESC,id DESC LIMIT 50 OFFSET $4")
+        .bind(&status).bind(&q).bind(delivery_date).bind((page - 1) * 50).fetch_all(&mut *conn).await?;
     attach_items(&mut conn, &mut orders).await?;
     Ok(Json(json!({"orders":orders,"total":total,"page":page})))
 }

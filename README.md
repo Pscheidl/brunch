@@ -27,6 +27,10 @@ Na `/admin/` se správce přihlásí stejným e-mailovým odkazem. Tato verze m�
 - Zákazníci: ověřené účty a počty jejich objednávek.
 - E-maily: přehled fronty, výsledků odeslání a opakování selhaných objednávkových zpráv.
 
+Pro ranní kontrolu otevřete **Objednávky** a zvolte **Dnes**, případně **Zítra** nebo konkrétní **Den doručení**. Filtr vybírá požadovaný den doručení bez ohledu na datum vytvoření objednávky. Lze ho kombinovat se stavem a hledáním, platí i při stránkování. **Všechny dny** zruší pouze omezení na den. Rychlé volby se řídí časovým pásmem Europe/Prague. Pro kontrolu objednávek určených k přípravě sledujte jejich stav, zejména nevyřizujte objednávky čekající na online platbu, zrušené nebo vypršelé.
+
+Oznámení o nové objednávce chodí na adresu **Doprava a nastavení → E-mail pro příjem objednávek**. U platby při doručení vznikne hned po přijetí objednávky, u online platby až po ověřené úhradě. Zákazník dostává vlastní potvrzení, před online úhradou nejprve zprávu o čekání na platbu. E-maily obsahují den a časové okno doručení, položky, množství, ceny, způsob platby, adresu a kontakty. Objednávky zůstávají dostupné v administraci i při potížích s doručením zprávy.
+
 Platba při doručení přejde rovnou do stavu „Přijata“. Online objednávka nejprve čeká na zaplacení a přijme se až po ověření úhrady u Teya. Dále stavy postupují `přijata → potvrzena → příprava → na cestě → doručena`. Před doručením lze nezaplacenou objednávku zrušit, čímž se rezervované kusy jednou vrátí. Platbu při doručení lze zaznamenat na cestě nebo při doručení. Online platbu ověřuje server, ručně ji označit za přijatou nelze. Nezaplacenou online objednávku lze stornovat až po ověření konečného neúspěchu nebo expirace relace u Teya. Doručená objednávka musí být zaplacená. Zrušení zaplacené objednávky vyžaduje budoucí samostatný proces vrácení peněz.
 
 ## Místní spuštění

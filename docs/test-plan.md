@@ -26,6 +26,7 @@ Při selhání testu může zůstat izolované schéma `brunch_test_<uuid>` pro 
 | Oblasti rozvozu | Správa pouze pro správce, normalizace všech bílých znaků, unikátní PSČ i při souběhu, konflikt starší verze, úprava a vypnutí/zapnutí oblasti, veřejný seznam pouze aktivních PSČ |
 | Kontrola PSČ objednávky | Prázdný seznam a nepovolené PSČ odmítnou nákup bez změny skladu či e-mailů, povolené PSČ projde, opakování přijaté objednávky funguje i po vypnutí oblasti a změně mezer |
 | Objednávky | Postupné stavy, oddělená platba kartou/hotovostí při doručení, audit změn, zakázané storno zaplacené objednávky, filtrování |
+| Den doručení | Výběr podle uloženého dne doručení nezávisle na vytvoření, kombinace se stavem a hledáním, shodný počet a výsledky, stránkování přes více než 50 objednávek bez opakování, všechny dny a prázdný výsledek, validace data a přístup jen správci |
 | E-mailová fronta | Potvrzení zákazníkovi a provozovateli ve stejné transakci s objednávkou, chyba při ukládání druhého e-mailu vrátí i objednávku a sklad, opakování selhané zprávy |
 | Neplatná data | Chybné kontakty, prázdná adresa, datum mimo nabídku, chybná platba a množství neuloží objednávku ani e-mail |
 
@@ -80,6 +81,12 @@ Samostatný `npm run test:postal` vyžaduje místní databázi bez aktivních ob
 Snímky a místní výsledky jsou v ignorované složce `output/`. `BRUNCH_PSQL_BIN` umožňuje zadat vlastní cestu k psql. Databázové kontroly ověřují jeden skutečně uložený záznam po opakování požadavku.
 
 Další integrační testy ověřují ochranu poštovní fronty proti pozdnímu výsledku starého pracovníka, odstranění prošlých přihlašovacích odkazů, okamžité odebrání práv původnímu správci, úplný rollback při selhání vložení e-mailu a bezpečné nahrání obrázků včetně formátu, velikosti, rozměrů a orientace fotografie.
+
+### Denní kontrola objednávek a obsah e-mailů
+
+`npm run test:order-dates` spouští skutečné administrační rozhraní ze složky `public` proti řízeným odpovědím API na vlastním místním serveru. Nevyžaduje běžící aplikaci ani databázi. Ověřuje kombinaci dne, stavu a hledání, zachování při stránkování, obnovení a navigaci, reset stránky při změně dne, vyprázdnění filtru, prázdné výsledky a obnovu po chybě API. Volby Dnes a Zítra testuje kolem pražské půlnoci, změny letního času a roku v prohlížeči s jiným časovým pásmem. Kontroluje také šířku 390 px. Snímky a výsledky ukládá do `output/order-dates-browser/`.
+
+Backendové testy kontrolují termín, časové okno, položky, množství, částku, způsob platby a adresu v obou potvrzovacích e-mailech. U online platby ověřují, že obchod nedostane objednávku k vyřízení před potvrzením úhrady, a kontrolují oba příjemce po úhradě i obnově serveru. Samostatný SMTP test ověřuje skutečný místní přenos, opakování po síťové chybě a obnovu po propadlé pracovní lease. Externí SMTP a doručení do skutečné schránky tímto místním ověřením potvrzené nejsou.
 
 ## Online platby Teya
 
