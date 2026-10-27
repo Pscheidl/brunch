@@ -90,7 +90,9 @@ Fronta opakuje selhané odeslání s prodlužujícím se odstupem, po osmi pokus
 
 Časová okna jsou požadavkem zákazníka, nikoli rezervací kapacity kurýra. Oblast rozvozu se kontroluje podle PSČ, existence konkrétní ulice nebo shoda města s PSČ se neověřuje. Tato verze nemá napojení na dopravce, GPS sledování ani automatické plánování tras. Obsluha potvrzuje přijetí a proveditelnost doručení v administraci. Veřejné spuštění vyžaduje doplnění skutečných kontaktních a obchodních údajů provozovatele, podmínek a pravidel zpracování zákaznických údajů.
 
-GitHub Pages neumí spustit PostgreSQL ani tento backend. CI nyní ověřuje frontend i backend, publikace vyžaduje samostatný aplikační server. V tomto úkolu se nic nenasazuje.
+## Nasazení na Zoner Cloud
+
+Pro samostatný VPS je připravené produkční nasazení přes Docker Compose s PostgreSQL a Caddy pro automatické HTTPS. Hotový aplikační obraz se sestavuje mimo VPS pomocí `./scripts/package-release.sh`. Doména, SMTP, správce, příjemce objednávek a volitelné Teya platby se nastavují v oddělené chráněné konfiguraci. Staging a produkce automaticky nezakládají ukázkové zboží. Přípravu serveru, všechny potřebné údaje, kontroly, zálohy, zkoušku obnovy a aktualizaci popisuje [docs/zoner-cloud.md](docs/zoner-cloud.md). GitHub Pages neumí spustit tento backend ani PostgreSQL.
 
 ## Teya a obnova plateb
 

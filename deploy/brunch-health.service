@@ -1,0 +1,8 @@
+[Unit]
+Description=Check Brunch public HTTPS and database health
+After=docker.service network-online.target
+
+[Service]
+Type=oneshot
+Environment=BRUNCH_ENV_FILE=/etc/brunch/brunch.env
+ExecStart=/opt/brunch/current/deploy/brunch.sh health

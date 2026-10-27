@@ -1,0 +1,11 @@
+{
+	email {$ACME_EMAIL}
+	admin off
+}
+
+{$DOMAIN} {
+	# No access log: login URLs contain one-time tokens.
+	@static not path /api/*
+	header @static Cache-Control "no-cache"
+	reverse_proxy app:3100
+}

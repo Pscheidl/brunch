@@ -4,6 +4,18 @@ use std::{sync::Arc, time::Duration};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    let check_config = match args.as_slice() {
+        [] => false,
+        [arg] if arg == "--check-config" => true,
+        [arg] if arg == "--help" || arg == "-h" => {
+            println!(
+                "Usage: brunch-server [--check-config]\n--check-config validates settings without connecting to PostgreSQL, SMTP or Teya."
+            );
+            return Ok(());
+        }
+        _ => return Err("Unknown argument. Use brunch-server --help".into()),
+    };
     dotenvy::dotenv().ok();
     tracing_subscriber::fmt()
         .with_env_filter(
@@ -12,13 +24,25 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         )
         .init();
     let config = Arc::new(Config::from_env()?);
+    if check_config {
+        println!(
+            "Configuration is valid (APP_ENV={}, Teya={}).",
+            config.app_env.as_str(),
+            if config.teya.is_some() {
+                "enabled"
+            } else {
+                "disabled"
+            }
+        );
+        return Ok(());
+    }
     let pool = PgPoolOptions::new()
         .max_connections(10)
         .acquire_timeout(Duration::from_secs(10))
         .connect(&config.database_url)
         .await?;
     migrate(&pool).await?;
-    commerce::seed(&pool, &config.order_email).await?;
+    commerce::initialize(&pool, &config.order_email, config.app_env.is_development()).await?;
     auth::bootstrap_admin(&pool, &config.admin_email).await?;
     let state = AppState {
         pool,
@@ -63,12 +87,26 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     });
     tracing::info!(address=%config.bind,"Brunch server ready");
     axum::serve(listener, app(state))
-        .with_graceful_shutdown(async {
-            let _ = tokio::signal::ctrl_c().await;
-        })
+        .with_graceful_shutdown(shutdown_signal())
         .await?;
     worker.abort();
     payment_worker.abort();
     expiry_worker.abort();
     Ok(())
+}
+
+async fn shutdown_signal() {
+    #[cfg(unix)]
+    {
+        let mut terminate =
+            tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+                .expect("Cannot install SIGTERM handler");
+        tokio::select! {
+            _ = tokio::signal::ctrl_c() => {},
+            _ = terminate.recv() => {},
+        }
+    }
+    #[cfg(not(unix))]
+    let _ = tokio::signal::ctrl_c().await;
+    tracing::info!("Shutdown requested, completing active requests");
 }

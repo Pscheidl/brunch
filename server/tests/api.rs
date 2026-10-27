@@ -16,6 +16,68 @@ struct TestApp {
     task: JoinHandle<()>,
 }
 
+#[tokio::test]
+#[ignore = "requires TEST_DATABASE_URL pointing to local PostgreSQL"]
+async fn production_initialization_creates_settings_without_demo_and_preserves_existing_data() {
+    let database_url = std::env::var("TEST_DATABASE_URL").expect("TEST_DATABASE_URL is required");
+    let database = PgPoolOptions::new()
+        .max_connections(2)
+        .connect(&database_url)
+        .await
+        .unwrap();
+    let schema = format!("brunch_init_{}", Uuid::new_v4().simple());
+    sqlx::query(&format!("CREATE SCHEMA {schema}"))
+        .execute(&database)
+        .await
+        .unwrap();
+    let options = sqlx::postgres::PgConnectOptions::from_str(&database_url)
+        .unwrap()
+        .options([("search_path", schema.as_str())]);
+    let pool = PgPoolOptions::new()
+        .max_connections(2)
+        .connect_with(options)
+        .await
+        .unwrap();
+    migrate(&pool).await.unwrap();
+    commerce::initialize(&pool, "orders@brunch-ci.cz", false)
+        .await
+        .unwrap();
+    let count: i64 = sqlx::query_scalar("SELECT count(*) FROM products")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(count, 0);
+    let settings: (i64, Option<i64>, String) = sqlx::query_as(
+        "SELECT delivery_fee_cents,free_delivery_from_cents,order_email FROM shop_settings WHERE id=1"
+    ).fetch_one(&pool).await.unwrap();
+    assert_eq!(settings, (4900, Some(35000), "orders@brunch-ci.cz".into()));
+    sqlx::query("INSERT INTO products(name,price_cents) VALUES ('Skutečné zboží',15000)")
+        .execute(&pool)
+        .await
+        .unwrap();
+    sqlx::query("UPDATE shop_settings SET delivery_fee_cents=5900,order_email='kitchen@brunch-ci.cz' WHERE id=1").execute(&pool).await.unwrap();
+    commerce::initialize(&pool, "new-default@brunch-ci.cz", false)
+        .await
+        .unwrap();
+    let products: Vec<(String, i64)> = sqlx::query_as("SELECT name,price_cents FROM products")
+        .fetch_all(&pool)
+        .await
+        .unwrap();
+    assert_eq!(products, vec![("Skutečné zboží".into(), 15000)]);
+    let settings: (i64, String) =
+        sqlx::query_as("SELECT delivery_fee_cents,order_email FROM shop_settings WHERE id=1")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(settings, (5900, "kitchen@brunch-ci.cz".into()));
+    pool.close().await;
+    sqlx::query(&format!("DROP SCHEMA {schema} CASCADE"))
+        .execute(&database)
+        .await
+        .unwrap();
+    database.close().await;
+}
+
 fn product_input(value: &Value) -> Value {
     let mut value = value.clone();
     value.as_object_mut().unwrap().remove("id");
@@ -62,6 +124,7 @@ impl TestApp {
         let address = listener.local_addr().unwrap();
         let url = format!("http://{address}");
         let config = Config {
+            app_env: brunch_server::config::AppEnvironment::Development,
             payment_timeout_minutes: 60,
             teya: None,
             database_url,

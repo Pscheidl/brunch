@@ -97,3 +97,25 @@ Snímky obrazovky a testovací PDF jsou v ignorovaných složkách `output/brows
 ## Hranice ověření
 
 Ověřeny jsou místní aplikace, PostgreSQL a SMTP. Produkční SMTP, HTTPS reverse proxy, skutečný platební terminál a provoz kurýrů nebyly připojeny. Zvolený termín je požadovaný čas doručení potvrzovaný obsluhou, nikoli rezervace rozvozové kapacity. Online platební brána zůstává podle zadání na pozdější verzi.
+
+# Příprava nasazení 27. 10. 2026
+
+Pro přípravu Zoner VPS prošly následující kontroly:
+
+| Kontrola | Výsledek |
+| --- | --- |
+| Backendové jednotkové testy | 16 prošlo |
+| Konfigurace v oddělených procesech bez externích spojení | 5 prošlo |
+| PostgreSQL HTTP, pošta, obrázky, platby a bezpečnost | 45 prošlo |
+| Balení vydání, vyloučení tajných souborů a neměnný vstup z commitu | 7 prošlo |
+| Kontroly nasazení, záloh, zkoušky obnovy a veřejných otisků | 18 prošlo |
+| Optimalizované sestavení backendu a frontendu | Prošlo |
+| Kontrola statických souborů, Rust formátování a Clippy | Prošlo |
+| Načtení produkčního souboru skutečným Docker Compose | Prošlo, bez Docker daemonu |
+| Ověření syntaxe a konfigurace Caddy | Prošlo, bez získání veřejného certifikátu |
+
+Databázové testy použily novou dočasnou PostgreSQL 18.6. Samostatná zkouška nativního release backendu dále provedla skutečný `deploy/init-db.sh`, ověřila aplikační roli bez práv superuživatele, všechny migrace a prázdný produkční katalog. Každý soubor frontendu byl načten přes HTTP a porovnán podle SHA-256. Proběhla skutečná záloha `pg_dump`, obnova do oddělené databáze a kontrola platebních tabulek i poštovní fronty. SIGTERM ukončil aplikaci s návratovým kódem 0, po novém startu zůstala uložená nastavení zachována. Dočasné databáze a aplikace byly po zkouškách zastaveny.
+
+Testy balení a wrapperu používají náhradní Docker příkaz. Ověřují chování skriptů a chybové situace, nikoli skutečný kontejner. V tomto prostředí není Docker daemon, proto **sestavení Docker obrazu a běh celé Compose sestavy nebyly provedeny**. Připravený workflow `.github/workflows/deployment.yml` je ověří po spuštění CI pomocí `scripts/test-deployment-smoke.sh`. Workflow v této přípravě spuštěn nebyl.
+
+Nevzniklo připojení k VPS ani skutečné SMTP nebo Teya. Veřejné DNS, HTTPS, doručení zpráv, skutečná staging platba a zálohy mimo server se ověří až po dodání údajů. Příprava nemění historické výsledky výše a nenahrazuje tyto provozní zkoušky.

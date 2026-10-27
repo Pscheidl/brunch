@@ -280,6 +280,7 @@ impl TestApp {
         let address = listener.local_addr().unwrap();
         let url = format!("http://{address}");
         let config = Config {
+            app_env: brunch_server::config::AppEnvironment::Development,
             payment_timeout_minutes: 60,
             teya,
             database_url,

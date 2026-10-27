@@ -10,3 +10,13 @@
 /test-results
 /playwright-report
 /node_modules
+
+# Deployment credentials, local overrides and database backups.
+/deploy/.env
+/deploy/.env.*
+!/deploy/.env.example
+/deploy/secrets/
+*.dump
+*.dump.sha256
+/release/
+__pycache__/

@@ -1,7 +1,38 @@
-use std::{env, net::SocketAddr};
+use std::{env, io::Read, net::SocketAddr, path::Path, str::FromStr};
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AppEnvironment {
+    Development,
+    Staging,
+    Production,
+}
+
+impl AppEnvironment {
+    fn from_env() -> Result<Self, String> {
+        match env::var("APP_ENV").as_deref().unwrap_or("development") {
+            "development" => Ok(Self::Development),
+            "staging" => Ok(Self::Staging),
+            "production" => Ok(Self::Production),
+            _ => Err("APP_ENV musí být development, staging nebo production".into()),
+        }
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Development => "development",
+            Self::Staging => "staging",
+            Self::Production => "production",
+        }
+    }
+
+    pub fn is_development(self) -> bool {
+        self == Self::Development
+    }
+}
 
 #[derive(Clone)]
 pub struct Config {
+    pub app_env: AppEnvironment,
     pub payment_timeout_minutes: u32,
     pub teya: Option<crate::payments::TeyaConfig>,
     pub database_url: String,
@@ -20,7 +51,14 @@ pub struct Config {
 }
 impl Config {
     pub fn from_env() -> Result<Self, String> {
-        let required = |key: &str| env::var(key).map_err(|_| format!("Chybí nastavení {key}"));
+        let app_env = AppEnvironment::from_env()?;
+        let required = |key: &str| {
+            env::var(key)
+                .ok()
+                .filter(|value| !value.trim().is_empty())
+                .ok_or_else(|| format!("Chybí nastavení {key}"))
+        };
+        let dist_dir = env::var("DIST_DIR").unwrap_or_else(|_| "dist".into());
         let public_url = env::var("PUBLIC_URL").unwrap_or_else(|_| "http://127.0.0.1:3100".into());
         let url = url::Url::parse(&public_url).map_err(|_| "Neplatné PUBLIC_URL")?;
         if !matches!(url.scheme(), "http" | "https")
@@ -39,22 +77,55 @@ impl Config {
         if !secure_cookies && !matches!(url.host_str(), Some("localhost" | "127.0.0.1" | "[::1]")) {
             return Err("Mimo localhost vyžaduje PUBLIC_URL HTTPS".into());
         }
+        if !app_env.is_development()
+            && (!secure_cookies || !url.host_str().is_some_and(deployable_domain))
+        {
+            return Err(
+                "PUBLIC_URL ve stagingu a produkci vyžaduje skutečnou veřejnou doménu s HTTPS"
+                    .into(),
+            );
+        }
         let order_email = required("ORDER_EMAIL")?.trim().to_lowercase();
         let admin_email = required("ADMIN_EMAIL")?.trim().to_lowercase();
         let smtp_from = required("SMTP_FROM")?;
-        for email in [&order_email, &admin_email, &smtp_from] {
-            if email.parse::<lettre::message::Mailbox>().is_err() {
-                return Err("Neplatná e-mailová adresa v konfiguraci".into());
+        for (name, email) in [
+            ("ORDER_EMAIL", &order_email),
+            ("ADMIN_EMAIL", &admin_email),
+            ("SMTP_FROM", &smtp_from),
+        ] {
+            let mailbox = email
+                .parse::<lettre::message::Mailbox>()
+                .map_err(|_| format!("Neplatná e-mailová adresa v {name}"))?;
+            if name != "SMTP_FROM" && crate::auth::normalize_email(email).is_err() {
+                return Err(format!(
+                    "{name} musí obsahovat samotnou e-mailovou adresu bez jména"
+                ));
+            }
+            if !app_env.is_development() && !deployable_domain(mailbox.email.domain()) {
+                return Err(format!(
+                    "{name} ve stagingu a produkci vyžaduje skutečnou e-mailovou adresu"
+                ));
             }
         }
         let smtp_host = env::var("SMTP_HOST").unwrap_or_else(|_| "127.0.0.1".into());
+        if smtp_host.trim().is_empty() {
+            return Err("SMTP_HOST nesmí být prázdné".into());
+        }
+        if url::Host::parse(&smtp_host).is_err() {
+            return Err("Neplatné SMTP_HOST".into());
+        }
+        if !app_env.is_development() && !deployable_domain(&smtp_host) {
+            return Err(
+                "SMTP_HOST ve stagingu a produkci vyžaduje skutečnou doménu SMTP serveru".into(),
+            );
+        }
         let smtp_tls = match env::var("SMTP_TLS").as_deref().unwrap_or("true") {
             "true" => true,
             "false" => false,
             _ => return Err("SMTP_TLS musí být true nebo false".into()),
         };
         let smtp_username = env::var("SMTP_USERNAME").ok().filter(|x| !x.is_empty());
-        let smtp_password = env::var("SMTP_PASSWORD").ok().filter(|x| !x.is_empty());
+        let smtp_password = secret_setting("SMTP_PASSWORD", &dist_dir)?;
         if smtp_username.is_some() != smtp_password.is_some() {
             return Err("SMTP_USERNAME a SMTP_PASSWORD musí být vyplněny společně".into());
         }
@@ -66,12 +137,30 @@ impl Config {
         {
             return Err("SMTP bez TLS je dovoleno jen pro místní poštovní server".into());
         }
+        if !app_env.is_development() && !smtp_tls {
+            return Err("Staging a produkce vyžadují SMTP_TLS=true".into());
+        }
+        let database_url = secret_setting("DATABASE_URL", &dist_dir)?
+            .ok_or_else(|| "Chybí nastavení DATABASE_URL nebo DATABASE_URL_FILE".to_owned())?;
+        sqlx::postgres::PgConnectOptions::from_str(&database_url)
+            .map_err(|_| "Neplatné DATABASE_URL")?;
+        let teya_environment = env::var("TEYA_ENVIRONMENT").unwrap_or_default();
+        if !app_env.is_development()
+            && !teya_environment.is_empty()
+            && teya_environment != app_env.as_str()
+        {
+            return Err(
+                "TEYA_ENVIRONMENT musí odpovídat APP_ENV, nebo zůstat prázdné pro vypnuté platby"
+                    .into(),
+            );
+        }
         Ok(Self {
+            app_env,
             payment_timeout_minutes: payment_timeout(
                 env::var("ONLINE_PAYMENT_TIMEOUT_MINUTES").ok().as_deref(),
             )?,
             teya: crate::payments::TeyaConfig::from_env(&public_url)?,
-            database_url: required("DATABASE_URL")?,
+            database_url,
             bind: env::var("BIND_ADDR")
                 .unwrap_or_else(|_| "127.0.0.1:3100".into())
                 .parse()
@@ -82,16 +171,96 @@ impl Config {
             smtp_host,
             smtp_port: env::var("SMTP_PORT")
                 .unwrap_or_else(|_| "587".into())
-                .parse()
-                .map_err(|_| "Neplatné SMTP_PORT")?,
+                .parse::<u16>()
+                .ok()
+                .filter(|port| *port != 0)
+                .ok_or("Neplatné SMTP_PORT")?,
             smtp_username,
             smtp_password,
             smtp_from,
             smtp_tls,
             secure_cookies,
-            dist_dir: env::var("DIST_DIR").unwrap_or_else(|_| "dist".into()),
+            dist_dir,
         })
     }
+}
+
+fn deployable_domain(host: &str) -> bool {
+    let host = host.trim_end_matches('.').to_ascii_lowercase();
+    host.contains('.')
+        && host.parse::<std::net::IpAddr>().is_err()
+        && ![
+            "localhost",
+            "local",
+            "test",
+            "example",
+            "invalid",
+            "example.com",
+            "example.org",
+            "example.net",
+        ]
+        .iter()
+        .any(|reserved| host == *reserved || host.ends_with(&format!(".{reserved}")))
+}
+
+fn secret_setting(name: &str, dist_dir: &str) -> Result<Option<String>, String> {
+    let direct = env::var(name).ok().filter(|value| !value.is_empty());
+    let file_name = format!("{name}_FILE");
+    let file = env::var(&file_name).ok().filter(|value| !value.is_empty());
+    if direct.is_some() && file.is_some() {
+        return Err(format!("Nastavte pouze {name}, nebo {file_name}, ne obojí"));
+    }
+    let Some(file) = file else {
+        return Ok(direct);
+    };
+    read_secret_file(
+        Path::new(&file),
+        &file_name,
+        &[Path::new(dist_dir), Path::new("public")],
+    )
+    .map(Some)
+}
+
+fn read_secret_file(path: &Path, name: &str, public_dirs: &[&Path]) -> Result<String, String> {
+    if !path.is_absolute() {
+        return Err(format!("{name} musí být absolutní cesta"));
+    }
+    let resolved = path
+        .canonicalize()
+        .map_err(|_| format!("Nelze číst {name}"))?;
+    if public_dirs
+        .iter()
+        .filter_map(|dir| dir.canonicalize().ok())
+        .any(|dir| resolved.starts_with(dir))
+    {
+        return Err(format!("{name} nesmí být ve veřejném adresáři webu"));
+    }
+    // Reject special files before opening them so a FIFO cannot block preflight.
+    let metadata = std::fs::metadata(&resolved).map_err(|_| format!("Nelze číst {name}"))?;
+    if !metadata.is_file() {
+        return Err(format!("Neplatný soubor {name}"));
+    }
+    let file = std::fs::File::open(resolved).map_err(|_| format!("Nelze číst {name}"))?;
+    let metadata = file.metadata().map_err(|_| format!("Nelze číst {name}"))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        if !matches!(metadata.permissions().mode() & 0o777, 0o400 | 0o600) {
+            return Err(format!("{name} musí mít oprávnění 0600 nebo 0400"));
+        }
+    }
+    if !metadata.is_file() || metadata.len() > 8192 {
+        return Err(format!("Neplatný soubor {name}"));
+    }
+    let mut value = String::new();
+    file.take(8193)
+        .read_to_string(&mut value)
+        .map_err(|_| format!("Nelze číst {name}"))?;
+    let value = value.trim_end_matches(['\r', '\n']);
+    if value.len() > 8192 || value.trim().is_empty() || value.contains(['\r', '\n', '\0']) {
+        return Err(format!("Neplatný nebo prázdný soubor {name}"));
+    }
+    Ok(value.to_owned())
 }
 
 fn payment_timeout(value: Option<&str>) -> Result<u32, String> {

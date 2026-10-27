@@ -1,0 +1,11 @@
+[Unit]
+Description=Hourly Brunch PostgreSQL backup
+
+[Timer]
+OnCalendar=hourly
+RandomizedDelaySec=120
+Persistent=true
+Unit=brunch-backup.service
+
+[Install]
+WantedBy=timers.target

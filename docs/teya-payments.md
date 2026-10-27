@@ -37,6 +37,7 @@ Bez `TEYA_ENVIRONMENT` zůstává online volba vypnutá a server odmítne nové 
 3. Nastavit následující proměnné v prostředí služby. Nejde o údaje pro zákaznickou ani běžnou administrační stránku:
 
 ```dotenv
+APP_ENV=staging
 PUBLIC_URL=https://vas-obchod.example
 ONLINE_PAYMENT_TIMEOUT_MINUTES=60
 TEYA_ENVIRONMENT=staging
@@ -46,6 +47,10 @@ TEYA_CLIENT_SECRET_FILE=/etc/brunch/secrets/teya-client-secret
 TEYA_WEBHOOK_PUBLIC_KEY_FILE=/etc/brunch/teya-webhook-public.pem
 TEYA_WEBHOOK_PREVIOUS_PUBLIC_KEY_FILE=
 ```
+
+Ukázkovou doménu je potřeba nahradit skutečnou doménou. V režimech `APP_ENV=staging` a `APP_ENV=production` aplikace odmítne lokální či ukázkové veřejné adresy, ukázkové e-mailové adresy a SMTP bez TLS. Zapnuté `TEYA_ENVIRONMENT` musí odpovídat `APP_ENV`. Pro produkční instalaci se tedy mění obě hodnoty na `production`. Prázdné `TEYA_ENVIRONMENT` ponechá online platby vypnuté. Tyto režimy při prvním startu vytvoří provozní nastavení, ale nevloží ukázkové produkty. Stávající katalog ani nastavení se při restartu nepřepisují.
+
+Konfiguraci lze před spuštěním ověřit příkazem `brunch-server --check-config`. Ověří také čitelnost a formát Teya klíčů, ale nepřipojuje se k PostgreSQL, SMTP ani Teya a nevypisuje tajné hodnoty. Úspěšná kontrola nenahrazuje skutečnou staging platbu. Pro připojení k databázi a heslo SMTP lze místo hodnot `DATABASE_URL` a `SMTP_PASSWORD` použít `DATABASE_URL_FILE` a `SMTP_PASSWORD_FILE`. Každý soubor musí mít absolutní cestu, oprávnění `0400` nebo `0600` a být mimo veřejné adresáře. Přímá hodnota a její varianta `_FILE` se nesmějí vyplnit současně.
 
 Veřejný klíč pro ověřování webhooků získat z Teya portálu důvěryhodnou cestou. Očekává se RSA veřejný PEM klíč `BEGIN PUBLIC KEY`, alespoň 2048 bitů. Není to privátní klíč obchodníka. Při rotaci lze po přechodnou dobu nakonfigurovat předchozí veřejný klíč ve druhém souboru. Klíče ani tajné údaje se nestahují z URL dodané ve webhooku. Konfigurace se načítá při startu služby, po výměně klíče je potřeba restart.
 

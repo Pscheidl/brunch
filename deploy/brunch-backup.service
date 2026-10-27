@@ -1,0 +1,11 @@
+[Unit]
+Description=Brunch PostgreSQL backup
+After=docker.service
+Requires=docker.service
+
+[Service]
+Type=oneshot
+UMask=0077
+Environment=BRUNCH_ENV_FILE=/etc/brunch/brunch.env
+Environment=BRUNCH_BACKUP_DIR=/var/backups/brunch
+ExecStart=/opt/brunch/current/deploy/brunch.sh backup

@@ -1,0 +1,36 @@
+name: Deployment image and smoke
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: deployment-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  deployment:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+      - name: Check release packaging and deployment safeguards
+        run: |
+          python3 scripts/test-release-package.py
+          python3 scripts/test-deployment.py
+          bash -n deploy/brunch.sh deploy/init-db.sh scripts/package-release.sh scripts/test-deployment-smoke.sh
+      - name: Build the Linux release image
+        run: >-
+          docker build --platform linux/amd64
+          --build-arg SOURCE_REVISION="$GITHUB_SHA"
+          --tag brunch:000000000000 .
+      - name: Verify the deployment with isolated local services
+        run: ./scripts/test-deployment-smoke.sh

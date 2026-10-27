@@ -1,0 +1,17 @@
+# CI only. Production configuration comes from compose.yaml.
+# Run app and db only, never `up` without explicit service names.
+services:
+  app:
+    restart: "no"
+    healthcheck:
+      interval: 2s
+      timeout: 5s
+      retries: 30
+      start_period: 5s
+  db:
+    restart: "no"
+    healthcheck:
+      interval: 2s
+      timeout: 5s
+      retries: 30
+      start_period: 5s

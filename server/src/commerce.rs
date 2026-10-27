@@ -1367,6 +1367,11 @@ async fn customers(
 }
 
 pub async fn seed(pool: &PgPool, order_email: &str) -> ApiResult<()> {
+    initialize(pool, order_email, true).await
+}
+
+/// Production initializes settings but never inserts demonstration products.
+pub async fn initialize(pool: &PgPool, order_email: &str, seed_demo: bool) -> ApiResult<()> {
     let order_email = email(order_email)?;
     let mut tx = pool.begin().await?;
     sqlx::query("SELECT pg_advisory_xact_lock(541847121)")
@@ -1377,7 +1382,7 @@ pub async fn seed(pool: &PgPool, order_email: &str) -> ApiResult<()> {
     let count: i64 = sqlx::query_scalar("SELECT count(*) FROM products")
         .fetch_one(&mut *tx)
         .await?;
-    if count == 0 {
+    if seed_demo && count == 0 {
         let products = [
             (
                 "Avokádový kváskový sendvič",

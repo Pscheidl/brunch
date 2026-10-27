@@ -43,6 +43,7 @@ impl Fixture {
             .unwrap();
         migrate(&pool).await.unwrap();
         let config = Config {
+            app_env: brunch_server::config::AppEnvironment::Development,
             payment_timeout_minutes: 60,
             teya: None,
             database_url,

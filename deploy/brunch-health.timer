@@ -1,0 +1,10 @@
+[Unit]
+Description=Check Brunch every five minutes
+
+[Timer]
+OnBootSec=5min
+OnUnitActiveSec=5min
+Unit=brunch-health.service
+
+[Install]
+WantedBy=timers.target
