@@ -71,7 +71,7 @@ async function main() {
     let loginUrl
     for (let attempt = 0; attempt < 60 && !loginUrl; attempt++) {
       const messages = await (await admin.request.get(`${mailpit}/api/v1/messages?limit=100`)).json()
-      const message = messages.messages.find(message => !oldIds.has(message.ID) && message.Subject === 'Přihlášení do Brunch' && message.To.some(recipient => recipient.Address === adminEmail))
+      const message = messages.messages.find(message => !oldIds.has(message.ID) && message.Subject === 'Přihlášení do Brunch Era' && message.To.some(recipient => recipient.Address === adminEmail))
       if (message) {
         const detail = await (await admin.request.get(`${mailpit}/api/v1/message/${message.ID}`)).json()
         loginUrl = detail.Text.match(/https?:\/\/\S+\/?\?login_token=[a-f0-9]+/)?.[0]

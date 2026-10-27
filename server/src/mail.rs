@@ -16,6 +16,10 @@ use sqlx::{FromRow, PgConnection};
 use std::time::Duration;
 use uuid::Uuid;
 
+pub const LOGIN_SUBJECT: &str = "Přihlášení do Brunch Era";
+// Keep queued links created before the rebrand protected until they are removed.
+const LOGIN_SUBJECTS: &[&str] = &["Přihlášení do Brunch", LOGIN_SUBJECT];
+
 pub async fn enqueue(
     conn: &mut PgConnection,
     to: &str,
@@ -27,7 +31,7 @@ pub async fn enqueue(
         .bind(Uuid::new_v4())
         .bind(to)
         .bind(subject)
-        .bind(body)
+        .bind(format!("{body}\n\nBrunch Era"))
         .execute(conn)
         .await?;
     Ok(())
@@ -64,13 +68,13 @@ pub async fn deliver_batch(
     transport: &AsyncSmtpTransport<Tokio1Executor>,
 ) -> ApiResult<usize> {
     // Expired magic links must never remain queued for a delayed delivery or an admin retry.
-    sqlx::query("UPDATE outbox SET status='failed',body='[Přihlašovací odkaz odstraněn po vypršení]',last_error='Přihlašovací odkaz vypršel. Požádejte o nový.',locked_until=NULL,lease_token=NULL WHERE status='pending' AND subject='Přihlášení do Brunch' AND created_at<=now()-interval '15 minutes' AND (locked_until IS NULL OR locked_until<now())")
-        .execute(&state.pool).await?;
+    sqlx::query("UPDATE outbox SET status='failed',body='[Přihlašovací odkaz odstraněn po vypršení]',last_error='Přihlašovací odkaz vypršel. Požádejte o nový.',locked_until=NULL,lease_token=NULL WHERE status='pending' AND subject=ANY($1) AND created_at<=now()-interval '15 minutes' AND (locked_until IS NULL OR locked_until<now())")
+        .bind(LOGIN_SUBJECTS).execute(&state.pool).await?;
     let mut sent = 0;
     for _ in 0..20 {
         let lease_token = Uuid::new_v4();
-        let row=sqlx::query_as::<_,PendingMail>("UPDATE outbox SET locked_until=now()+interval '2 minutes',lease_token=$1,attempts=attempts+1 WHERE id=(SELECT id FROM outbox WHERE status='pending' AND next_attempt_at<=now() AND (locked_until IS NULL OR locked_until<now()) AND (subject<>'Přihlášení do Brunch' OR created_at>now()-interval '15 minutes') ORDER BY created_at FOR UPDATE SKIP LOCKED LIMIT 1) RETURNING id,to_email,subject,body,attempts,lease_token")
-            .bind(lease_token).fetch_optional(&state.pool).await?;
+        let row=sqlx::query_as::<_,PendingMail>("UPDATE outbox SET locked_until=now()+interval '2 minutes',lease_token=$1,attempts=attempts+1 WHERE id=(SELECT id FROM outbox WHERE status='pending' AND next_attempt_at<=now() AND (locked_until IS NULL OR locked_until<now()) AND (subject<>ALL($2) OR created_at>now()-interval '15 minutes') ORDER BY created_at FOR UPDATE SKIP LOCKED LIMIT 1) RETURNING id,to_email,subject,body,attempts,lease_token")
+            .bind(lease_token).bind(LOGIN_SUBJECTS).fetch_optional(&state.pool).await?;
         let Some(row) = row else { break };
         let result = match (state.config.smtp_from.parse(), row.to_email.parse()) {
             (Ok(from), Ok(to)) => match Message::builder()
@@ -97,14 +101,14 @@ pub async fn deliver_batch(
         };
         match result {
             Ok(()) => {
-                let result = sqlx::query("UPDATE outbox SET status='sent',sent_at=now(),locked_until=NULL,lease_token=NULL,last_error=NULL,body=CASE WHEN subject='Přihlášení do Brunch' THEN '[Přihlašovací odkaz odstraněn po odeslání]' ELSE body END WHERE id=$1 AND lease_token=$2 AND status='pending'")
-                    .bind(row.id).bind(row.lease_token).execute(&state.pool).await?;
+                let result = sqlx::query("UPDATE outbox SET status='sent',sent_at=now(),locked_until=NULL,lease_token=NULL,last_error=NULL,body=CASE WHEN subject=ANY($3) THEN '[Přihlašovací odkaz odstraněn po odeslání]' ELSE body END WHERE id=$1 AND lease_token=$2 AND status='pending'")
+                    .bind(row.id).bind(row.lease_token).bind(LOGIN_SUBJECTS).execute(&state.pool).await?;
                 sent += result.rows_affected() as usize;
             }
             Err(error) => {
                 let delay = (30_i64 * 2_i64.pow(row.attempts.min(7) as u32)).min(3600);
-                sqlx::query("UPDATE outbox SET status=CASE WHEN attempts>=8 THEN 'failed' ELSE 'pending' END,last_error=$2,locked_until=NULL,lease_token=NULL,next_attempt_at=now()+make_interval(secs=>$3),body=CASE WHEN attempts>=8 AND subject='Přihlášení do Brunch' THEN '[Přihlašovací odkaz odstraněn po selhání odeslání]' ELSE body END WHERE id=$1 AND lease_token=$4 AND status='pending'")
-                    .bind(row.id).bind(error).bind(delay as f64).bind(row.lease_token).execute(&state.pool).await?;
+                sqlx::query("UPDATE outbox SET status=CASE WHEN attempts>=8 THEN 'failed' ELSE 'pending' END,last_error=$2,locked_until=NULL,lease_token=NULL,next_attempt_at=now()+make_interval(secs=>$3),body=CASE WHEN attempts>=8 AND subject=ANY($5) THEN '[Přihlašovací odkaz odstraněn po selhání odeslání]' ELSE body END WHERE id=$1 AND lease_token=$4 AND status='pending'")
+                    .bind(row.id).bind(error).bind(delay as f64).bind(row.lease_token).bind(LOGIN_SUBJECTS).execute(&state.pool).await?;
             }
         }
     }
@@ -136,7 +140,7 @@ async fn retry(
     Path(id): Path<Uuid>,
 ) -> ApiResult<Json<serde_json::Value>> {
     auth::require_admin(&state, &headers).await?;
-    let result=sqlx::query("UPDATE outbox SET status='pending',attempts=0,next_attempt_at=now(),locked_until=NULL,lease_token=NULL,last_error=NULL WHERE id=$1 AND status='failed' AND subject<>'Přihlášení do Brunch'").bind(id).execute(&state.pool).await?;
+    let result=sqlx::query("UPDATE outbox SET status='pending',attempts=0,next_attempt_at=now(),locked_until=NULL,lease_token=NULL,last_error=NULL WHERE id=$1 AND status='failed' AND subject<>ALL($2)").bind(id).bind(LOGIN_SUBJECTS).execute(&state.pool).await?;
     if result.rows_affected() == 0 {
         return Err(ApiError::conflict(
             "Znovu lze odeslat jen selhanou objednávkovou zprávu. Pro přihlášení požádejte o nový odkaz.",

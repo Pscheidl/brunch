@@ -13,6 +13,16 @@ pub fn App() -> impl IntoView {
     view! { <Home/> }
 }
 
+#[component]
+fn Brand(#[prop(default = "brand")] class: &'static str) -> impl IntoView {
+    view! {
+        <a class=class href="./" aria-label="Brunch Era, úvodní stránka">
+            <img class="brand-symbol" src="brand/mark.svg" width="38" height="38" alt=""/>
+            <span>"Brunch "<span class="brand-era">"Era"</span></span>
+        </a>
+    }
+}
+
 #[derive(Clone, Copy)]
 struct Details {
     name: RwSignal<String>,
@@ -728,9 +738,9 @@ fn Home() -> impl IntoView {
         <a class="skip-link" href="#nabidka">"Přejít na nabídku"</a>
         <div class="top-note">{move ||if shop.settings.get().online_payment_enabled {"Dobrá pauza bez registrace. Online kartou nebo při doručení."} else {"Dobrá pauza bez registrace. Kartou i hotově zaplatíte při doručení."}}</div>
         <header class="site-header"><div class="header-inner page-width">
-            <a class="brand" href="./" aria-label="brunch, úvodní stránka"><span class="brand-mark"><Icon name="leaf"/></span>"brunch"<span class="brand-dot">"."</span></a>
+            <Brand/>
             <nav class="desktop-nav" aria-label="Hlavní navigace"><a href="#nabidka" class="active">"Naše nabídka"</a><a href="#jak-to-funguje">"Jak to funguje"</a><a href="#do-kancelare">"Pro vaši kancelář"</a></nav>
-            <div class="header-actions"><button class="account-button" on:click=move |_| shop.open_account()><Icon name="person"/><span>{move || if shop.user.get().is_some() {"Můj účet"} else {"Přihlásit"}}</span></button><button class="header-cart" on:click=move |_| shop.open_cart() aria-label=move || format!("Otevřít košík, {} kusů",catalog::quantity(&shop.cart.get()))><Icon name="bag"/><span>"Košík"</span><span class="cart-count">{move ||catalog::quantity(&shop.cart.get())}</span></button></div>
+            <div class="header-actions"><button class="account-button" aria-label=move || if shop.user.get().is_some() {"Můj účet"} else {"Přihlásit"} on:click=move |_| shop.open_account()><Icon name="person"/><span>{move || if shop.user.get().is_some() {"Můj účet"} else {"Přihlásit"}}</span></button><button class="header-cart" on:click=move |_| shop.open_cart() aria-label=move || format!("Otevřít košík, {} kusů",catalog::quantity(&shop.cart.get()))><Icon name="bag"/><span class="cart-label">"Košík"</span><span class="cart-count">{move ||catalog::quantity(&shop.cart.get())}</span></button></div>
         </div></header>
         <main>
             <Show when=move ||shop.payment_recovery.get().is_some()><div class="page-width api-message" role="status"><p>"Máte uloženou objednávku s online platbou. Ověřte její stav nebo pokračujte v platbě."</p><button class="button secondary" on:click=move |_|shop.resume_payment()>"Otevřít uloženou objednávku"</button></div></Show>
@@ -750,7 +760,7 @@ fn Home() -> impl IntoView {
             <section class="how-section page-width" id="jak-to-funguje" aria-labelledby="how-title"><div class="section-heading"><div><p class="eyebrow">"PAUZA BEZ STAROSTÍ"</p><h2 id="how-title">"Vy máte svůj den. My svačinu."</h2></div></div><div class="steps-grid"><article><span class="step-number">"01"</span><h3>"Vyberte si podle chuti"</h3><p>"Slané, sladké nebo něco do misky. Složení i alergeny najdete u každé svačiny."</p></article><article><span class="step-number">"02"</span><h3>"Řekněte nám kam a kdy"</h3><p>"Stačí adresa a e-mail. Vyberete požadovaný čas a doplníte třeba patro nebo zvonek."</p></article><article><span class="step-number">"03"</span><h3>{move ||if shop.settings.get().online_payment_enabled {"Zaplaťte, jak vám to vyhovuje"} else {"Zaplaťte při doručení"}}</h3><p>{move ||if shop.settings.get().online_payment_enabled {"Online kartou přes Teya, nebo kartou či hotově při doručení. Objednávku s online platbou přijmeme po zaplacení."} else {"Kartou nebo hotově. Přijetí objednávky vám pošleme e-mailem, termín následně potvrdíme."}}</p></article></div></section>
             <section class="office-section page-width" id="do-kancelare" aria-labelledby="office-title"><div class="office-banner"><div><span class="eyebrow">"DOBRÉ VĚCI SE LÉPE SDÍLÍ"</span><h2 id="office-title">"Přiberte ke svačině kolegy."</h2><p>"Každému něco podle chuti. Jedna společná objednávka, jedna cesta k vám. "{move ||shop.delivery_info()}</p></div><a class="button secondary" href="#nabidka">"Vybrat pro celý tým"<Icon/></a></div></section>
         </main>
-        <footer class="site-footer page-width"><a class="brand footer-brand" href="./">"brunch."</a><p>"Dobrá pauza začíná tady."</p><button class="text-button" on:click=move |_|shop.open_account()>"Můj účet a objednávky"</button><a class="admin-link" href="/admin/">"Administrace"</a><span>"2026"</span></footer>
+        <footer class="site-footer page-width"><Brand class="brand footer-brand"/><p>"Dobrá pauza začíná tady."</p><button class="text-button" on:click=move |_|shop.open_account()>"Můj účet a objednávky"</button><a class="admin-link" href="/admin/">"Administrace"</a><span>"2026"</span></footer>
         <div class="mobile-cart" class:has-items={move ||catalog::quantity(&shop.cart.get())>0}><button class="button primary" on:click=move |_|shop.open_cart()><span><Icon name="bag"/>"Zobrazit košík"<span class="cart-count">{move ||catalog::quantity(&shop.cart.get())}</span></span><strong>{move ||if shop.ready.get() {money(shop.total())} else {"Načítáme…".into()}}<Icon/></strong></button></div>
         <div class="sr-only" aria-live="polite" aria-atomic="true">{move ||shop.announcement.get()}</div>
         <DeliveryDialog shop/><ProductDialog shop/><CartDialog shop/><AccountDialog shop/>

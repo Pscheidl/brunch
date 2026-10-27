@@ -399,7 +399,7 @@ pub async fn process_batch(state: &AppState) -> ApiResult<()> {
         .timeout(Duration::from_secs(15))
         .connect_timeout(Duration::from_secs(5))
         .redirect(reqwest::redirect::Policy::none())
-        .user_agent("Brunch/0.1 TeyaHostedCheckout")
+        .user_agent("BrunchEra/0.1 TeyaHostedCheckout")
         .build()
         .map_err(|_| {
             ApiError::new(

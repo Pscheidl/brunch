@@ -152,36 +152,35 @@ fn smtp_gate(
 #[tokio::test]
 #[ignore = "requires TEST_DATABASE_URL and local PostgreSQL"]
 async fn expired_login_mail_is_failed_and_redacted_without_smtp() {
-    let fixture = Fixture::new(9).await;
-    let id = fixture
-        .enqueue(
-            "Přihlášení do Brunch",
-            "secret login_token=expired-private-token",
-        )
-        .await;
-    sqlx::query("UPDATE outbox SET created_at=now()-interval '16 minutes' WHERE id=$1")
-        .bind(id)
-        .execute(&fixture.state.pool)
-        .await
-        .unwrap();
-    let transport = mail::transport(&fixture.state.config).unwrap();
-    assert_eq!(
-        mail::deliver_batch(&fixture.state, &transport)
-            .await
-            .unwrap(),
-        0
-    );
-    let (status, body, attempts, lease): (String, String, i32, Option<Uuid>) =
-        sqlx::query_as("SELECT status,body,attempts,lease_token FROM outbox WHERE id=$1")
+    for subject in ["Přihlášení do Brunch", mail::LOGIN_SUBJECT] {
+        let fixture = Fixture::new(9).await;
+        let id = fixture
+            .enqueue(subject, "secret login_token=expired-private-token")
+            .await;
+        sqlx::query("UPDATE outbox SET created_at=now()-interval '16 minutes' WHERE id=$1")
             .bind(id)
-            .fetch_one(&fixture.state.pool)
+            .execute(&fixture.state.pool)
             .await
             .unwrap();
-    assert_eq!(status, "failed");
-    assert!(!body.contains("expired-private-token"));
-    assert_eq!(attempts, 0);
-    assert!(lease.is_none());
-    fixture.close().await;
+        let transport = mail::transport(&fixture.state.config).unwrap();
+        assert_eq!(
+            mail::deliver_batch(&fixture.state, &transport)
+                .await
+                .unwrap(),
+            0
+        );
+        let (status, body, attempts, lease): (String, String, i32, Option<Uuid>) =
+            sqlx::query_as("SELECT status,body,attempts,lease_token FROM outbox WHERE id=$1")
+                .bind(id)
+                .fetch_one(&fixture.state.pool)
+                .await
+                .unwrap();
+        assert_eq!(status, "failed");
+        assert!(!body.contains("expired-private-token"));
+        assert_eq!(attempts, 0);
+        assert!(lease.is_none());
+        fixture.close().await;
+    }
 }
 
 #[tokio::test]
@@ -228,42 +227,137 @@ async fn stale_smtp_success_and_failure_cannot_overwrite_a_new_lease() {
 #[tokio::test]
 #[ignore = "requires TEST_DATABASE_URL and local PostgreSQL"]
 async fn terminal_login_delivery_failure_removes_the_secret() {
-    let (port, received, release, smtp_thread) = smtp_gate(false);
-    let fixture = Fixture::new(port).await;
-    let id = fixture
-        .enqueue("Přihlášení do Brunch", "login_token=terminal-private-token")
-        .await;
-    sqlx::query("UPDATE outbox SET attempts=7 WHERE id=$1")
-        .bind(id)
-        .execute(&fixture.state.pool)
-        .await
-        .unwrap();
-    let state = fixture.state.clone();
-    let transport = mail::transport(&state.config).unwrap();
-    let worker =
-        tokio::spawn(async move { mail::deliver_batch(&state, &transport).await.unwrap() });
-    tokio::time::timeout(Duration::from_secs(10), received)
-        .await
-        .unwrap()
-        .unwrap();
-    release.send(()).unwrap();
-    assert_eq!(
-        tokio::time::timeout(Duration::from_secs(10), worker)
+    for subject in ["Přihlášení do Brunch", mail::LOGIN_SUBJECT] {
+        let (port, received, release, smtp_thread) = smtp_gate(false);
+        let fixture = Fixture::new(port).await;
+        let id = fixture
+            .enqueue(subject, "login_token=terminal-private-token")
+            .await;
+        sqlx::query("UPDATE outbox SET attempts=7 WHERE id=$1")
+            .bind(id)
+            .execute(&fixture.state.pool)
+            .await
+            .unwrap();
+        let state = fixture.state.clone();
+        let transport = mail::transport(&state.config).unwrap();
+        let worker =
+            tokio::spawn(async move { mail::deliver_batch(&state, &transport).await.unwrap() });
+        tokio::time::timeout(Duration::from_secs(10), received)
             .await
             .unwrap()
-            .unwrap(),
-        0
-    );
-    smtp_thread.join().unwrap();
-    let (status, body, attempts): (String, String, i32) =
-        sqlx::query_as("SELECT status,body,attempts FROM outbox WHERE id=$1")
+            .unwrap();
+        release.send(()).unwrap();
+        assert_eq!(
+            tokio::time::timeout(Duration::from_secs(10), worker)
+                .await
+                .unwrap()
+                .unwrap(),
+            0
+        );
+        smtp_thread.join().unwrap();
+        let (status, body, attempts): (String, String, i32) =
+            sqlx::query_as("SELECT status,body,attempts FROM outbox WHERE id=$1")
+                .bind(id)
+                .fetch_one(&fixture.state.pool)
+                .await
+                .unwrap();
+        assert_eq!(status, "failed");
+        assert!(!body.contains("terminal-private-token"));
+        assert_eq!(attempts, 8);
+        fixture.close().await;
+    }
+}
+
+#[tokio::test]
+#[ignore = "requires TEST_DATABASE_URL and local PostgreSQL"]
+async fn successful_login_delivery_redacts_both_brand_names() {
+    for subject in ["Přihlášení do Brunch", mail::LOGIN_SUBJECT] {
+        let (port, received, release, smtp_thread) = smtp_gate(true);
+        let fixture = Fixture::new(port).await;
+        let id = fixture
+            .enqueue(subject, "login_token=sent-private-token")
+            .await;
+        let state = fixture.state.clone();
+        let transport = mail::transport(&state.config).unwrap();
+        let worker =
+            tokio::spawn(async move { mail::deliver_batch(&state, &transport).await.unwrap() });
+        tokio::time::timeout(Duration::from_secs(10), received)
+            .await
+            .unwrap()
+            .unwrap();
+        release.send(()).unwrap();
+        assert_eq!(
+            tokio::time::timeout(Duration::from_secs(10), worker)
+                .await
+                .unwrap()
+                .unwrap(),
+            1
+        );
+        smtp_thread.join().unwrap();
+        let (status, body): (String, String) =
+            sqlx::query_as("SELECT status,body FROM outbox WHERE id=$1")
+                .bind(id)
+                .fetch_one(&fixture.state.pool)
+                .await
+                .unwrap();
+        assert_eq!(status, "sent");
+        assert!(!body.contains("sent-private-token"));
+        fixture.close().await;
+    }
+}
+
+#[tokio::test]
+#[ignore = "requires TEST_DATABASE_URL and local PostgreSQL"]
+async fn administrator_cannot_retry_login_mail_from_either_brand() {
+    let fixture = Fixture::new(9).await;
+    auth::bootstrap_admin(&fixture.state.pool, "admin@example.test")
+        .await
+        .unwrap();
+    let token = "c".repeat(64);
+    sqlx::query("INSERT INTO sessions(token_hash,user_id,expires_at) SELECT $1,id,now()+interval '1 hour' FROM users WHERE email='admin@example.test'")
+        .bind(auth::token_hash(&token)).execute(&fixture.state.pool).await.unwrap();
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let url = format!("http://{}", listener.local_addr().unwrap());
+    let router = brunch_server::app(fixture.state.clone());
+    let server = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
+    let client = reqwest::Client::new();
+    for subject in [
+        "Přihlášení do Brunch",
+        mail::LOGIN_SUBJECT,
+        "Nová objednávka BR-TEST",
+    ] {
+        let id = fixture.enqueue(subject, "test message").await;
+        sqlx::query("UPDATE outbox SET status='failed',attempts=8 WHERE id=$1")
+            .bind(id)
+            .execute(&fixture.state.pool)
+            .await
+            .unwrap();
+        let response = client
+            .post(format!("{url}/api/admin/mail/{id}/retry"))
+            .header("Cookie", format!("brunch_session={token}"))
+            .header("X-Brunch-Request", "1")
+            .json(&serde_json::json!({}))
+            .send()
+            .await
+            .unwrap();
+        let login = subject != "Nová objednávka BR-TEST";
+        assert_eq!(
+            response.status(),
+            if login {
+                StatusCode::CONFLICT
+            } else {
+                StatusCode::OK
+            }
+        );
+        let status: String = sqlx::query_scalar("SELECT status FROM outbox WHERE id=$1")
             .bind(id)
             .fetch_one(&fixture.state.pool)
             .await
             .unwrap();
-    assert_eq!(status, "failed");
-    assert!(!body.contains("terminal-private-token"));
-    assert_eq!(attempts, 8);
+        assert_eq!(status, if login { "failed" } else { "pending" });
+    }
+    server.abort();
+    let _ = server.await;
     fixture.close().await;
 }
 

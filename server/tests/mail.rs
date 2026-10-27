@@ -119,6 +119,7 @@ async fn smtp_delivery_retry_and_crashed_worker_lease() {
     let message = smtp.await.unwrap();
     assert!(message.contains("customer@example.test"));
     assert!(message.contains("Message-ID:"));
+    assert!(message.contains("Brunch Era"));
     let row: (String, i32, bool) =
         sqlx::query_as("SELECT status,attempts,sent_at IS NOT NULL FROM outbox")
             .fetch_one(&pool)

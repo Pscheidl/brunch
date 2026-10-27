@@ -1,6 +1,6 @@
 # Online platby Teya
 
-Integrace používá Teya Hosted Checkout. Údaje karty zadává zákazník přímo na stránce Teya. Brunch nepřijímá ani neukládá číslo karty, CVC nebo přístupový token do prohlížeče. Cena vzniká na serveru ze skutečného katalogu, částky jsou celé haléře v CZK.
+Integrace používá Teya Hosted Checkout. Údaje karty zadává zákazník přímo na stránce Teya. Brunch Era nepřijímá ani neukládá číslo karty, CVC nebo přístupový token do prohlížeče. Cena vzniká na serveru ze skutečného katalogu, částky jsou celé haléře v CZK.
 
 ## Stavy objednávek
 
@@ -66,7 +66,7 @@ Adresy OAuth a API jsou pevně určené prostředím: `id.teya.xyz`, `api.teya.x
 | Před potvrzením databázové transakce objednávky | Objednávka, sklad i platební úloha se vrátí společně. Opakování se stejným klíčem je bezpečné. |
 | Po uložení objednávky, před voláním Teya | Úloha i termín jsou v PostgreSQL. Pracovník ji načte po startu, po termínu už novou platební relaci nevytvoří. |
 | Teya založila relaci, odpověď se ztratila | Opakuje se stejné tělo a stejné uložené `Idempotency-Key`, nikdy nový klíč. |
-| Po otevření platební stránky | Relace Teya a její vazba na objednávku už jsou v databázi. Platba pokračuje u Teya i bez běžícího Brunch serveru. |
+| Po otevření platební stránky | Relace Teya a její vazba na objednávku už jsou v databázi. Platba pokračuje u Teya i bez běžícího serveru Brunch Era. |
 | Webhook přijde během výpadku | Teya oznámení opakuje. Po startu současně běží vlastní dotazování známých relací, takže samotné vyčerpání opakování webhooku neztratí známou platbu. |
 | Po přijetí webhooku, před ověřením platby | Podpisem ověřené oznámení i úloha jsou trvale uložené před odpovědí 204. Po startu se stav ověří v API. |
 | Během přijetí platby do objednávky | Úhrada, stav, historie a e-mailová fronta se potvrdí společně nebo se společně vrátí. |

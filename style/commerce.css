@@ -8,7 +8,7 @@
 .shop-status { padding:24px 0; color:var(--muted); font-size:13px; }
 .custom-product-image { display:block; background-size:cover; background-position:center; aspect-ratio:1; }
 .product-placeholder { display:block; aspect-ratio:1; background:var(--fresh-gradient); }
-.product-placeholder::before { content:'brunch.'; display:grid; place-items:center; height:100%; color:var(--accent); opacity:.5; font-size:30px; letter-spacing:-1.5px; font-weight:650; }
+.product-placeholder::before { content:'Brunch Era'; display:grid; place-items:center; height:100%; color:var(--accent); opacity:.5; font-size:clamp(21px,3vw,30px); letter-spacing:-1px; font-weight:650; }
 .product-photo { position:relative; }
 .product-photo .product-tag { max-width:calc(100% - 30px); }
 .product-price { font-size:21px; }
@@ -44,7 +44,8 @@
 .delivery-price { max-width:270px; }
 @media(max-width:800px) { .desktop-nav { gap:18px; } .desktop-nav a:last-child { display:none; } }
 @media(max-width:600px) {
- .account-button { gap:4px; padding:4px; font-size:11px; }
+ .account-button { justify-content:center; width:44px; padding:8px; }
+ .account-button span { display:none; }
  .account-button .icon { width:17px; height:17px; }
  .delivery-price { max-width:none; }
  .account-dialog { padding:23px 19px; }
@@ -55,4 +56,4 @@
  .site-footer .text-button { font-size:11px; }
  .payment-submit { white-space:normal; text-align:center; }
 }
-@media(max-width:359px) { .account-button .icon { display:none; } }
+@media(max-width:359px) { .header-cart .cart-label { display:none; } }

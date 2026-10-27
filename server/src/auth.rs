@@ -135,10 +135,10 @@ async fn request_link(
     sqlx::query("INSERT INTO login_tokens(token_hash,email,expires_at) VALUES ($1,$2,now()+interval '15 minutes')")
         .bind(token_hash(&token)).bind(&email).execute(&mut *tx).await?;
     let body = format!(
-        "Dobrý den,\n\npro přihlášení nebo vytvoření účtu Brunch otevřete:\n{}/?login_token={}\n\nOdkaz je jednorázový a platí 15 minut. Pokud jste o něj nežádali, e-mail ignorujte.\n\nBrunch",
+        "Dobrý den,\n\npro přihlášení nebo vytvoření účtu Brunch Era otevřete:\n{}/?login_token={}\n\nOdkaz je jednorázový a platí 15 minut. Pokud jste o něj nežádali, e-mail ignorujte.",
         state.config.public_url, token
     );
-    mail::enqueue(&mut tx, &email, "Přihlášení do Brunch", &body).await?;
+    mail::enqueue(&mut tx, &email, mail::LOGIN_SUBJECT, &body).await?;
     tx.commit().await?;
     Ok(response)
 }

@@ -39,7 +39,7 @@ RUN --mount=type=cache,id=brunch-cargo-registry,target=/usr/local/cargo/registry
 
 FROM debian:bookworm-slim AS runtime
 ARG SOURCE_REVISION=unknown
-LABEL org.opencontainers.image.title="Brunch" \
+LABEL org.opencontainers.image.title="Brunch Era" \
       org.opencontainers.image.revision="$SOURCE_REVISION"
 RUN apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates curl \

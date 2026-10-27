@@ -4,14 +4,21 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <meta name="theme-color" content="#ffffff">
-    <meta name="description" content="Čerstvé svačiny z pekárny až do kanceláře. Vyberte si svou dobrou pauzu.">
-    <title>brunch · Dobrá pauza začíná tady</title>
+    <meta name="description" content="Brunch Era. Čerstvé svačiny z pekárny až do kanceláře. Vyberte si svou dobrou pauzu.">
+    <meta property="og:site_name" content="Brunch Era">
+    <meta property="og:title" content="Brunch Era · Dobrá pauza začíná tady">
+    <meta property="og:description" content="Čerstvé svačiny z pekárny až do kanceláře. Vyberte si svou dobrou pauzu.">
+    <meta property="og:type" content="website">
+    <title>Brunch Era · Dobrá pauza začíná tady</title>
     <base data-trunk-public-url>
     <link data-trunk rel="rust" data-bin="brunch" data-wasm-opt="0" data-initializer="public/initializer.js">
     <link data-trunk rel="css" href="style/main.css">
     <link data-trunk rel="css" href="style/checkout.css">
     <link data-trunk rel="css" href="style/commerce.css">
+    <link data-trunk rel="css" href="public/brand/brand.css">
     <link data-trunk rel="icon" href="public/favicon.svg" type="image/svg+xml">
+    <link data-trunk rel="copy-file" href="public/favicon.svg">
+    <link data-trunk rel="copy-dir" href="public/brand">
     <link data-trunk rel="copy-dir" href="public/fonts">
     <link data-trunk rel="copy-dir" href="public/admin">
     <link data-trunk rel="copy-file" href="public/images/brunch-spread.webp" data-target-path="images">
@@ -21,7 +28,7 @@
   </head>
   <body>
     <div id="app-loading" class="app-loading" role="status">
-      <span class="brand">brunch.</span>
+      <span class="brand"><img class="brand-symbol" src="brand/mark.svg" width="38" height="38" alt=""><span>Brunch <span class="brand-era">Era</span></span></span>
       <p id="loading-message">Chystáme vaši dobrou pauzu…</p>
       <a id="loading-retry" href="./" hidden>Zkusit znovu</a>
     </div>

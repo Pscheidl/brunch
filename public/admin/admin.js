@@ -434,7 +434,7 @@ async function customersPage() {
 }
 async function mailPage() {
   const messages = await api('/api/admin/mail')
-  const rows = messages.map(message => el('tr', {}, el('td', { class: 'mail-subject' }, el('strong', {}, message.subject), el('small', {}, message.to_email)), el('td', {}, badge(mailStates[message.status] || message.status, message.status), el('small', {}, `Pokusy: ${message.attempts}`)), el('td', {}, dateTime(message.created_at), message.sent_at ? el('small', {}, `Odesláno ${dateTime(message.sent_at)}`) : null), el('td', {}, message.last_error ? el('small', { class: 'mail-error' }, message.last_error) : 'Bez chyby'), el('td', {}, message.status === 'failed' && message.subject !== 'Přihlášení do Brunch' ? button('Zkusit znovu', async event => {
+  const rows = messages.map(message => el('tr', {}, el('td', { class: 'mail-subject' }, el('strong', {}, message.subject), el('small', {}, message.to_email)), el('td', {}, badge(mailStates[message.status] || message.status, message.status), el('small', {}, `Pokusy: ${message.attempts}`)), el('td', {}, dateTime(message.created_at), message.sent_at ? el('small', {}, `Odesláno ${dateTime(message.sent_at)}`) : null), el('td', {}, message.last_error ? el('small', { class: 'mail-error' }, message.last_error) : 'Bez chyby'), el('td', {}, message.status === 'failed' && !['Přihlášení do Brunch', 'Přihlášení do Brunch Era'].includes(message.subject) ? button('Zkusit znovu', async event => {
     const retryButton = event.currentTarget
     retryButton.disabled = true
     try {

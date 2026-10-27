@@ -193,8 +193,9 @@ impl TestApp {
     async fn token(&self, client: &Client, email: &str) -> String {
         self.post(client, "/api/auth/request", &json!({"email": email}))
             .await;
-        let body: String = sqlx::query_scalar("SELECT body FROM outbox WHERE to_email=$1 AND subject='Přihlášení do Brunch' ORDER BY created_at DESC LIMIT 1")
+        let body: String = sqlx::query_scalar("SELECT body FROM outbox WHERE to_email=$1 AND subject='Přihlášení do Brunch Era' ORDER BY created_at DESC LIMIT 1")
             .bind(email.to_lowercase()).fetch_one(&self.pool).await.unwrap();
+        assert!(body.ends_with("Brunch Era"));
         body.split("login_token=")
             .nth(1)
             .unwrap()
@@ -981,7 +982,7 @@ async fn catalog_price_history_delivery_settings_conflicts_and_mail_retry() {
     let first = app.post(&guest, "/api/orders", &input).await;
     assert_eq!(first["delivery_fee_cents"], 7700);
     let recipients: Vec<String> =
-        sqlx::query_scalar("SELECT to_email FROM outbox WHERE subject<>'Přihlášení do Brunch'")
+        sqlx::query_scalar("SELECT to_email FROM outbox WHERE subject<>'Přihlášení do Brunch Era'")
             .fetch_all(&app.pool)
             .await
             .unwrap();
@@ -1002,7 +1003,7 @@ async fn catalog_price_history_delivery_settings_conflicts_and_mail_retry() {
         app.post(&guest, "/api/orders", &input).await["delivery_fee_cents"],
         0
     );
-    let mail_id: Uuid = sqlx::query_scalar("UPDATE outbox SET status='failed',attempts=8,last_error='Test SMTP failure' WHERE id=(SELECT id FROM outbox WHERE subject<>'Přihlášení do Brunch' LIMIT 1) RETURNING id").fetch_one(&app.pool).await.unwrap();
+    let mail_id: Uuid = sqlx::query_scalar("UPDATE outbox SET status='failed',attempts=8,last_error='Test SMTP failure' WHERE id=(SELECT id FROM outbox WHERE subject<>'Přihlášení do Brunch Era' LIMIT 1) RETURNING id").fetch_one(&app.pool).await.unwrap();
     let mail = app.get(&admin, "/api/admin/mail").await;
     assert!(
         mail.as_array()

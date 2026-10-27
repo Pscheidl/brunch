@@ -2,7 +2,7 @@
   "name": "brunch-browser-tests",
   "private": true,
   "version": "0.1.0",
-  "description": "Local browser verification for the Rust Brunch application",
+  "description": "Local browser verification for the Rust Brunch Era application",
   "scripts": {
     "test:storefront": "node scripts/test-storefront-browser.cjs",
     "test:admin": "node scripts/test-admin-browser.cjs",

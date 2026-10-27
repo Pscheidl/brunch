@@ -31,7 +31,7 @@ impl Fixture {
             )
             .env("ADMIN_EMAIL", "admin@brunch-ci.cz")
             .env("ORDER_EMAIL", "orders@brunch-ci.cz")
-            .env("SMTP_FROM", "Brunch <obchod@brunch-ci.cz>")
+            .env("SMTP_FROM", "Brunch Era <obchod@brunch-ci.cz>")
             .env("SMTP_HOST", "smtp.brunch-ci.cz")
             .env("SMTP_PORT", "587")
             .env("SMTP_TLS", "true")

@@ -384,7 +384,7 @@ impl TestApp {
             StatusCode::OK,
         )
         .await;
-        let body: String = sqlx::query_scalar("SELECT body FROM outbox WHERE to_email=$1 AND subject='Přihlášení do Brunch' ORDER BY created_at DESC LIMIT 1")
+        let body: String = sqlx::query_scalar("SELECT body FROM outbox WHERE to_email=$1 AND subject='Přihlášení do Brunch Era' ORDER BY created_at DESC LIMIT 1")
             .bind(email).fetch_one(&self.state.pool).await.unwrap();
         let token = body
             .split("login_token=")

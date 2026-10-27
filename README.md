@@ -1,4 +1,4 @@
-# brunch
+# Brunch Era
 
 Obchod s rozvozem svačin. Frontend používá Rust, Leptos CSR a Trunk. Backend je Rust/Axum s PostgreSQL. Obchod a administraci obsluhuje stejný server, takže nejsou potřeba oddělené domény ani CORS.
 

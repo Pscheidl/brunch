@@ -85,7 +85,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
         }
     });
-    tracing::info!(address=%config.bind,"Brunch server ready");
+    tracing::info!(address=%config.bind,"Brunch Era server ready");
     axum::serve(listener, app(state))
         .with_graceful_shutdown(shutdown_signal())
         .await?;

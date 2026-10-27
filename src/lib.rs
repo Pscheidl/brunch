@@ -1,4 +1,4 @@
-//! Samostatný frontend rozvozu svačin Brunch.
+//! Samostatný frontend rozvozu svačin Brunch Era.
 #![recursion_limit = "256"]
 
 pub mod api;

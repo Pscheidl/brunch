@@ -1,4 +1,4 @@
-# Nasazení Brunch na Zoner Cloud
+# Nasazení Brunch Era na Zoner Cloud
 
 Projekt je připraven pro samostatný Linux VPS s Docker Engine a Docker Compose. Aplikace se sestaví na pracovním počítači nebo v CI, na VPS se přenese hotový obraz. Tento dokument je postup pro pozdější nasazení, ne záznam o provedeném nasazení. Skutečná doména, přístupy, pošta a účet Teya se doplní až podle údajů provozovatele.
 
@@ -11,7 +11,7 @@ Na serveru běží tři služby podle [deploy/compose.yaml](../deploy/compose.ya
 | Služba | Úloha | Přístup z internetu |
 | --- | --- | --- |
 | Caddy | HTTPS, obnova certifikátu a předávání požadavků aplikaci | TCP 80 a 443 |
-| Brunch | Obchod, administrace, e-mailová fronta a platby | Pouze přes Caddy |
+| Brunch Era | Obchod, administrace, e-mailová fronta a platby | Pouze přes Caddy |
 | PostgreSQL 18 | Objednávky, zákazníci, fotografie, platby a poštovní fronta | Bez zveřejněného portu |
 
 Mailpit je pouze pro místní vývoj. Produkční pošta používá externí SMTP. Runtime aplikace běží pod UID/GID `10001:10001`. Aplikační obraz neobsahuje přístupové údaje ani Rust sestavovací nástroje.
