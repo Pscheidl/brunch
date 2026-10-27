@@ -112,6 +112,21 @@ class PreviewIsolationTests(unittest.TestCase):
         self.assertRegex(services["mailpit"]["image"], r"^axllent/mailpit:v[0-9]+\.[0-9]+\.[0-9]+$")
 
 
+class TmpfsMountTests(unittest.TestCase):
+    def test_application_tmpfs_is_one_absolute_mount_with_size_and_mode_options(self):
+        for filename in ("compose.yaml", "compose.preview.yaml"):
+            with self.subTest(compose=filename):
+                mounts = load_compose(filename)["services"]["app"]["tmpfs"]
+                self.assertEqual(len(mounts), 1, "YAML must not split comma-separated mount options")
+                target, separator, raw_options = mounts[0].partition(":")
+                self.assertEqual(target, "/tmp")
+                self.assertTrue(Path(target).is_absolute())
+                self.assertEqual(separator, ":")
+                options = dict(option.split("=", 1) for option in raw_options.split(","))
+                self.assertEqual(options["size"], "16m")
+                self.assertEqual(int(options["mode"], 8), 0o1777)
+
+
 def configuration(secrets):
     return {
         "name": "brunch-production",
