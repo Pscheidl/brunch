@@ -120,6 +120,15 @@ async fn smtp_delivery_retry_and_crashed_worker_lease() {
     assert!(message.contains("customer@example.test"));
     assert!(message.contains("Message-ID:"));
     assert!(message.contains("Brunch Era"));
+    let (headers, body) = message.split_once("\n\n").expect("SMTP message has a body");
+    assert!(headers.contains("MIME-Version: 1.0"), "{headers}");
+    assert!(
+        headers.contains("Content-Type: text/plain; charset=utf-8"),
+        "Recipients need the UTF-8 charset to decode Czech text: {headers}"
+    );
+    assert!(headers.contains("Content-Transfer-Encoding: quoted-printable"));
+    // These are the actual UTF-8 bytes transported over SMTP, not ISO-8859-1 text.
+    assert!(body.contains("Doru=C4=8Den=C3=AD do druh=C3=A9ho patra. Celkem 168 K=C4=8D."));
     let row: (String, i32, bool) =
         sqlx::query_as("SELECT status,attempts,sent_at IS NOT NULL FROM outbox")
             .fetch_one(&pool)

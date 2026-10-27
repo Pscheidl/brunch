@@ -7,7 +7,7 @@ use axum::{
 };
 use chrono::{DateTime, Utc};
 use lettre::{
-    AsyncSmtpTransport, AsyncTransport, Message, Tokio1Executor,
+    AsyncSmtpTransport, AsyncTransport, Message, Tokio1Executor, message::SinglePart,
     transport::smtp::authentication::Credentials,
 };
 use serde::Serialize;
@@ -82,7 +82,7 @@ pub async fn deliver_batch(
                 .to(to)
                 .subject(&row.subject)
                 .message_id(Some(format!("<{}@brunch.local>", row.id)))
-                .body(row.body)
+                .singlepart(SinglePart::plain(row.body))
             {
                 Ok(message) => {
                     match tokio::time::timeout(Duration::from_secs(45), transport.send(message))
