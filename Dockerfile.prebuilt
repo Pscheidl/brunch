@@ -1,0 +1,21 @@
+# Assemble locally compiled artifacts without a Rust toolchain on the VPS.
+# The only valid context is runtime/ from scripts/package-prebuilt.py.
+FROM debian:bookworm-slim
+ARG SOURCE_REVISION
+LABEL org.opencontainers.image.title="Brunch Era" \
+      org.opencontainers.image.revision="$SOURCE_REVISION"
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ca-certificates curl \
+    && rm -rf /var/lib/apt/lists/* \
+    && groupadd --gid 10001 brunch \
+    && useradd --uid 10001 --gid brunch --no-create-home --shell /usr/sbin/nologin brunch
+WORKDIR /app
+COPY brunch-server /usr/local/bin/brunch-server
+COPY dist/ /app/dist/
+COPY assets.sha256 /app/assets.sha256
+ENV BIND_ADDR=0.0.0.0:3100 DIST_DIR=/app/dist
+USER 10001:10001
+EXPOSE 3100
+HEALTHCHECK --interval=30s --timeout=5s --start-period=30s --retries=3 \
+    CMD curl --fail --silent --max-time 4 http://127.0.0.1:3100/api/health >/dev/null || exit 1
+ENTRYPOINT ["/usr/local/bin/brunch-server"]

@@ -1,5 +1,8 @@
 #!/usr/bin/env python3
-"""Test deployment validation and backup failure handling without a Docker daemon."""
+"""Test deployment safeguards without a Docker daemon.
+
+Compose isolation tests use PyYAML when available, otherwise the Compose CLI.
+"""
 
 from copy import deepcopy
 import hashlib
@@ -7,6 +10,7 @@ import importlib.util
 import json
 import os
 from pathlib import Path
+import shutil
 import stat
 import subprocess
 import tempfile
@@ -19,6 +23,93 @@ WRAPPER = ROOT / "deploy/brunch.sh"
 spec = importlib.util.spec_from_file_location("preflight", PREFLIGHT)
 preflight = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(preflight)
+
+
+def load_compose(filename):
+    compose_file = ROOT / "deploy" / filename
+    try:
+        import yaml
+    except ImportError:
+        if not shutil.which("docker"):
+            raise unittest.SkipTest("Compose isolation checks need PyYAML or the Docker Compose CLI")
+        result = subprocess.run(
+            ["docker", "compose", "-f", str(compose_file), "config", "--no-interpolate", "--format", "json"],
+            text=True, capture_output=True, timeout=30, check=True)
+        return json.loads(result.stdout)
+    return yaml.safe_load(compose_file.read_text())
+
+
+class ComposeIsolationTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.compose = load_compose("compose.yaml")
+
+    def test_database_has_no_published_port_or_external_route(self):
+        db = self.compose["services"]["db"]
+        self.assertEqual(set(db["networks"]), {"database"})
+        self.assertFalse(db.get("ports"))
+        self.assertTrue(self.compose["networks"]["database"]["internal"])
+        self.assertFalse(self.compose["networks"]["database"].get("external", False))
+        self.assertNotIn("network_mode", db)
+
+    def test_proxy_cannot_join_database_network_but_app_can_reach_both(self):
+        services = self.compose["services"]
+        self.assertEqual(set(services["app"]["networks"]), {"application", "database"})
+        self.assertEqual(set(services["caddy"]["networks"]), {"application"})
+        self.assertFalse(services["app"].get("ports"))
+        self.assertFalse(self.compose["networks"]["application"].get("internal", False))
+        for service in ("app", "caddy"):
+            self.assertNotIn("network_mode", services[service])
+
+    def test_database_has_process_and_privilege_limits(self):
+        db = self.compose["services"]["db"]
+        self.assertGreater(db["pids_limit"], 0)
+        self.assertLessEqual(db["pids_limit"], 128)
+        self.assertIn("no-new-privileges:true", db["security_opt"])
+        self.assertFalse(db.get("privileged", False))
+
+
+class PreviewIsolationTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.compose = load_compose("compose.preview.yaml")
+
+    def test_preview_exposes_only_loopback_storefront(self):
+        services = self.compose["services"]
+        self.assertEqual(set(services), {"app", "db", "mailpit"})
+        self.assertEqual(self.compose["name"], "brunch-preview")
+        self.assertFalse(services["db"].get("ports"))
+        self.assertFalse(services["mailpit"].get("ports"))
+        ports = services["app"]["ports"]
+        self.assertEqual(len(ports), 1)
+        if isinstance(ports[0], str):
+            self.assertEqual(ports, ["127.0.0.1:3100:3100"])
+        else:
+            self.assertEqual(ports[0]["host_ip"], "127.0.0.1")
+            self.assertEqual(int(ports[0]["published"]), 3100)
+            self.assertEqual(int(ports[0]["target"]), 3100)
+        for service in services.values():
+            self.assertNotIn("network_mode", service)
+            self.assertFalse(service.get("privileged", False))
+
+    def test_preview_captures_mail_without_an_external_route_or_payment_configuration(self):
+        services = self.compose["services"]
+        self.assertEqual(set(services["mailpit"]["networks"]), {"mail_capture"})
+        self.assertEqual(set(services["db"]["networks"]), {"database"})
+        for network in ("database", "mail_capture"):
+            self.assertTrue(self.compose["networks"][network]["internal"])
+        self.assertEqual(set(services["app"]["networks"]), {"application", "database", "mail_capture"})
+        env = services["app"]["environment"]
+        self.assertEqual(env["APP_ENV"], "preview")
+        self.assertEqual(env["PUBLIC_URL"], "http://127.0.0.1:3100")
+        self.assertEqual(env["SMTP_HOST"], "mailpit")
+        self.assertEqual(str(env["SMTP_TLS"]).lower(), "false")
+        for key in ("SMTP_USERNAME", "SMTP_PASSWORD", "SMTP_PASSWORD_FILE", "TEYA_ENVIRONMENT"):
+            self.assertEqual(env[key], "")
+        mail = services["mailpit"]["environment"]
+        self.assertEqual(str(mail["MP_SMTP_RELAY_ALL"]).lower(), "false")
+        self.assertFalse(any(key.startswith("MP_SMTP_RELAY_") and key != "MP_SMTP_RELAY_ALL" for key in mail))
+        self.assertRegex(services["mailpit"]["image"], r"^axllent/mailpit:v[0-9]+\.[0-9]+\.[0-9]+$")
 
 
 def configuration(secrets):

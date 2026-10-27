@@ -3,6 +3,7 @@ use std::{env, io::Read, net::SocketAddr, path::Path, str::FromStr};
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum AppEnvironment {
     Development,
+    Preview,
     Staging,
     Production,
 }
@@ -11,15 +12,17 @@ impl AppEnvironment {
     fn from_env() -> Result<Self, String> {
         match env::var("APP_ENV").as_deref().unwrap_or("development") {
             "development" => Ok(Self::Development),
+            "preview" => Ok(Self::Preview),
             "staging" => Ok(Self::Staging),
             "production" => Ok(Self::Production),
-            _ => Err("APP_ENV musí být development, staging nebo production".into()),
+            _ => Err("APP_ENV musí být development, preview, staging nebo production".into()),
         }
     }
 
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Development => "development",
+            Self::Preview => "preview",
             Self::Staging => "staging",
             Self::Production => "production",
         }
@@ -27,6 +30,10 @@ impl AppEnvironment {
 
     pub fn is_development(self) -> bool {
         self == Self::Development
+    }
+
+    fn requires_public_services(self) -> bool {
+        matches!(self, Self::Staging | Self::Production)
     }
 }
 
@@ -74,10 +81,14 @@ impl Config {
             );
         }
         let secure_cookies = url.scheme() == "https";
-        if !secure_cookies && !matches!(url.host_str(), Some("localhost" | "127.0.0.1" | "[::1]")) {
+        let loopback_url = matches!(url.host_str(), Some("localhost" | "127.0.0.1" | "[::1]"));
+        if !secure_cookies && !loopback_url {
             return Err("Mimo localhost vyžaduje PUBLIC_URL HTTPS".into());
         }
-        if !app_env.is_development()
+        if app_env == AppEnvironment::Preview && (secure_cookies || !loopback_url) {
+            return Err("PUBLIC_URL v preview musí být HTTP loopback adresa pro SSH tunel".into());
+        }
+        if app_env.requires_public_services()
             && (!secure_cookies || !url.host_str().is_some_and(deployable_domain))
         {
             return Err(
@@ -101,7 +112,7 @@ impl Config {
                     "{name} musí obsahovat samotnou e-mailovou adresu bez jména"
                 ));
             }
-            if !app_env.is_development() && !deployable_domain(mailbox.email.domain()) {
+            if app_env.requires_public_services() && !deployable_domain(mailbox.email.domain()) {
                 return Err(format!(
                     "{name} ve stagingu a produkci vyžaduje skutečnou e-mailovou adresu"
                 ));
@@ -114,10 +125,24 @@ impl Config {
         if url::Host::parse(&smtp_host).is_err() {
             return Err("Neplatné SMTP_HOST".into());
         }
-        if !app_env.is_development() && !deployable_domain(&smtp_host) {
+        if app_env.requires_public_services() && !deployable_domain(&smtp_host) {
             return Err(
                 "SMTP_HOST ve stagingu a produkci vyžaduje skutečnou doménu SMTP serveru".into(),
             );
+        }
+        if app_env == AppEnvironment::Preview {
+            if !matches!(
+                smtp_host.as_str(),
+                "localhost" | "127.0.0.1" | "::1" | "mailpit"
+            ) {
+                return Err("SMTP_HOST v preview musí být místní zachytávání pošty".into());
+            }
+            if ["SMTP_USERNAME", "SMTP_PASSWORD", "SMTP_PASSWORD_FILE"]
+                .iter()
+                .any(|key| env::var(key).is_ok_and(|value| !value.is_empty()))
+            {
+                return Err("SMTP přihlašovací údaje nejsou v preview povoleny".into());
+            }
         }
         let smtp_tls = match env::var("SMTP_TLS").as_deref().unwrap_or("true") {
             "true" => true,
@@ -137,7 +162,7 @@ impl Config {
         {
             return Err("SMTP bez TLS je dovoleno jen pro místní poštovní server".into());
         }
-        if !app_env.is_development() && !smtp_tls {
+        if app_env.requires_public_services() && !smtp_tls {
             return Err("Staging a produkce vyžadují SMTP_TLS=true".into());
         }
         let database_url = secret_setting("DATABASE_URL", &dist_dir)?
@@ -145,7 +170,10 @@ impl Config {
         sqlx::postgres::PgConnectOptions::from_str(&database_url)
             .map_err(|_| "Neplatné DATABASE_URL")?;
         let teya_environment = env::var("TEYA_ENVIRONMENT").unwrap_or_default();
-        if !app_env.is_development()
+        if app_env == AppEnvironment::Preview && !teya_environment.is_empty() {
+            return Err("TEYA_ENVIRONMENT musí zůstat prázdné, preview nemá online platby".into());
+        }
+        if app_env.requires_public_services()
             && !teya_environment.is_empty()
             && teya_environment != app_env.as_str()
         {
@@ -278,7 +306,15 @@ fn payment_timeout(value: Option<&str>) -> Result<u32, String> {
 
 #[cfg(test)]
 mod tests {
-    use super::payment_timeout;
+    use super::{AppEnvironment, payment_timeout};
+    #[test]
+    fn private_preview_never_enables_development_demo_seeding() {
+        assert!(!AppEnvironment::Preview.is_development());
+        assert!(!AppEnvironment::Staging.is_development());
+        assert!(!AppEnvironment::Production.is_development());
+        assert!(AppEnvironment::Development.is_development());
+    }
+
     #[test]
     fn online_order_timeout_defaults_to_one_hour_and_rejects_invalid_values() {
         assert_eq!(payment_timeout(None).unwrap(), 60);

@@ -25,6 +25,7 @@ BUILD_DIRECTORIES = ("src/", "style/", "public/", "server/src/", "server/migrati
 # This is deliberately an allowlist, not a recursive copy of deploy/ or docs/.
 RELEASE_FILES = (
     "deploy/compose.yaml", "deploy/Caddyfile", "deploy/.env.example",
+    "deploy/compose.preview.yaml", "deploy/.env.preview.example", "docs/private-preview.md",
     "deploy/brunch.sh", "deploy/preflight.py", "deploy/init-db.sh",
     "deploy/brunch-backup.service", "deploy/brunch-backup.timer",
     "deploy/brunch-health.service", "deploy/brunch-health.timer", "docs/zoner-cloud.md",

@@ -34,7 +34,9 @@ Přístupové údaje nepatří do Git repozitáře, release archivu, veřejných
 
 ## Příprava VPS
 
-Vhodný výchozí systém je Ubuntu 26.04 LTS na architektuře x86_64. Docker Engine, Buildx a Compose plugin instalujte podle [oficiálního postupu Dockeru pro Ubuntu](https://docs.docker.com/engine/install/ubuntu/). Na VPS není potřeba instalovat Rust, Trunk, Node ani samostatný PostgreSQL mimo kontejnery.
+Vhodný systém je Debian 13 nebo Ubuntu 26.04 LTS na architektuře x86_64. Docker Engine, Buildx a Compose plugin instalujte podle oficiálního postupu pro [Debian](https://docs.docker.com/engine/install/debian/) nebo [Ubuntu](https://docs.docker.com/engine/install/ubuntu/). Na VPS není potřeba instalovat Rust, Trunk, Node ani samostatný PostgreSQL mimo kontejnery.
+
+Pokud ještě chybí doména a skutečná pošta, použijte oddělený [neveřejný náhled přes SSH](private-preview.md). Tento režim má vlastní databázi a zachytává poštu pouze místně. Veřejnou produkční konfiguraci ani její validaci nenahrazuje.
 
 Povolte SSH pro správu a veřejné TCP porty 80 a 443. Porty databáze a aplikace nejsou publikované. Při nastavení firewallu zohledněte, že publikované porty Dockeru mohou obcházet běžná pravidla UFW, jak popisuje stejný instalační návod. SSH přístup zachovejte před změnou firewallu.
 
@@ -72,6 +74,25 @@ sudo docker image load --input image.tar.gz
 Samotný seznam součtů uvnitř archivu neověřuje původ vydání. Po načtení porovnejte výstup `docker image inspect --format '{{.Id}}' brunch:<commit12>` s hodnotou `IMAGE_ID` v `release.env`.
 
 Z `release.env` přečtěte hodnotu `BRUNCH_IMAGE` a přeneste ji do provozního nastavení. Soubor není potřeba spouštět příkazem `source`. Provozní soubor se při aktualizaci nikdy nenahrazuje souborem z archivu.
+
+### Varianta bez Dockeru na pracovním počítači
+
+Pokud pracovní počítač nemá Docker, lze Rust a frontend zkompilovat lokálně a na VPS pouze sestavit malý runtime obraz podle stejného principu jako obecní web:
+
+```bash
+python3 scripts/package-prebuilt.py
+```
+
+Skript vyžaduje čistý commit, Rust podle `rust-toolchain.toml`, Trunk 0.21.14, wasm-bindgen 0.2.129 a `readelf`. Čte soubory z konkrétních Git objektů, nikoli z průběžně měněné pracovní kopie. Ověřuje architekturu x86_64, maximální požadavek glibc 2.36 a knihovny dostupné v runtime. Výsledek `brunch-prebuilt-<commit12>.tar.gz` obsahuje `runtime/`, provozní skripty, kontrolní součty a záznam verzí nástrojů. Neobsahuje `.env`, klíče ani databázi. Toto je jiný formát než hotový obraz z `package-release.sh`, nemá `image.tar.gz` ani `IMAGE_ID`.
+
+Po přenosu ověřte vnější součet, rozbalte do nového adresáře a ověřte `SHA256SUMS`. Z jeho `release.env` přečtěte přesný commit a tag. Následující zástupné hodnoty nahraďte těmito ověřenými údaji:
+
+```bash
+sudo docker build --platform linux/amd64 --build-arg SOURCE_REVISION=CELÝ_COMMIT --tag brunch:COMMIT12 runtime
+sudo docker image inspect --format '{{.Id}}' brunch:COMMIT12
+```
+
+Docker na VPS instaluje pouze základní runtime balíčky a přidá hotový binární soubor a statické soubory. Rust ani WASM na VPS nekompiluje. Výsledné ID obrazu zaznamenejte do záznamu nasazení, nastavte `BRUNCH_IMAGE` a pokračujte kontrolou konfigurace, spuštěním a ověřením veřejných souborů stejně jako u plného release archivu. Základní Debian obraz a balíčky se stahují při sestavení, proto samotný commit negarantuje stejné ID obrazu při pozdějším opakování. Pro přesný návrat uchovejte již sestavený obraz.
 
 ## Provozní nastavení
 

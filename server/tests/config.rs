@@ -49,6 +49,20 @@ impl Fixture {
         }
         path
     }
+
+    fn preview_command(&self) -> Command {
+        let mut command = self.command();
+        command
+            .env("APP_ENV", "preview")
+            .env("PUBLIC_URL", "http://127.0.0.1:3100")
+            .env("ADMIN_EMAIL", "admin@example.test")
+            .env("ORDER_EMAIL", "orders@example.test")
+            .env("SMTP_FROM", "Brunch Era <shop@example.test>")
+            .env("SMTP_HOST", "mailpit")
+            .env("SMTP_PORT", "1025")
+            .env("SMTP_TLS", "false");
+        command
+    }
 }
 
 impl Drop for Fixture {
@@ -228,4 +242,84 @@ fn development_configuration_keeps_local_mail_and_http_support() {
         .unwrap();
     assert!(output.status.success(), "{}", output_text(&output));
     assert!(output_text(&output).contains("APP_ENV=development"));
+}
+
+#[test]
+fn preview_accepts_only_private_loopback_urls_and_capture_mail() {
+    let fixture = Fixture::new();
+    for url in [
+        "http://127.0.0.1:3100",
+        "http://localhost:3100",
+        "http://[::1]:3100",
+    ] {
+        let output = fixture
+            .preview_command()
+            .env("PUBLIC_URL", url)
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "{}", output_text(&output));
+        assert!(output_text(&output).contains("APP_ENV=preview"));
+        assert!(output_text(&output).contains("Teya=disabled"));
+        assert!(!output_text(&output).contains("DO-NOT-PRINT"));
+    }
+    for url in [
+        "http://0.0.0.0:3100",
+        "http://192.168.1.2:3100",
+        "http://203.0.113.10:3100",
+        "https://shop.brunch-ci.cz",
+        "https://127.0.0.1:3100",
+        "http://localhost:3100/admin/",
+    ] {
+        rejected(
+            fixture.preview_command().env("PUBLIC_URL", url),
+            "PUBLIC_URL",
+        );
+    }
+    for host in ["smtp.brunch-ci.cz", "192.168.1.2", "mailpit.example.test"] {
+        rejected(
+            fixture.preview_command().env("SMTP_HOST", host),
+            "SMTP_HOST",
+        );
+    }
+}
+
+#[test]
+fn preview_refuses_smtp_credentials_and_online_payments() {
+    let fixture = Fixture::new();
+    for key in ["SMTP_USERNAME", "SMTP_PASSWORD", "SMTP_PASSWORD_FILE"] {
+        rejected(fixture.preview_command().env(key, "DO-NOT-PRINT"), "SMTP");
+    }
+    for environment in ["staging", "production", "preview"] {
+        rejected(
+            fixture
+                .preview_command()
+                .env("TEYA_ENVIRONMENT", environment),
+            "TEYA_ENVIRONMENT",
+        );
+    }
+}
+
+#[test]
+fn preview_configuration_is_not_accepted_in_staging_or_production() {
+    let fixture = Fixture::new();
+    for environment in ["staging", "production"] {
+        rejected(
+            fixture.preview_command().env("APP_ENV", environment),
+            "PUBLIC_URL",
+        );
+        rejected(
+            fixture
+                .command()
+                .env("APP_ENV", environment)
+                .env("SMTP_HOST", "mailpit"),
+            "SMTP_HOST",
+        );
+        rejected(
+            fixture
+                .command()
+                .env("APP_ENV", environment)
+                .env("SMTP_TLS", "false"),
+            "SMTP",
+        );
+    }
 }

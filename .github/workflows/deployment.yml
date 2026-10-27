@@ -25,6 +25,7 @@ jobs:
       - name: Check release packaging and deployment safeguards
         run: |
           python3 scripts/test-release-package.py
+          python3 scripts/package-prebuilt-test.py
           python3 scripts/test-deployment.py
           bash -n deploy/brunch.sh deploy/init-db.sh scripts/package-release.sh scripts/test-deployment-smoke.sh
       - name: Build the Linux release image
