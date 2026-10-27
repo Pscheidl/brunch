@@ -1,12 +1,33 @@
 #!/usr/bin/env python3
 """Validate resolved Compose configuration without displaying credentials."""
 import argparse
+import ipaddress
 import json
 import os
 from pathlib import Path
 import re
 import stat
 import sys
+
+
+# Keep in step with server/src/config.rs. Protocol anycast exceptions in
+# 192.0.0/24 are intentionally excluded as storefront endpoints.
+NONPUBLIC_IPV4 = tuple(ipaddress.IPv4Network(prefix) for prefix in (
+    "0.0.0.0/8", "10.0.0.0/8", "100.64.0.0/10", "127.0.0.0/8",
+    "169.254.0.0/16", "172.16.0.0/12", "192.0.0.0/24", "192.0.2.0/24",
+    "192.88.99.0/24", "192.168.0.0/16", "198.18.0.0/15",
+    "198.51.100.0/24", "203.0.113.0/24", "224.0.0.0/3",
+))
+
+
+def public_ipv4(host):
+    if not isinstance(host, str):
+        return False
+    try:
+        address = ipaddress.IPv4Address(host)
+    except ipaddress.AddressValueError:
+        return False
+    return not any(address in network for network in NONPUBLIC_IPV4)
 
 
 def private_file(path):
@@ -35,8 +56,19 @@ def validate(config, skip_secret_files=False):
     if config["name"] != f"brunch-{mode}":
         raise ValueError("COMPOSE_PROJECT_NAME must match brunch-APP_ENV")
     domain = proxy["DOMAIN"]
-    if placeholder(domain) or not re.fullmatch(r"(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}", domain):
-        raise ValueError("DOMAIN must be the real DNS hostname, without scheme, port or path")
+    allow_public_ip = env.get("ALLOW_PUBLIC_IP", "false")
+    if allow_public_ip not in ("true", "false"):
+        raise ValueError("ALLOW_PUBLIC_IP must be true or false")
+    profile = proxy.get("ACME_PROFILE", "classic")
+    if profile not in ("classic", "shortlived"):
+        raise ValueError("ACME_PROFILE must be classic or shortlived")
+    is_public_ipv4 = public_ipv4(domain)
+    is_domain = not placeholder(domain) and re.fullmatch(
+        r"(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}", domain)
+    if not is_domain and not (allow_public_ip == "true" and is_public_ipv4):
+        raise ValueError("DOMAIN must be a real DNS hostname, or a public IPv4 with ALLOW_PUBLIC_IP=true")
+    if is_public_ipv4 and profile != "shortlived":
+        raise ValueError("ACME_PROFILE must be shortlived for public IPv4 HTTPS")
     if env["PUBLIC_URL"] != f"https://{domain}":
         raise ValueError("PUBLIC_URL must match the HTTPS domain")
     image = app["image"]

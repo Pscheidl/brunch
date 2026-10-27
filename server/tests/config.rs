@@ -109,6 +109,146 @@ fn deployment_check_accepts_valid_settings_without_connecting_to_any_service() {
 }
 
 #[test]
+fn public_ipv4_requires_explicit_opt_in_and_https() {
+    let fixture = Fixture::new();
+    for environment in ["staging", "production"] {
+        rejected(
+            fixture
+                .command()
+                .env("APP_ENV", environment)
+                .env("PUBLIC_URL", "https://37.46.209.59"),
+            "PUBLIC_URL",
+        );
+        rejected(
+            fixture
+                .command()
+                .env("APP_ENV", environment)
+                .env("PUBLIC_URL", "https://37.46.209.59")
+                .env("ALLOW_PUBLIC_IP", "false"),
+            "PUBLIC_URL",
+        );
+        let output = fixture
+            .command()
+            .env("APP_ENV", environment)
+            .env("PUBLIC_URL", "https://37.46.209.59")
+            .env("ALLOW_PUBLIC_IP", "true")
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "{}", output_text(&output));
+        assert!(output_text(&output).contains("Teya=disabled"));
+        assert!(!output_text(&output).contains("DO-NOT-PRINT"));
+        rejected(
+            fixture
+                .command()
+                .env("APP_ENV", environment)
+                .env("PUBLIC_URL", "http://37.46.209.59")
+                .env("ALLOW_PUBLIC_IP", "true"),
+            "PUBLIC_URL",
+        );
+    }
+}
+
+#[test]
+fn public_ip_opt_in_refuses_nonpublic_ranges_and_ipv6() {
+    let fixture = Fixture::new();
+    for host in [
+        "0.0.0.0",
+        "0.255.255.255",
+        "10.0.0.1",
+        "10.255.255.255",
+        "100.64.0.0",
+        "100.127.255.255",
+        "127.0.0.1",
+        "127.255.255.255",
+        "169.254.0.1",
+        "169.254.255.255",
+        "172.16.0.0",
+        "172.31.255.255",
+        "192.0.0.1",
+        "192.0.0.9",
+        "192.0.0.10",
+        "192.0.2.1",
+        "192.88.99.1",
+        "192.168.0.1",
+        "192.168.255.255",
+        "198.18.0.0",
+        "198.19.255.255",
+        "198.51.100.1",
+        "203.0.113.1",
+        "224.0.0.1",
+        "239.255.255.255",
+        "240.0.0.1",
+        "255.255.255.255",
+        "[::1]",
+        "[::ffff:37.46.209.59]",
+        "[2606:4700:4700::1111]",
+        "localhost",
+        "shop.example.test",
+    ] {
+        rejected(
+            fixture
+                .command()
+                .env("ALLOW_PUBLIC_IP", "true")
+                .env("PUBLIC_URL", format!("https://{host}")),
+            "PUBLIC_URL",
+        );
+    }
+}
+
+#[test]
+fn public_ip_opt_in_is_strict_and_does_not_relax_mail_or_preview_configuration() {
+    let fixture = Fixture::new();
+    for value in ["", "1", "0", "TRUE", "False", "yes", " true", "false "] {
+        rejected(
+            fixture.command().env("ALLOW_PUBLIC_IP", value),
+            "ALLOW_PUBLIC_IP",
+        );
+    }
+    // A real domain remains valid with either setting.
+    for value in ["false", "true"] {
+        let output = fixture
+            .command()
+            .env("ALLOW_PUBLIC_IP", value)
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "{}", output_text(&output));
+    }
+    for key in ["ADMIN_EMAIL", "ORDER_EMAIL", "SMTP_FROM"] {
+        rejected(
+            fixture
+                .command()
+                .env("ALLOW_PUBLIC_IP", "true")
+                .env("PUBLIC_URL", "https://37.46.209.59")
+                .env(key, "test@example.test"),
+            key,
+        );
+    }
+    rejected(
+        fixture
+            .command()
+            .env("ALLOW_PUBLIC_IP", "true")
+            .env("PUBLIC_URL", "https://37.46.209.59")
+            .env("SMTP_HOST", "127.0.0.1"),
+        "SMTP_HOST",
+    );
+    rejected(
+        fixture
+            .command()
+            .env("ALLOW_PUBLIC_IP", "true")
+            .env("PUBLIC_URL", "https://37.46.209.59")
+            .env("SMTP_TLS", "false"),
+        "SMTP",
+    );
+    rejected(
+        fixture
+            .preview_command()
+            .env("ALLOW_PUBLIC_IP", "true")
+            .env("PUBLIC_URL", "https://37.46.209.59"),
+        "PUBLIC_URL",
+    );
+}
+
+#[test]
 fn deployment_rejects_insecure_placeholder_and_mismatched_payment_settings() {
     let fixture = Fixture::new();
     for url in [

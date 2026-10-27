@@ -42,6 +42,14 @@ Povolte SSH pro správu a veřejné TCP porty 80 a 443. Porty databáze a aplika
 
 DNS záznam A hlavní domény musí směřovat na IPv4 tohoto VPS. AAAA přidávejte pouze při funkčním IPv6 směrování na stejnou instalaci. Caddy potřebuje dostupné porty a správné DNS pro získání certifikátu. Doména musí být holý název, například `obchod.vase-domena.cz`, bez `https://`, cesty a koncového lomítka.
 
+### Dočasný veřejný přístup přes IPv4
+
+Pokud DNS zatím nelze přesměrovat, lze obchod provozovat přímo přes veřejnou IPv4 s důvěryhodným HTTPS. V provozním souboru nastavte `DOMAIN` na IPv4 VPS, `ALLOW_PUBLIC_IP=true` a `ACME_PROFILE=shortlived`. Výchozí `ALLOW_PUBLIC_IP=false` nadále vyžaduje DNS jméno. Soukromé, rezervované a dokumentační adresy ani IPv6 tento režim nepovoluje. SMTP a ostatní produkční požadavky zůstávají povinné.
+
+[Let's Encrypt vydává certifikáty pro IP adresy](https://letsencrypt.org/2026/01/15/6day-and-ip-general-availability) s platností 160 hodin. Caddy používá explicitní veřejný ACME issuer, profil `shortlived` a automatickou obnovu. Port 80 musí být dostupný pro HTTP challenge, port 443 pro obchod. Svazek `caddy_data` musí zůstat zachovaný, obsahuje účet a certifikáty. HTTP se automaticky přesměruje na HTTPS. Nastavení `default_sni` zajišťuje výběr certifikátu také pro prohlížeče, které u IP adres neposílají SNI.
+
+Po změně DNS na tento VPS přepněte `DOMAIN` na hlavní doménu, `ALLOW_PUBLIC_IP=false` a `ACME_PROFILE=classic`. Znovu spusťte `brunch.sh up`, ověřte certifikát, přihlášení a veřejné soubory. Dříve odeslané přihlašovací odkazy používají původní adresu, proto si vyžádejte nový odkaz. Údaje a svazek databáze se při změně adresy nemění.
+
 Na VPS připravte adresáře:
 
 ```bash
@@ -110,7 +118,9 @@ Všechny příklady v šabloně je třeba nahradit. Validace odmítá ukázkové
 | `BRUNCH_IMAGE` | Přesný tag hotového obrazu z tohoto vydání |
 | `APP_ENV` | `production` pro zákazníky, `staging` pro oddělené ověření |
 | `COMPOSE_PROJECT_NAME` | Stabilní název instalace, například `brunch-production` |
-| `DOMAIN` | Hlavní DNS jméno obchodu. Compose odvodí `PUBLIC_URL=https://...` |
+| `DOMAIN` | Hlavní DNS jméno, případně výslovně povolená veřejná IPv4. Compose odvodí `PUBLIC_URL=https://...` |
+| `ALLOW_PUBLIC_IP` | Výchozí `false`, dočasný přístup přes veřejnou IPv4 povolí přesné `true` |
+| `ACME_PROFILE` | `classic` pro doménu, pro IPv4 povinně `shortlived` |
 | `ACME_EMAIL` | Skutečný e-mail pro certifikát HTTPS |
 | `POSTGRES_ADMIN_PASSWORD` | Náhodné heslo správce databáze `postgres`, přesně 64 hexadecimálních znaků |
 | `POSTGRES_PASSWORD` | Jiné náhodné heslo aplikačního uživatele `brunch`, přesně 64 hexadecimálních znaků |

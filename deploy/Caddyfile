@@ -1,9 +1,19 @@
 {
 	email {$ACME_EMAIL}
 	admin off
+	# Browsers do not send SNI for IP literals.
+	default_sni {$DOMAIN}
 }
 
 {$DOMAIN} {
+	# Explicit public issuer also permits an opted-in public IPv4 address.
+	tls {
+		issuer acme {
+			dir https://acme-v02.api.letsencrypt.org/directory
+			profile {$ACME_PROFILE:classic}
+			disable_tlsalpn_challenge
+		}
+	}
 	# No access log: login URLs contain one-time tokens.
 	@static not path /api/*
 	header @static Cache-Control "no-cache"

@@ -1,4 +1,10 @@
-use std::{env, io::Read, net::SocketAddr, path::Path, str::FromStr};
+use std::{
+    env,
+    io::Read,
+    net::{Ipv4Addr, SocketAddr},
+    path::Path,
+    str::FromStr,
+};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum AppEnvironment {
@@ -59,6 +65,12 @@ pub struct Config {
 impl Config {
     pub fn from_env() -> Result<Self, String> {
         let app_env = AppEnvironment::from_env()?;
+        let allow_public_ip = match env::var("ALLOW_PUBLIC_IP") {
+            Err(env::VarError::NotPresent) => false,
+            Ok(value) if value == "false" => false,
+            Ok(value) if value == "true" => true,
+            _ => return Err("ALLOW_PUBLIC_IP musí být true nebo false".into()),
+        };
         let required = |key: &str| {
             env::var(key)
                 .ok()
@@ -88,11 +100,12 @@ impl Config {
         if app_env == AppEnvironment::Preview && (secure_cookies || !loopback_url) {
             return Err("PUBLIC_URL v preview musí být HTTP loopback adresa pro SSH tunel".into());
         }
-        if app_env.requires_public_services()
-            && (!secure_cookies || !url.host_str().is_some_and(deployable_domain))
-        {
+        let deployable_host = url
+            .host_str()
+            .is_some_and(|host| deployable_domain(host) || (allow_public_ip && public_ipv4(host)));
+        if app_env.requires_public_services() && (!secure_cookies || !deployable_host) {
             return Err(
-                "PUBLIC_URL ve stagingu a produkci vyžaduje skutečnou veřejnou doménu s HTTPS"
+                "PUBLIC_URL ve stagingu a produkci vyžaduje HTTPS a veřejnou doménu, nebo veřejnou IPv4 s ALLOW_PUBLIC_IP=true"
                     .into(),
             );
         }
@@ -211,6 +224,29 @@ impl Config {
             dist_dir,
         })
     }
+}
+
+fn public_ipv4(host: &str) -> bool {
+    let Ok(address) = host.parse::<Ipv4Addr>() else {
+        return false;
+    };
+    let [a, b, c, _] = address.octets();
+    // Exclude local, shared, documentation and special-purpose address ranges.
+    // The 192.0.0/24 protocol anycast exceptions are not storefront endpoints.
+    // https://www.iana.org/assignments/iana-ipv4-special-registry/
+    !(a == 0
+        || a == 10
+        || (a == 100 && (64..=127).contains(&b))
+        || a == 127
+        || (a == 169 && b == 254)
+        || (a == 172 && (16..=31).contains(&b))
+        || (a == 192 && b == 0 && matches!(c, 0 | 2))
+        || (a == 192 && b == 88 && c == 99)
+        || (a == 192 && b == 168)
+        || (a == 198 && (18..=19).contains(&b))
+        || (a == 198 && b == 51 && c == 100)
+        || (a == 203 && b == 0 && c == 113)
+        || a >= 224)
 }
 
 fn deployable_domain(host: &str) -> bool {

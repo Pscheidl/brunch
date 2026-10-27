@@ -46,6 +46,7 @@ services:
     tmpfs: ["/tmp:size=16m,mode=1777"]
     environment:
       APP_ENV: ${APP_ENV:?Set APP_ENV}
+      ALLOW_PUBLIC_IP: ${ALLOW_PUBLIC_IP:-false}
       BIND_ADDR: 0.0.0.0:3100
       PUBLIC_URL: https://${DOMAIN:?Set DOMAIN}
       DATABASE_URL: postgres://brunch:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD}@db:5432/brunch
@@ -95,6 +96,7 @@ services:
     environment:
       DOMAIN: ${DOMAIN:?Set DOMAIN}
       ACME_EMAIL: ${ACME_EMAIL:?Set ACME_EMAIL}
+      ACME_PROFILE: ${ACME_PROFILE:-classic}
     ports:
       - "80:80"
       - "443:443"

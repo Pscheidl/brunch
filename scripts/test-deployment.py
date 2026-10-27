@@ -68,6 +68,11 @@ class ComposeIsolationTests(unittest.TestCase):
         self.assertIn("no-new-privileges:true", db["security_opt"])
         self.assertFalse(db.get("privileged", False))
 
+    def test_ip_and_certificate_options_are_forwarded_with_safe_defaults(self):
+        services = self.compose["services"]
+        self.assertEqual(services["app"]["environment"]["ALLOW_PUBLIC_IP"], "${ALLOW_PUBLIC_IP:-false}")
+        self.assertEqual(services["caddy"]["environment"]["ACME_PROFILE"], "${ACME_PROFILE:-classic}")
+
 
 class PreviewIsolationTests(unittest.TestCase):
     @classmethod
@@ -173,6 +178,97 @@ class PreflightTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(result.stdout, "https://snackshop.cz\nbrunch-production\n")
         self.assert_no_credentials(result)
+
+    def public_ip_configuration(self, host="37.46.209.59"):
+        config = deepcopy(self.config)
+        config["services"]["app"]["environment"].update({
+            "PUBLIC_URL": f"https://{host}", "ALLOW_PUBLIC_IP": "true",
+        })
+        config["services"]["caddy"]["environment"].update({
+            "DOMAIN": host, "ACME_PROFILE": "shortlived",
+        })
+        return config
+
+    def test_public_ipv4_requires_opt_in_and_shortlived_certificate_profile(self):
+        config = self.public_ip_configuration()
+        result = self.run_preflight(config)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout, "https://37.46.209.59\nbrunch-production\n")
+        self.assert_no_credentials(result)
+        for opt_in in (None, "false"):
+            with self.subTest(opt_in=opt_in):
+                changed = deepcopy(config)
+                env = changed["services"]["app"]["environment"]
+                if opt_in is None:
+                    env.pop("ALLOW_PUBLIC_IP")
+                else:
+                    env["ALLOW_PUBLIC_IP"] = opt_in
+                result = self.run_preflight(changed)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("DOMAIN", result.stderr)
+                self.assert_no_credentials(result)
+        for profile in (None, "classic"):
+            with self.subTest(profile=profile):
+                changed = deepcopy(config)
+                proxy = changed["services"]["caddy"]["environment"]
+                if profile is None:
+                    proxy.pop("ACME_PROFILE")
+                else:
+                    proxy["ACME_PROFILE"] = profile
+                result = self.run_preflight(changed)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("ACME_PROFILE", result.stderr)
+                self.assert_no_credentials(result)
+        for url in ("http://37.46.209.59", "https://37.46.209.59/admin/", "https://37.46.209.60"):
+            with self.subTest(url=url):
+                changed = deepcopy(config)
+                changed["services"]["app"]["environment"]["PUBLIC_URL"] = url
+                result = self.run_preflight(changed)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("PUBLIC_URL", result.stderr)
+                self.assert_no_credentials(result)
+
+    def test_public_ipv4_rejects_private_special_and_ipv6_addresses(self):
+        for host in (
+            "0.0.0.0", "0.255.255.255", "10.0.0.1", "10.255.255.255",
+            "100.64.0.0", "100.127.255.255", "127.0.0.1", "127.255.255.255",
+            "169.254.0.1", "169.254.255.255", "172.16.0.0", "172.31.255.255",
+            "192.0.0.1", "192.0.0.9", "192.0.0.10", "192.0.2.1", "192.88.99.1",
+            "192.168.0.1", "192.168.255.255", "198.18.0.0", "198.19.255.255",
+            "198.51.100.1", "203.0.113.1", "224.0.0.1", "239.255.255.255",
+            "240.0.0.1", "255.255.255.255", "[::1]", "[::ffff:37.46.209.59]",
+            "[2606:4700:4700::1111]", "localhost", "shop.example.test",
+        ):
+            with self.subTest(host=host):
+                result = self.run_preflight(self.public_ip_configuration(host))
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("DOMAIN", result.stderr)
+                self.assert_no_credentials(result)
+
+    def test_ip_opt_in_is_strict_and_domain_profiles_remain_supported(self):
+        for value in ("", "1", "0", "TRUE", "False", "yes", " true", "false ", True, False, None, []):
+            with self.subTest(value=value):
+                changed = deepcopy(self.config)
+                changed["services"]["app"]["environment"]["ALLOW_PUBLIC_IP"] = value
+                result = self.run_preflight(changed)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("ALLOW_PUBLIC_IP", result.stderr)
+                self.assert_no_credentials(result)
+        for profile in ("classic", "shortlived"):
+            with self.subTest(profile=profile):
+                changed = deepcopy(self.config)
+                changed["services"]["caddy"]["environment"]["ACME_PROFILE"] = profile
+                result = self.run_preflight(changed)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assert_no_credentials(result)
+        for profile in ("", "unknown", True, None, []):
+            with self.subTest(profile=profile):
+                changed = deepcopy(self.config)
+                changed["services"]["caddy"]["environment"]["ACME_PROFILE"] = profile
+                result = self.run_preflight(changed)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("ACME_PROFILE", result.stderr)
+                self.assert_no_credentials(result)
 
     def test_example_template_is_rejected_without_echoing_its_values(self):
         values = dict(line.split("=", 1) for line in (ROOT / "deploy/.env.example").read_text().splitlines()
