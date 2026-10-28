@@ -23,7 +23,7 @@ Mailpit je pouze pro místní vývoj. Produkční pošta používá externí SMT
 | VPS | IP adresa, operační systém, přístup přes SSH klíč a oprávnění správce |
 | Doména | Hlavní doména obchodu, přístup k DNS, případné přesměrování dalších názvů |
 | HTTPS | E-mail pro správu certifikátu `ACME_EMAIL` |
-| Správce | Jedna skutečná adresa `ADMIN_EMAIL` pro přihlášení do administrace |
+| Správce | E-mail jako login a heslo prvního účtu, jednorázově založeného v databázi |
 | Objednávky | Adresa `ORDER_EMAIL` pro první nastavení příjemce objednávek |
 | Pošta | `SMTP_HOST`, port se STARTTLS, uživatel, heslo a povolený odesílatel `SMTP_FROM` |
 | Teya | Zvlášť staging a produkce: `store_id`, `client_id`, `client_secret` a RSA veřejný klíč webhooků |
@@ -124,7 +124,6 @@ Všechny příklady v šabloně je třeba nahradit. Validace odmítá ukázkové
 | `ACME_EMAIL` | Skutečný e-mail pro certifikát HTTPS |
 | `POSTGRES_ADMIN_PASSWORD` | Náhodné heslo správce databáze `postgres`, přesně 64 hexadecimálních znaků |
 | `POSTGRES_PASSWORD` | Jiné náhodné heslo aplikačního uživatele `brunch`, přesně 64 hexadecimálních znaků |
-| `ADMIN_EMAIL` | Jediný správce. Změna a restart převedou oprávnění na tuto adresu |
 | `ORDER_EMAIL` | Výchozí příjemce objednávek při založení databáze |
 | `SMTP_HOST`, `SMTP_PORT` | Externí SMTP, obvykle port `587` |
 | `SMTP_TLS` | Compose jej nastavuje napevno na `true`, používá STARTTLS |
@@ -134,7 +133,25 @@ Všechny příklady v šabloně je třeba nahradit. Validace odmítá ukázkové
 | `ONLINE_PAYMENT_TIMEOUT_MINUTES` | Lhůta nových nezaplacených online objednávek, 1 až 1440 minut, výchozí 60 |
 | `SECRETS_DIR` | Hostitelský adresář tajných souborů, výchozí `/etc/brunch/secrets` |
 
-`ORDER_EMAIL` nepřepisuje již uložené nastavení obchodu. Po prvním spuštění skutečného příjemce kontrolujte v **Doprava a nastavení → E-mail pro příjem objednávek**. Poplatky za dopravu a hranici dopravy zdarma upravte tamtéž. Změna `ADMIN_EMAIL` se naopak při dalším startu uplatní i na existující databázi.
+`ORDER_EMAIL` nepřepisuje již uložené nastavení obchodu. Po prvním spuštění skutečného příjemce kontrolujte v **Doprava a nastavení → E-mail pro příjem objednávek**. Poplatky za dopravu a hranici dopravy zdarma upravte tamtéž. Správci jsou výhradně v databázi, žádná proměnná konfigurace je nezakládá ani nepřepisuje.
+
+### První administrátor a přechod z přihlašování e-mailem
+
+Administrace používá login ve formě e-mailové adresy a heslo o délce 12 až 128 znaků. Heslo je v databázi uložené jako Argon2id s vlastním náhodným saltem. Parametry 19 MiB, dvě iterace a jedno vlákno odpovídají [doporučení OWASP](https://cheatsheetseries.owasp.org/cheatsheets/Password_Storage_Cheat_Sheet.html). Hesla ani hashe se neposílají e-mailem a nevypisují v administračním API.
+
+Migrace 0011 ukončí staré administrátorské relace a odebere původní role bez hesla. Zákaznické účty a objednávky zachová. Před prvním nasazením této verze vytvořte zálohu, zastavte starou aplikaci a pod novou verzí jednorázově založte původnímu provozovateli účet s novým heslem. Databáze přitom musí běžet. Z provozního souboru odstraňte staré `ADMIN_EMAIL`.
+
+Na serveru po přepnutí `/opt/brunch/current` a tagu obrazu:
+
+```bash
+sudo -v
+python3 -c 'import getpass,sys; sys.stdout.write(getpass.getpass("Heslo prvního správce: "))' | sudo -n /opt/brunch/current/deploy/brunch.sh initialize-admin spravce@vase-domena.cz
+sudo /opt/brunch/current/deploy/brunch.sh up
+```
+
+Příkaz předá heslo pouze standardním vstupem. Nezadávejte je do argumentů, proměnných prostředí, repozitáře ani historie shellu. Inicializace je povolena jen pokud neexistuje žádný administrátor. Další účty i nová hesla spravujte v sekci **Administrátoři**. Změna hesla a odebrání role zneplatní všechny relace daného správce. Posledního správce nelze odebrat.
+
+Po této migraci nepouštějte nad stejnou databází starou verzi s e-mailovým přihlášením správce. Starý kód nemá nové oddělení relací a může přepsat oprávnění. Případná obnova musí zahrnout odpovídající databázovou zálohu a znovu provést bezpečný přechod na hesla. Běžný restart nové verze zachová účty i oprávnění beze změny.
 
 Dvě různá hesla databáze vytvořte například správcem hesel nebo dvěma voláními `openssl rand -hex 32` v bezpečném prostředí. `POSTGRES_ADMIN_PASSWORD` patří správci databáze, `POSTGRES_PASSWORD` aplikačnímu účtu bez práv superuživatele. Při prvním startu se založí databáze `brunch` a její vlastník `brunch`. Compose sestaví `DATABASE_URL` automaticky z aplikačního hesla, adresu ručně nezadávejte. U existujícího datového svazku změna proměnných sama nezmění hesla uživatelů PostgreSQL. Pozdější rotace vyžaduje koordinovanou změnu v databázi i aplikační konfiguraci.
 

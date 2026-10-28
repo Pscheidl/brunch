@@ -83,3 +83,5 @@ Dump obsahuje údaje z náhledu. Před jeho přenosem určit soukromé cílové 
 ## Přechod na veřejný obchod
 
 Po dodání domény, DNS, skutečného správce a SMTP připravit oddělený soubor `/etc/brunch/brunch.env`, projekt `brunch-production` a jeho vlastní databázi podle [produkčního postupu](zoner-cloud.md). Náhledové adresy, zprávy a zkušební objednávky nepřenášet do ostrého provozu. Novou produkci ověřit přes HTTPS včetně skutečného doručení přihlašovacího e-mailu. Teya zapnout až po dodání a ověření správného produkčního účtu. Náhled lze pak zastavit příkazem `dc stop`, data zůstanou zachovaná.
+
+Správce náhledu se automaticky nevytváří. První účet založte jednorázovým `brunch-server --initialize-admin EMAIL` v aplikačním kontejneru, s heslem předaným standardním vstupem. Další účty spravuje sekce Administrátoři. Zákaznické odkazy zachycené v Mailpitu neudělují administrátorský přístup.

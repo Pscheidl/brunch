@@ -39,7 +39,6 @@ async fn smtp_delivery_retry_and_crashed_worker_lease() {
         bind: "127.0.0.1:0".parse().unwrap(),
         public_url: "http://localhost".into(),
         order_email: "orders@example.test".into(),
-        admin_email: "admin@example.test".into(),
         smtp_host: "127.0.0.1".into(),
         smtp_port: port,
         smtp_username: None,

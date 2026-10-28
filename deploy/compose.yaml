@@ -51,7 +51,6 @@ services:
       PUBLIC_URL: https://${DOMAIN:?Set DOMAIN}
       DATABASE_URL: postgres://brunch:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD}@db:5432/brunch
       DIST_DIR: /app/dist
-      ADMIN_EMAIL: ${ADMIN_EMAIL:?Set ADMIN_EMAIL}
       ORDER_EMAIL: ${ORDER_EMAIL:?Set ORDER_EMAIL}
       SMTP_HOST: ${SMTP_HOST:?Set SMTP_HOST}
       SMTP_PORT: ${SMTP_PORT:-587}

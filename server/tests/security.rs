@@ -50,7 +50,6 @@ impl Fixture {
             bind: "127.0.0.1:0".parse().unwrap(),
             public_url: "http://127.0.0.1:3100".into(),
             order_email: "orders@example.test".into(),
-            admin_email: "admin@example.test".into(),
             smtp_host: "127.0.0.1".into(),
             smtp_port,
             smtp_username: None,
@@ -310,11 +309,15 @@ async fn successful_login_delivery_redacts_both_brand_names() {
 #[ignore = "requires TEST_DATABASE_URL and local PostgreSQL"]
 async fn administrator_cannot_retry_login_mail_from_either_brand() {
     let fixture = Fixture::new(9).await;
-    auth::bootstrap_admin(&fixture.state.pool, "admin@example.test")
-        .await
-        .unwrap();
+    auth::initialize_admin(
+        &fixture.state.pool,
+        "admin@example.test",
+        "Test-only-admin-password-2026",
+    )
+    .await
+    .unwrap();
     let token = "c".repeat(64);
-    sqlx::query("INSERT INTO sessions(token_hash,user_id,expires_at) SELECT $1,id,now()+interval '1 hour' FROM users WHERE email='admin@example.test'")
+    sqlx::query("INSERT INTO sessions(token_hash,user_id,expires_at,admin_authenticated) SELECT $1,id,now()+interval '1 hour',true FROM users WHERE email='admin@example.test'")
         .bind(auth::token_hash(&token)).execute(&fixture.state.pool).await.unwrap();
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let url = format!("http://{}", listener.local_addr().unwrap());
@@ -363,36 +366,39 @@ async fn administrator_cannot_retry_login_mail_from_either_brand() {
 
 #[tokio::test]
 #[ignore = "requires TEST_DATABASE_URL and local PostgreSQL"]
-async fn configured_admin_rotation_revokes_old_privileges_on_existing_sessions() {
+async fn initialization_refuses_to_replace_existing_administrators_or_sessions() {
     let fixture = Fixture::new(9).await;
-    auth::bootstrap_admin(&fixture.state.pool, "old-admin@example.test")
-        .await
-        .unwrap();
+    auth::initialize_admin(
+        &fixture.state.pool,
+        "old-admin@example.test",
+        "Test-only-admin-password-2026",
+    )
+    .await
+    .unwrap();
     let user_id: Uuid =
         sqlx::query_scalar("SELECT id FROM users WHERE email='old-admin@example.test'")
             .fetch_one(&fixture.state.pool)
             .await
             .unwrap();
     let token = "a".repeat(64);
-    sqlx::query("INSERT INTO sessions(token_hash,user_id,expires_at) VALUES ($1,$2,now()+interval '1 hour')")
+    sqlx::query("INSERT INTO sessions(token_hash,user_id,expires_at,admin_authenticated) VALUES ($1,$2,now()+interval '1 hour',true)")
         .bind(auth::token_hash(&token)).bind(user_id).execute(&fixture.state.pool).await.unwrap();
     let mut headers = HeaderMap::new();
     headers.insert("cookie", format!("brunch_session={token}").parse().unwrap());
     assert!(auth::require_admin(&fixture.state, &headers).await.is_ok());
-    auth::bootstrap_admin(&fixture.state.pool, "new-admin@example.test")
-        .await
-        .unwrap();
-    assert_eq!(
-        auth::require_admin(&fixture.state, &headers)
-            .await
-            .unwrap_err()
-            .status,
-        StatusCode::FORBIDDEN
-    );
+    let error = auth::initialize_admin(
+        &fixture.state.pool,
+        "new-admin@example.test",
+        "Test-only-admin-password-2026",
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(error.status, StatusCode::CONFLICT);
+    assert!(auth::require_admin(&fixture.state, &headers).await.is_ok());
     let admins: Vec<String> = sqlx::query_scalar("SELECT email FROM users WHERE is_admin")
         .fetch_all(&fixture.state.pool)
         .await
         .unwrap();
-    assert_eq!(admins, ["new-admin@example.test"]);
+    assert_eq!(admins, ["old-admin@example.test"]);
     fixture.close().await;
 }

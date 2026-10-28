@@ -12,7 +12,7 @@ const statuses = { awaiting_payment: 'Čeká na zaplacení', new: 'Přijatá', c
 const payments = { unpaid: 'Nezaplaceno', paid: 'Zaplaceno' }
 const onlinePaymentStates = { pending: 'Čeká na přípravu nebo ověření', ready: 'Platební brána je připravena, platba čeká', paid: 'Platba ověřena', failed: 'Platba neproběhla', expired: 'Platnost platby skončila', review: 'Vyžaduje kontrolu obsluhy' }
 const mailStates = { pending: 'Čeká na odeslání', sent: 'Odesláno', failed: 'Odeslání selhalo' }
-const routes = [['orders', 'Objednávky'], ['products', 'Zboží a ceny'], ['customers', 'Zákazníci'], ['delivery-areas', 'Oblasti rozvozu'], ['settings', 'Doprava a nastavení'], ['mail', 'E-maily']]
+const routes = [['orders', 'Objednávky'], ['products', 'Zboží a ceny'], ['customers', 'Zákazníci'], ['delivery-areas', 'Oblasti rozvozu'], ['settings', 'Doprava a nastavení'], ['administrators', 'Administrátoři'], ['mail', 'E-maily']]
 const normalizePostalCode = value => String(value ?? '').replace(/[\s\u0085]/g, '')
 const formatPostalCode = value => normalizePostalCode(value).replace(/^([0-9]{3})([0-9]{2})$/, '$1 $2')
 
@@ -50,8 +50,18 @@ async function api(path, options = {}) {
   const response = await fetch(path, { credentials: 'same-origin', ...options, headers: { 'Content-Type': 'application/json', 'X-Brunch-Request': '1', ...options.headers } })
   const data = await response.json().catch(() => ({}))
   if (!response.ok) {
-    const error = new Error(response.status === 409 ? `${data.error || 'Záznam se mezitím změnil.'} Zavřete okno a načtěte aktuální data tlačítkem Obnovit.` : data.error || `Požadavek se nepodařil (${response.status}).`)
+    const conflictHint = response.status === 409 && !path.startsWith('/api/admin/administrators')
+    const error = new Error(conflictHint ? `${data.error || 'Záznam se mezitím změnil.'} Zavřete okno a načtěte aktuální data tlačítkem Obnovit.` : data.error || `Požadavek se nepodařil (${response.status}).`)
     error.status = response.status
+    if (path.startsWith('/api/admin/') && path !== '/api/admin/auth/login' && [401, 403].includes(response.status)) {
+      state.generation++
+      state.user = null
+      nav.hidden = true
+      identity.replaceChildren()
+      if (dialog.open) dialog.close()
+      content.replaceChildren(el('p', { class: 'loading', role: 'status' }, 'Ověřuji oprávnění…'))
+      await checkAuth({ accessError: error })
+    }
     throw error
   }
   return data
@@ -98,14 +108,14 @@ function formError(form, error) {
   form.prepend(box)
   box.scrollIntoView({ block: 'nearest' })
 }
-async function saveForm(event, work) {
+async function saveForm(event, work, pendingLabel = 'Ukládám…') {
   event.preventDefault()
   const form = event.currentTarget
   const submit = form.querySelector('[type=submit]')
   if (submit.disabled) return
   const label = submit.textContent
   submit.disabled = true
-  submit.textContent = 'Ukládám…'
+  submit.textContent = pendingLabel
   try { await work(new FormData(form)) }
   catch (error) { formError(form, error) }
   finally { submit.disabled = false; submit.textContent = label }
@@ -119,21 +129,24 @@ function cents(value, nullable = false) {
   return number
 }
 
-async function checkAuth() {
+async function checkAuth({ accessError = null } = {}) {
   try {
     const { user } = await api('/api/auth/me')
     state.user = user
     identity.replaceChildren(el('span', {}, user.email), button('Odhlásit', logout, 'small'))
     if (!user.is_admin) {
       nav.hidden = true
-      content.replaceChildren(el('section', { class: 'panel login-panel' }, el('h1', {}, 'Přístup do administrace'), el('p', {}, `Účet ${user.email} nemá oprávnění správce. Přihlaste se e-mailem povoleným v nastavení serveru.`), button('Odhlásit a změnit účet', logout), el('p', {}, el('a', { href: '/' }, 'Přejít do obchodu'))))
+      content.replaceChildren(el('section', { class: 'panel login-panel' }, el('h1', {}, 'Přístup do administrace'), el('p', {}, 'Pro vstup do administrace se přihlaste e-mailem a heslem správce. Pokud ještě nemáte administrátorský účet, požádejte některého ze správců o přidání.'), button('Přihlásit se jako správce', logout), el('p', {}, el('a', { href: '/' }, 'Přejít do obchodu'))))
       return
     }
     nav.hidden = false
     nav.replaceChildren(...routes.map(([route, label]) => el('a', { href: `#${route}`, 'data-route': route }, label)))
-    renderPage()
+    // A request-specific 403 must not cause an endless retry when the session
+    // itself is still valid. Let the operator choose whether to try again.
+    if (accessError) content.replaceChildren(header('Požadavek nelze dokončit', 'Přihlášení je platné, ale server tento požadavek odmítl.'), errorBox(accessError), button('Obnovit', renderPage))
+    else renderPage()
   } catch (error) {
-    if (error.status === 401) showLogin()
+    if ([401, 403].includes(error.status)) showLogin()
     else content.replaceChildren(header('Administrace', 'Spojení se serverem se nepodařilo.'), errorBox(error), button('Zkusit znovu', checkAuth))
   }
 }
@@ -141,13 +154,13 @@ function showLogin() {
   state.user = null
   nav.hidden = true
   identity.replaceChildren()
-  const result = el('div', { role: 'status' })
   const form = el('form', { onsubmit: event => saveForm(event, async data => {
-    await api('/api/auth/request', { method: 'POST', body: JSON.stringify({ email: data.get('email') }) })
-    result.replaceChildren(el('p', { class: 'success' }, 'Pokud lze přihlášení dokončit, dorazí vám e-mail s jednorázovým odkazem. Otevřete ho a pak se vraťte do administrace. Odkaz platí 15 minut.'))
-  }) }, field('Váš administrátorský e-mail', 'email', '', { type: 'email', autocomplete: 'email', required: true, maxlength: 254 }), el('button', { class: 'button primary', type: 'submit' }, 'Poslat přihlašovací odkaz'), result)
-  content.replaceChildren(el('section', { class: 'panel login-panel' }, el('h1', {}, 'Vítejte v administraci'), el('p', {}, 'Přihlaste se bezpečně odkazem v e-mailu. Heslo nepotřebujete.'), form, el('p', {}, el('a', { href: '/' }, 'Zpět do obchodu'))))
+    await api('/api/admin/auth/login', { method: 'POST', body: JSON.stringify({ email: String(data.get('email')).trim(), password: String(data.get('password')) }) })
+    await checkAuth()
+  }, 'Přihlašuji…') }, field('E-mail správce', 'email', '', { type: 'email', autocomplete: 'username', required: true, maxlength: 254 }), field('Heslo', 'password', '', { type: 'password', autocomplete: 'current-password', required: true, maxlength: 128 }), el('button', { class: 'button primary', type: 'submit' }, 'Přihlásit se'))
+  content.replaceChildren(el('section', { class: 'panel login-panel' }, el('h1', {}, 'Vítejte v administraci'), el('p', {}, 'Přihlaste se e-mailem a heslem svého administrátorského účtu.'), form, el('p', {}, 'Pokud heslo neznáte, požádejte jiného správce o nastavení nového hesla.'), el('p', {}, el('a', { href: '/' }, 'Zpět do obchodu'))))
 }
+
 async function logout() {
   try {
     await api('/api/auth/logout', { method: 'POST', body: '{}' })
@@ -167,7 +180,7 @@ async function renderPage() {
   }
   content.replaceChildren(el('p', { class: 'loading', role: 'status' }, 'Načítám data…'))
   try {
-    const page = await ({ orders: ordersPage, products: productsPage, customers: customersPage, 'delivery-areas': deliveryAreasPage, settings: settingsPage, mail: mailPage })[state.page]()
+    const page = await ({ orders: ordersPage, products: productsPage, customers: customersPage, 'delivery-areas': deliveryAreasPage, settings: settingsPage, administrators: administratorsPage, mail: mailPage })[state.page]()
     if (generation === state.generation) content.replaceChildren(...page)
   } catch (error) {
     if (generation !== state.generation) return
@@ -432,6 +445,73 @@ async function customersPage() {
   const data = await api(`/api/admin/customers?page=${state.customerPage}`)
   return [header('Zákazníci', 'Ověřené účty a jejich přihlášené objednávky.', button('Obnovit', renderPage)), data.customers.length ? table(['E-mail', 'Registrace', 'Objednávky', 'Oprávnění'], data.customers.map(customer => el('tr', {}, el('td', {}, customer.email), el('td', {}, dateTime(customer.created_at)), el('td', {}, customer.order_count), el('td', {}, badge(customer.is_admin ? 'Správce' : 'Zákazník'))))) : empty('Zatím žádné účty', 'Zákazník se zaregistruje ověřením odkazu v e-mailu.'), pager(data.page, data.total, page => { state.customerPage = page; renderPage() }), el('p', { class: 'section-note' }, 'Objednávky bez přihlášení najdete v přehledu objednávek. Historické nákupy hosta se automaticky nepřipojují k účtu.')]
 }
+async function administratorsPage() {
+  const { administrators } = await api('/api/admin/administrators')
+  const lastAdministrator = administrators.length === 1
+  const rows = administrators.map(administrator => {
+    const self = administrator.id === state.user?.id
+    const remove = button('Odebrat oprávnění', () => removeAdministratorDialog(administrator), 'small danger')
+    remove.disabled = lastAdministrator
+    remove.setAttribute('aria-label', `Odebrat oprávnění správce ${administrator.email}`)
+    if (lastAdministrator) remove.setAttribute('aria-describedby', 'last-administrator-note')
+    const password = button('Nastavit nové heslo', () => administratorPasswordDialog(administrator), 'small')
+    password.setAttribute('aria-label', `Nastavit nové heslo pro ${administrator.email}`)
+    return el('tr', {}, el('td', { class: 'administrator-email' }, el('strong', {}, administrator.email), self ? el('small', {}, badge('Vy')) : null), el('td', {}, el('div', { class: 'cell-actions administrator-actions' }, password, remove)))
+  })
+  return [header('Administrátoři', 'Správci mají přístup ke všem částem administrace obchodu.', button('+ Přidat správce', addAdministratorDialog, 'primary')), el('div', { class: 'administrator-tools' }, button('Obnovit', renderPage, 'small')), table(['E-mail správce', 'Akce'], rows), el('p', { class: 'section-note', id: 'last-administrator-note' }, lastAdministrator ? 'Tento účet je poslední správce a nelze mu odebrat oprávnění. Nejprve přidejte dalšího správce.' : 'V obchodě musí zůstat alespoň jeden správce. Odebrání oprávnění nevymaže zákaznický účet ani jeho objednávky.')]
+}
+function addAdministratorDialog() {
+  const body = openDialog('Přidat správce')
+  const form = el('form', { onsubmit: event => saveForm(event, async data => {
+    const { administrator } = await api('/api/admin/administrators', { method: 'POST', body: JSON.stringify({ email: String(data.get('email')).trim(), password: String(data.get('password')) }) })
+    dialog.close()
+    notify(`Správce ${administrator.email} byl přidán.`)
+    renderPage()
+  }) }, field('E-mail nového správce', 'email', '', { type: 'email', autocomplete: 'off', required: true, maxlength: 254, autofocus: true }), administratorPasswordField(), el('p', { class: 'hint' }, 'Nový správce získá přístup ke všem částem administrace. Přihlásí se tímto e-mailem a heslem. Přístupové údaje mu předejte bezpečně, e-mailem je automaticky neposíláme. Případný zákaznický účet i objednávky zůstanou zachované.'), el('div', { class: 'actions' }, button('Zrušit', () => dialog.close()), el('button', { class: 'button primary', type: 'submit' }, 'Přidat správce')))
+  body.append(form)
+  form.querySelector('[name=email]').focus()
+}
+function administratorPasswordField() {
+  return field('Nové heslo', 'password', '', { type: 'password', autocomplete: 'new-password', required: true, minlength: 12, maxlength: 128, hint: 'Použijte 12 až 128 znaků a heslo, které nepoužíváte jinde.' })
+}
+function administratorPasswordDialog(administrator) {
+  const self = administrator.id === state.user?.id
+  const body = openDialog('Nastavit nové heslo')
+  const form = el('form', { onsubmit: event => saveForm(event, async data => {
+    await api('/api/admin/administrators/password', { method: 'PUT', body: JSON.stringify({ email: administrator.email, password: String(data.get('password')) }) })
+    dialog.close()
+    notify(self ? 'Heslo bylo změněno. Přihlaste se novým heslem.' : `Nové heslo pro ${administrator.email} bylo nastaveno.`)
+    if (self) {
+      state.generation++
+      state.user = null
+      nav.hidden = true
+      await checkAuth()
+    } else {
+      renderPage()
+    }
+  }) }, el('p', { class: 'administrator-email' }, 'Účet: ', el('strong', {}, administrator.email)), el('p', { class: 'section-note' }, self ? 'Změna hesla ukončí všechna vaše přihlášení. Potom se přihlaste novým heslem.' : 'Změna hesla ukončí všechna přihlášení tohoto správce. Nové heslo mu předejte bezpečně, e-mailem ho automaticky neposíláme.'), administratorPasswordField(), el('div', { class: 'actions' }, button('Zrušit', () => dialog.close()), el('button', { class: 'button primary', type: 'submit' }, 'Uložit nové heslo')))
+  body.append(form)
+  form.querySelector('[name=password]').focus()
+}
+function removeAdministratorDialog(administrator) {
+  const self = administrator.id === state.user?.id
+  const body = openDialog('Odebrat oprávnění správce')
+  const form = el('form', { onsubmit: event => saveForm(event, async () => {
+    await api('/api/admin/administrators', { method: 'DELETE', body: JSON.stringify({ email: administrator.email }) })
+    dialog.close()
+    notify(self ? 'Vaše oprávnění správce bylo odebráno. Byli jste odhlášeni.' : `Oprávnění správce ${administrator.email} bylo odebráno.`)
+    if (self) {
+      state.generation++
+      state.user = null
+      nav.hidden = true
+      await checkAuth()
+    } else {
+      renderPage()
+    }
+  }) }, el('p', { class: 'administrator-email' }, 'Odebrat oprávnění správce účtu ', el('strong', {}, administrator.email), '?'), el('p', { class: 'section-note' }, 'Účet ihned ztratí přístup do administrace a jeho přihlášení budou ukončena. Zákaznický účet i objednávky zůstanou zachované.'), self ? el('p', { class: 'note' }, 'Odebíráte vlastní oprávnění. Budete odhlášeni a do administrace se už nedostanete, dokud vás jiný správce znovu nepřidá.') : null, el('div', { class: 'actions' }, button('Zrušit', () => dialog.close()), el('button', { class: 'button danger', type: 'submit' }, 'Odebrat oprávnění')))
+  body.append(form)
+  form.querySelector('button[type=button]').focus()
+}
 async function mailPage() {
   const messages = await api('/api/admin/mail')
   const rows = messages.map(message => el('tr', {}, el('td', { class: 'mail-subject' }, el('strong', {}, message.subject), el('small', {}, message.to_email)), el('td', {}, badge(mailStates[message.status] || message.status, message.status), el('small', {}, `Pokusy: ${message.attempts}`)), el('td', {}, dateTime(message.created_at), message.sent_at ? el('small', {}, `Odesláno ${dateTime(message.sent_at)}`) : null), el('td', {}, message.last_error ? el('small', { class: 'mail-error' }, message.last_error) : 'Bez chyby'), el('td', {}, message.status === 'failed' && !['Přihlášení do Brunch', 'Přihlášení do Brunch Era'].includes(message.subject) ? button('Zkusit znovu', async event => {
@@ -446,6 +526,7 @@ async function mailPage() {
   return [header('E-maily', 'Posledních 100 zpráv, jejich doručení a případné chyby.', button('Obnovit', renderPage)), rows.length ? table(['Zpráva / příjemce', 'Stav', 'Čas', 'Poslední chyba', 'Akce'], rows) : empty('Žádné zprávy', 'Zde se zobrazí přihlášení, potvrzení objednávek a zprávy provozovateli.'), el('p', { class: 'section-note' }, 'Stav Odesláno potvrzuje převzetí poštovním serverem. Nezaručuje doručení do doručené pošty příjemce.')]
 }
 
+dialog.addEventListener('close', () => { for (const input of dialog.querySelectorAll('input[type=password]')) input.value = '' })
 window.addEventListener('hashchange', () => { if (dialog.open) dialog.close(); renderPage() })
 document.addEventListener('visibilitychange', () => { if (!document.hidden && !state.user) checkAuth() })
 checkAuth()

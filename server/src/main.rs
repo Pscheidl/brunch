@@ -1,16 +1,21 @@
 use brunch_server::{AppState, Config, app, auth, commerce, mail, migrate, payments};
 use sqlx::postgres::PgPoolOptions;
-use std::{sync::Arc, time::Duration};
+use std::{
+    io::{IsTerminal, Read},
+    sync::Arc,
+    time::Duration,
+};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args: Vec<String> = std::env::args().skip(1).collect();
-    let check_config = match args.as_slice() {
-        [] => false,
-        [arg] if arg == "--check-config" => true,
+    let (check_config, initialize_email) = match args.as_slice() {
+        [] => (false, None),
+        [arg] if arg == "--check-config" => (true, None),
+        [arg, email] if arg == "--initialize-admin" => (false, Some(email.as_str())),
         [arg] if arg == "--help" || arg == "-h" => {
             println!(
-                "Usage: brunch-server [--check-config]\n--check-config validates settings without connecting to PostgreSQL, SMTP or Teya."
+                "Usage: brunch-server [--check-config | --initialize-admin EMAIL]\n--check-config validates settings without connecting to PostgreSQL, SMTP or Teya.\n--initialize-admin creates the first database administrator only when none can sign in. Supply the password through non-terminal standard input, never as an argument or environment variable."
             );
             return Ok(());
         }
@@ -36,14 +41,41 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         );
         return Ok(());
     }
+    let initialize_password = if let Some(email) = initialize_email {
+        auth::normalize_email(email)?;
+        if std::io::stdin().is_terminal() {
+            return Err(
+                "Read the password with a hidden-input prompt and pipe it to standard input."
+                    .into(),
+            );
+        }
+        let mut password = String::new();
+        std::io::stdin().take(514).read_to_string(&mut password)?;
+        if password.ends_with('\n') {
+            password.pop();
+            if password.ends_with('\r') {
+                password.pop();
+            }
+        }
+        auth::validate_admin_password(&password)?;
+        Some(password)
+    } else {
+        None
+    };
     let pool = PgPoolOptions::new()
         .max_connections(10)
         .acquire_timeout(Duration::from_secs(10))
         .connect(&config.database_url)
         .await?;
     migrate(&pool).await?;
+    if let (Some(email), Some(password)) = (initialize_email, initialize_password) {
+        auth::initialize_admin(&pool, email, &password).await?;
+        println!(
+            "Initial database administrator created. Further accounts are managed in Administrátoři."
+        );
+        return Ok(());
+    }
     commerce::initialize(&pool, &config.order_email, config.app_env.is_development()).await?;
-    auth::bootstrap_admin(&pool, &config.admin_email).await?;
     let state = AppState {
         pool,
         config: config.clone(),

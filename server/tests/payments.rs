@@ -273,7 +273,7 @@ impl TestApp {
         .execute(&pool)
         .await
         .unwrap();
-        auth::bootstrap_admin(&pool, "admin@example.test")
+        auth::initialize_admin(&pool, "admin@example.test", "Test-only-admin-password-2026")
             .await
             .unwrap();
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -287,7 +287,6 @@ impl TestApp {
             bind: address,
             public_url: url.clone(),
             order_email: "orders@example.test".into(),
-            admin_email: "admin@example.test".into(),
             smtp_host: "127.0.0.1".into(),
             smtp_port: 1025,
             smtp_username: None,
@@ -372,7 +371,15 @@ impl TestApp {
     }
 
     async fn login_admin(&self) -> Client {
-        self.login("admin@example.test").await
+        let client = self.client();
+        self.post(
+            &client,
+            "/api/admin/auth/login",
+            &json!({"email": "admin@example.test", "password": "Test-only-admin-password-2026"}),
+            StatusCode::OK,
+        )
+        .await;
+        client
     }
 
     async fn login(&self, email: &str) -> Client {
@@ -1172,7 +1179,8 @@ async fn payment_confirmation_mail_failure_rolls_back_all_changes_and_retries_on
     let admin_order = app.get(&admin, &admin_path).await;
     assert_eq!(admin_order["online_payment"]["state"], "ready");
     assert_eq!(admin_order["online_payment"]["cancellable"], false);
-    assert_eq!(app.payment_counts().await, (0, 0, 1, 2));
+    // Password administrator login no longer queues an unrelated login email.
+    assert_eq!(app.payment_counts().await, (0, 0, 1, 1));
     // Fail the second confirmation message after receipt, order, history and first mail writes.
     // The entire payment-acceptance transaction must roll back, including that first mail.
     sqlx::query("CREATE FUNCTION fail_payment_confirmation_mail() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN IF NEW.subject LIKE 'Přijali jsme platbu%' THEN RAISE EXCEPTION 'simulated temporary mail queue failure'; END IF; RETURN NEW; END $$")
@@ -1183,7 +1191,7 @@ async fn payment_confirmation_mail_failure_rolls_back_all_changes_and_retries_on
     app.run_due().await;
     assert_eq!(
         app.payment_counts().await,
-        (0, 0, 1, 2),
+        (0, 0, 1, 1),
         "receipt, history and both confirmation emails must roll back together"
     );
     let admin_order = app.get(&admin, &admin_path).await;
@@ -1228,7 +1236,7 @@ async fn payment_confirmation_mail_failure_rolls_back_all_changes_and_retries_on
     app.run_due().await;
     assert_eq!(
         app.payment_counts().await,
-        (1, 0, 2, 4),
+        (1, 0, 2, 3),
         "successful retry must accept once and queue exactly two confirmation emails"
     );
     let admin_order = app.get(&admin, &admin_path).await;
@@ -1241,7 +1249,7 @@ async fn payment_confirmation_mail_failure_rolls_back_all_changes_and_retries_on
         .await;
     assert_eq!(replay["payment_status"], "paid");
     assert!(replay.get("online_payment").is_none());
-    assert_eq!(app.payment_counts().await, (1, 0, 2, 4));
+    assert_eq!(app.payment_counts().await, (1, 0, 2, 3));
     app.close().await;
     provider_task.abort();
 }

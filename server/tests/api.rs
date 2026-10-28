@@ -117,7 +117,7 @@ impl TestApp {
                 .await
                 .unwrap();
         }
-        auth::bootstrap_admin(&pool, "admin@example.test")
+        auth::initialize_admin(&pool, "admin@example.test", "Test-only-admin-password-2026")
             .await
             .unwrap();
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -131,7 +131,6 @@ impl TestApp {
             bind: address,
             public_url: url.clone(),
             order_email: "orders@example.test".into(),
-            admin_email: "admin@example.test".into(),
             smtp_host: "127.0.0.1".into(),
             smtp_port: 1025,
             smtp_username: None,
@@ -206,6 +205,15 @@ impl TestApp {
     }
     async fn login(&self, email: &str) -> Client {
         let client = self.client();
+        if email == "admin@example.test" {
+            self.post(
+                &client,
+                "/api/admin/auth/login",
+                &json!({"email": email, "password": "Test-only-admin-password-2026"}),
+            )
+            .await;
+            return client;
+        }
         let token = self.token(&client, email).await;
         self.post(&client, "/api/auth/verify", &json!({"token":token}))
             .await;

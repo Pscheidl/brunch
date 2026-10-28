@@ -52,7 +52,6 @@ pub struct Config {
     pub bind: SocketAddr,
     pub public_url: String,
     pub order_email: String,
-    pub admin_email: String,
     pub smtp_host: String,
     pub smtp_port: u16,
     pub smtp_username: Option<String>,
@@ -110,13 +109,8 @@ impl Config {
             );
         }
         let order_email = required("ORDER_EMAIL")?.trim().to_lowercase();
-        let admin_email = required("ADMIN_EMAIL")?.trim().to_lowercase();
         let smtp_from = required("SMTP_FROM")?;
-        for (name, email) in [
-            ("ORDER_EMAIL", &order_email),
-            ("ADMIN_EMAIL", &admin_email),
-            ("SMTP_FROM", &smtp_from),
-        ] {
+        for (name, email) in [("ORDER_EMAIL", &order_email), ("SMTP_FROM", &smtp_from)] {
             let mailbox = email
                 .parse::<lettre::message::Mailbox>()
                 .map_err(|_| format!("Neplatná e-mailová adresa v {name}"))?;
@@ -208,7 +202,6 @@ impl Config {
                 .map_err(|_| "Neplatné BIND_ADDR")?,
             public_url: url.origin().ascii_serialization(),
             order_email,
-            admin_email,
             smtp_host,
             smtp_port: env::var("SMTP_PORT")
                 .unwrap_or_else(|_| "587".into())

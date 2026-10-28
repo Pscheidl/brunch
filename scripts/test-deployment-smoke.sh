@@ -63,7 +63,7 @@ root = Path(sys.argv[1])
 settings = {
     "COMPOSE_PROJECT_NAME": "brunch-staging", "APP_ENV": "staging",
     "BRUNCH_IMAGE": sys.argv[2], "DOMAIN": "shop.brunch-ci.cz",
-    "ACME_EMAIL": "admin@brunch-ci.cz", "ADMIN_EMAIL": "admin@brunch-ci.cz",
+    "ACME_EMAIL": "admin@brunch-ci.cz",
     "ORDER_EMAIL": "orders@brunch-ci.cz", "SMTP_FROM": "shop@brunch-ci.cz",
     "SMTP_HOST": "smtp.brunch-ci.cz", "SMTP_PORT": "587",
     "SMTP_USERNAME": "", "SMTP_PASSWORD": "", "SMTP_PASSWORD_FILE": "",

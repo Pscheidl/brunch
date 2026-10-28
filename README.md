@@ -17,7 +17,9 @@ Obchod s rozvozem svačin. Frontend používá Rust, Leptos CSR a Trunk. Backend
 
 ## Administrace
 
-Na `/admin/` se správce přihlásí stejným e-mailovým odkazem. Tato verze má jednoho správce určeného `ADMIN_EMAIL` v konfiguraci serveru. Změna adresy a restart převedou oprávnění na nového správce a odeberou je původnímu.
+Na `/admin/` se správce přihlásí e-mailem a heslem. Účty a oprávnění jsou pouze v databázi, start aplikace je nepřepisuje podle konfigurace. Hesla se ukládají pomocí Argon2id s vlastním náhodným saltem pro každé heslo. Zákaznický e-mailový odkaz nikdy nepřihlásí správce do administrace.
+
+Sekce **Administrátoři** umožňuje přidat správce podle e-mailu a hesla, nastavit nové heslo a odebrat oprávnění. Posledního správce nelze odebrat ani při souběžných požadavcích. Změna hesla nebo odebrání oprávnění okamžitě ukončí jeho relace. Zákaznický účet a objednávky se nemažou. Novému správci předejte přístupové údaje bezpečně, aplikace hesla neposílá e-mailem.
 
 - Zboží: přidání a úpravy, kategorie, složení, alergeny, nahrávání fotografií JPEG/PNG/WebP, dostupnost, archivace a skladové množství. Prázdný sklad znamená neomezenou dostupnost. Fotografie mohou mít nejvýše 2 MB a 4096 pixelů na straně. Server ověří skutečný formát a odstraní vložená metadata.
 - Ceny: časová historie každé změny a identifikace správce. Starší objednávky si uchovají původní název, cenu a dopravu.
@@ -43,9 +45,15 @@ docker compose up -d
 ./scripts/dev.sh
 ```
 
-Obchod a administrace běží na `http://127.0.0.1:3100`, místní e-mailová schránka na `http://127.0.0.1:18026`. Všechny zprávy z výchozího místního nastavení zůstávají v Mailpitu. Správce má adresu `admin@example.test`, objednávky chodí na `orders@example.test`.
+Obchod a administrace běží na `http://127.0.0.1:3100`, místní e-mailová schránka na `http://127.0.0.1:18026`. Všechny zprávy z výchozího místního nastavení zůstávají v Mailpitu, objednávky chodí na `orders@example.test`. Správce se automaticky nezakládá.
 
-Při prvním spuštění se automaticky provedou migrace, založí správce a vloží původních šest ukázkových produktů. Výchozí doprava stojí 49 Kč, od 350 Kč je zdarma. Existující data se při dalších startech nepřepisují. Ukázkové zboží, složení a fotografie je před skutečným prodejem potřeba upravit v administraci.
+Při prvním spuštění se automaticky provedou migrace a ve vývojovém režimu vloží původních šest ukázkových produktů. Prvního správce vytvořte jednorázovým příkazem do databáze. Heslo zadáváte skrytě a předává se standardním vstupem, ne argumentem ani proměnnou prostředí:
+
+```bash
+python3 -c 'import getpass,sys; sys.stdout.write(getpass.getpass("Heslo prvního správce: "))' | cargo run --locked --manifest-path server/Cargo.toml -- --initialize-admin admin@example.test
+```
+
+Příkaz odmítne založení, pokud už existuje správce. Další účty se spravují v administraci. Výchozí doprava stojí 49 Kč, od 350 Kč je zdarma. Existující data se při dalších startech nepřepisují. Ukázkové zboží, složení a fotografie je před skutečným prodejem potřeba upravit v administraci.
 
 Před první objednávkou nastavte v administraci v sekci **Oblasti rozvozu** skutečně obsluhovaná PSČ. Migrace žádná PSČ nepovoluje automaticky. Prázdný seznam nebo seznam bez aktivních PSČ znamená, že nové objednávky nelze přijmout. Zákazník uvidí dostupnost při zadávání adresy a server ji znovu ověří při odeslání. Změna oblastí neovlivní dříve přijaté objednávky ani jejich bezpečné opakování při ztrátě odpovědi.
 
@@ -84,7 +92,7 @@ Databázové a SMTP integrační testy jsou označeny `ignored`, protože bez Po
 
 `PUBLIC_URL` musí odpovídat adrese webu. Mimo localhost je vyžadováno HTTPS. Relace používá HttpOnly cookie, SameSite=Lax a při HTTPS také Secure. Zápisové API ověřuje původ požadavku a vlastní hlavičku. Administrátorská oprávnění se kontrolují na serveru pro každý endpoint, ne pouze zobrazením menu.
 
-Pro doručování mimo počítač nastavte skutečné `SMTP_HOST`, `SMTP_PORT`, `SMTP_FROM`, `SMTP_USERNAME`, `SMTP_PASSWORD`, `SMTP_TLS=true`, `ORDER_EMAIL` a `ADMIN_EMAIL`. SMTP používá povinný STARTTLS. Tajné hodnoty patří do prostředí nebo `.env`, nikdy do Git repozitáře. Služba potřebuje zálohovaný PostgreSQL, HTTPS reverse proxy a provozní dohled. API dostupnost ověřuje `/api/health`.
+Pro doručování mimo počítač nastavte skutečné `SMTP_HOST`, `SMTP_PORT`, `SMTP_FROM`, `SMTP_USERNAME`, `SMTP_PASSWORD`, `SMTP_TLS=true` a `ORDER_EMAIL`. SMTP používá povinný STARTTLS. Tajné hodnoty patří do prostředí nebo chráněných souborů, nikdy do Git repozitáře. Administrátorské účty se v konfiguraci nenastavují. Služba potřebuje zálohovaný PostgreSQL, HTTPS reverse proxy a provozní dohled. API dostupnost ověřuje `/api/health`.
 
 Fronta opakuje selhané odeslání s prodlužujícím se odstupem, po osmi pokusech zůstane zpráva jako selhaná v administraci. E-mail se považuje za odeslaný až po přijetí SMTP serverem, nikoli za prokazatelně doručený do schránky. Při pádu přesně mezi SMTP přijetím a uložením výsledku může přijít duplikát. Opakované odeslání má stejné Message-ID. Objednávka se při potížích s e-mailem neztratí.
 

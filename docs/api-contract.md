@@ -1,13 +1,16 @@
 # Backend contract
 
-Same-origin JSON API under `/api`. Amounts are integer Czech haléře (CZK). Product IDs are positive int64, user/order IDs UUID strings. Errors `{error:string}`. Except the RSA-verified Teya webhook, all POST/PUT/PATCH requests use `Content-Type: application/json` plus `X-Brunch-Request: 1`. Cookies HttpOnly, SameSite=Lax, Secure in production. No permissive CORS.
+Same-origin JSON API under `/api`. Amounts are integer Czech haléře (CZK). Product IDs are positive int64, user/order IDs UUID strings. Errors `{error:string}`. Except the RSA-verified Teya webhook, all POST/PUT/PATCH/DELETE requests use `Content-Type: application/json` plus `X-Brunch-Request: 1`. Cookies HttpOnly, SameSite=Lax, Secure in production. No permissive CORS.
 
 ## Authentication
 
-- POST `/api/auth/request` `{email}` always generic `{message}`. Email link opens `/?login_token=...`. New accounts created only after redemption.
+- POST `/api/auth/request` `{email}` always generic `{message}`. Email link opens `/?login_token=...`. New customer accounts created after redemption. Administrators may be created separately by an existing administrator.
 - POST `/api/auth/verify` `{token}` -> `{user:{id,email,is_admin}}`, sets session cookie. One use, 15 minute validity.
 - GET `/api/auth/me` -> `{user:{id,email,is_admin}}` or 401.
 - POST `/api/auth/logout` `{}` -> `{ok:true}` clears session.
+- POST `/api/admin/auth/login` `{email,password}` -> `{user:{id,email,is_admin:true}}` and a 12-hour session cookie. Invalid login has a generic error. Account and global rate limits run before password hashing. Admin sessions require password authentication as well as the current database role. Customer magic links never create an administrative session, including for the same email.
+
+Administrator passwords use Argon2id with 19 MiB memory, two iterations, one lane and a fresh random 16-byte salt for every password. The PHC string stores the hash, salt and parameters in PostgreSQL, never in an API response. Passwords accept 12 to 128 Unicode characters, at most 512 UTF-8 bytes. Hash work is bounded to two concurrent operations. Administrator identities and roles are not read from environment configuration.
 
 ## Shop
 
@@ -25,6 +28,11 @@ Same-origin JSON API under `/api`. Amounts are integer Czech haléře (CZK). Pro
 
 ## Admin (session is_admin required for every endpoint)
 
+- GET `/api/admin/administrators` -> `{administrators:[{id,email}]}`.
+- POST `/api/admin/administrators` `{email,password}` -> `{administrator:{id,email}}`. Email is normalized. Existing customer accounts are promoted without replacing account data. Existing sessions are revoked. Duplicate administrators return 409.
+- DELETE `/api/admin/administrators` `{email}` -> `{ok:true}`. Removes the role, password hash and all sessions, preserving the customer account and orders. Unknown administrator returns 404. The final administrator cannot be removed, returning 409 even during concurrent requests. Self-removal is permitted when another administrator remains.
+- PUT `/api/admin/administrators/password` `{email,password}` -> `{ok:true}`. Resets an existing administrator password and revokes all target sessions, including the caller's session if changing their own password.
+- Administrator membership and password changes serialize under a shared database transaction lock. The actor's current password-authenticated session is checked again after the lock is acquired. Login rechecks the role and password hash after verification before creating a session.
 - GET `/api/admin/products` -> array incl inactive.
 - POST `/api/admin/products` product fields (id/version omitted) -> product
 - PUT `/api/admin/products/{id}` product fields incl `version` -> product, optimistic conflict 409

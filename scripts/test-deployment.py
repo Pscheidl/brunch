@@ -142,7 +142,7 @@ def configuration(secrets):
                 "environment": {
                     "APP_ENV": "production", "PUBLIC_URL": "https://snackshop.cz",
                     "DATABASE_URL": "postgres://brunch:" + "b" * 64 + "@db:5432/brunch",
-                    "ADMIN_EMAIL": "admin@snackshop.cz", "ORDER_EMAIL": "orders@snackshop.cz",
+                    "ORDER_EMAIL": "orders@snackshop.cz",
                     "SMTP_FROM": "Brunch <shop@snackshop.cz>", "SMTP_HOST": "smtp.snackshop.cz",
                     "SMTP_PORT": "587", "SMTP_TLS": "true", "SMTP_USERNAME": "shop@snackshop.cz",
                     "SMTP_PASSWORD": "THIS_PASSWORD_MUST_NOT_APPEAR_IN_OUTPUT",

@@ -6,13 +6,13 @@ brunch_env_file="${BRUNCH_ENV_FILE:-/etc/brunch/brunch.env}"
 brunch_action="${1:-help}"
 
 if [[ "$brunch_action" == help || "$brunch_action" == --help ]]; then
-  printf '%s\n' 'Usage: brunch.sh check|up|restart|health|verify-release|status|logs|backup|restore-check DUMP' \
+  printf '%s\n' 'Usage: brunch.sh check|up|restart|health|verify-release|status|logs|backup|restore-check DUMP|initialize-admin EMAIL' \
     'BRUNCH_ENV_FILE defaults to /etc/brunch/brunch.env' \
     'BRUNCH_BACKUP_DIR defaults to /var/backups/brunch, BRUNCH_BACKUP_DAYS to 7'
   exit 0
 fi
 case "$brunch_action" in
-  check|up|restart|health|verify-release|status|logs|backup|restore-check) ;;
+  check|up|restart|health|verify-release|status|logs|backup|restore-check|initialize-admin) ;;
   *) printf '%s\n' 'Unknown operation. Use brunch.sh help.' >&2; exit 2 ;;
 esac
 
@@ -129,6 +129,10 @@ PY
 
 case "$brunch_action" in
   check) check ;;
+  initialize-admin)
+    [[ $# == 2 ]] || { printf '%s\n' 'Provide the initial administrator email and pipe the password through standard input.' >&2; exit 2; }
+    compose run -T --rm --no-deps app --initialize-admin "$2"
+    ;;
   up)
     check
     compose up -d --wait --wait-timeout 180

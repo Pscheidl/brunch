@@ -1,14 +1,15 @@
-// Local browser smoke test for delivery areas. Requires Playwright and Mailpit.
+// Local browser smoke test for delivery areas. Requires Playwright and a database administrator.
 const { chromium } = require('playwright')
 const assert = require('node:assert/strict')
 const fs = require('node:fs/promises')
 const path = require('node:path')
+const { adminTestPassword, loginAdministrator } = require('./admin-test-login.cjs')
 
 async function main() {
   const base = process.env.TEST_BASE_URL || 'http://127.0.0.1:3100'
-  const mailpit = process.env.TEST_MAILPIT_URL || 'http://127.0.0.1:18026'
   const adminEmail = process.env.TEST_ADMIN_EMAIL || 'admin@example.test'
-  for (const address of [base, mailpit]) assert.ok(['127.0.0.1', 'localhost', '[::1]'].includes(new URL(address).hostname), 'Run this test against localhost only')
+  const adminPassword = adminTestPassword()
+  assert.ok(['127.0.0.1', 'localhost', '[::1]'].includes(new URL(base).hostname), 'Run this test against localhost only')
   const output = path.resolve('output/postal-browser')
   await fs.mkdir(output, { recursive: true })
   const browser = await chromium.launch({ headless: true, args: ['--no-sandbox'] })
@@ -62,26 +63,7 @@ async function main() {
     await shop.locator('[name=notes]').fill('Test PSČ, nevyrábět ani nerozvážet.')
   }
   try {
-    await page.goto(`${base}/admin/`)
-    const previous = await (await admin.request.get(`${mailpit}/api/v1/messages?limit=100`)).json()
-    const oldIds = new Set(previous.messages.map(message => message.ID))
-    await page.getByLabel('Váš administrátorský e-mail').fill(adminEmail)
-    await page.getByRole('button', { name: 'Poslat přihlašovací odkaz', exact: true }).click()
-    await page.getByText('Pokud lze přihlášení dokončit', { exact: false }).waitFor()
-    let loginUrl
-    for (let attempt = 0; attempt < 60 && !loginUrl; attempt++) {
-      const messages = await (await admin.request.get(`${mailpit}/api/v1/messages?limit=100`)).json()
-      const message = messages.messages.find(message => !oldIds.has(message.ID) && message.Subject === 'Přihlášení do Brunch Era' && message.To.some(recipient => recipient.Address === adminEmail))
-      if (message) {
-        const detail = await (await admin.request.get(`${mailpit}/api/v1/message/${message.ID}`)).json()
-        loginUrl = detail.Text.match(/https?:\/\/\S+\/?\?login_token=[a-f0-9]+/)?.[0]
-      }
-      if (!loginUrl) await new Promise(resolve => setTimeout(resolve, 500))
-    }
-    assert.ok(loginUrl, 'New admin login email must arrive in local Mailpit')
-    await page.goto(loginUrl)
-    await page.getByRole('button', { name: 'Potvrdit přihlášení', exact: true }).click()
-    await page.waitForFunction(async () => (await fetch('/api/auth/me')).ok)
+    await loginAdministrator(page, base, adminEmail, adminPassword)
     initialAreas = await readAreas()
     assert.ok(initialAreas.every(candidate => !candidate.active), 'Start this test with no active delivery areas. Existing active areas are not changed.')
     const usedCodes = new Set(initialAreas.map(candidate => candidate.postal_code))

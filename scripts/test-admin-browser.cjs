@@ -1,13 +1,14 @@
-// Browser smoke test against a local server and Mailpit. Requires Playwright.
+// Browser smoke test against a local server with a database administrator. Requires Playwright.
 const { chromium } = require('playwright')
 const assert = require('node:assert/strict')
 const fs = require('node:fs/promises')
 const path = require('node:path')
+const { adminTestPassword, loginAdministrator } = require('./admin-test-login.cjs')
 
 async function main() {
   const base = process.env.TEST_BASE_URL || 'http://127.0.0.1:3100'
-  const mailpit = process.env.TEST_MAILPIT_URL || 'http://127.0.0.1:18026'
   const adminEmail = process.env.TEST_ADMIN_EMAIL || 'admin@example.test'
+  const adminPassword = adminTestPassword()
   if (!['127.0.0.1', 'localhost', '[::1]'].includes(new URL(base).hostname)) throw new Error('Run this smoke test against a local server only')
   const output = path.resolve('output/admin-browser')
   await fs.mkdir(output, { recursive: true })
@@ -25,29 +26,7 @@ async function main() {
   }
   let product
   try {
-    await page.goto(`${base}/admin/`)
-    const previousMail = await (await context.request.get(`${mailpit}/api/v1/messages`)).json()
-    const previousIds = new Set(previousMail.messages.map(message => message.ID))
-    await page.getByLabel('Váš administrátorský e-mail').fill(adminEmail)
-    await page.getByRole('button', { name: 'Poslat přihlašovací odkaz' }).click()
-    await page.getByText('Pokud lze přihlášení dokončit', { exact: false }).waitFor()
-    let tokenUrl
-    for (let attempt = 0; attempt < 30 && !tokenUrl; attempt++) {
-      const response = await context.request.get(`${mailpit}/api/v1/messages`)
-      const messages = await response.json()
-      const message = messages.messages.find(message => !previousIds.has(message.ID) && message.Subject === 'Přihlášení do Brunch Era' && message.To.some(recipient => recipient.Address === adminEmail))
-      if (message) {
-        const detail = await (await context.request.get(`${mailpit}/api/v1/message/${message.ID}`)).json()
-        tokenUrl = detail.Text.match(/https?:\/\/\S+\/?\?login_token=[a-f0-9]+/)?.[0]
-      }
-      if (!tokenUrl) await new Promise(resolve => setTimeout(resolve, 500))
-    }
-    assert.ok(tokenUrl, 'Login email must arrive in local Mailpit')
-    await page.goto(tokenUrl)
-    await page.getByRole('button', { name: 'Potvrdit přihlášení' }).click()
-    await page.waitForFunction(async () => (await fetch('/api/auth/me')).ok)
-    await page.goto(`${base}/admin/`)
-    await page.getByRole('heading', { name: 'Objednávky', exact: true }).waitFor()
+    await loginAdministrator(page, base, adminEmail, adminPassword)
     await page.getByRole('link', { name: 'Zboží a ceny' }).click()
     await page.getByRole('button', { name: '+ Přidat zboží' }).click()
     const name = `Test administrace ${Date.now()}`
@@ -148,7 +127,7 @@ async function main() {
     const publicProducts = await json(guest.request, 'get', '/api/products')
     assert.ok(!publicProducts.some(item => item.id === product.id))
     assert.deepEqual(errors, [], 'No uncaught browser errors')
-    console.log(JSON.stringify({ result: 'passed', product: product.id, order: order.number, screenshots: output, checks: ['passwordless admin login', 'create/edit/archive product', 'upload product photograph', 'price history', 'settings save', 'order search and detail', 'map and phone links', 'print slip', 'delivery and payment states', 'customers and mail', '390px mobile', 'no browser errors'] }, null, 2))
+    console.log(JSON.stringify({ result: 'passed', product: product.id, order: order.number, screenshots: output, checks: ['administrator password login', 'create/edit/archive product', 'upload product photograph', 'price history', 'settings save', 'order search and detail', 'map and phone links', 'print slip', 'delivery and payment states', 'customers and mail', '390px mobile', 'no browser errors'] }, null, 2))
   } catch (error) {
     await page.screenshot({ path: path.join(output, 'failure.png'), fullPage: true }).catch(() => {})
     console.error('Browser page errors:', errors)

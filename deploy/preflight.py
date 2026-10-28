@@ -83,7 +83,7 @@ def validate(config, skip_secret_files=False):
         raise ValueError("Administrator and application database passwords must differ")
     if env["DATABASE_URL"] != f"postgres://brunch:{passwords[1]}@db:5432/brunch":
         raise ValueError("Application database configuration does not match the database service")
-    for key in ("ADMIN_EMAIL", "ORDER_EMAIL", "SMTP_FROM", "SMTP_HOST"):
+    for key in ("ORDER_EMAIL", "SMTP_FROM", "SMTP_HOST"):
         if not env.get(key) or placeholder(env[key]):
             raise ValueError(f"Set a real value for {key}")
     if placeholder(proxy.get("ACME_EMAIL", "")) or "@" not in proxy.get("ACME_EMAIL", ""):

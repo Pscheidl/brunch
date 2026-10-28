@@ -40,7 +40,7 @@ impl Fixture {
             .await
             .unwrap();
         migrate(&pool).await.unwrap();
-        auth::bootstrap_admin(&pool, "admin@example.test")
+        auth::initialize_admin(&pool, "admin@example.test", "Test-only-admin-password-2026")
             .await
             .unwrap();
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -54,7 +54,6 @@ impl Fixture {
             bind: address,
             public_url: url.clone(),
             order_email: "orders@example.test".into(),
-            admin_email: "admin@example.test".into(),
             smtp_host: "127.0.0.1".into(),
             smtp_port: 9,
             smtp_username: None,
@@ -85,7 +84,7 @@ impl Fixture {
             let id: Uuid = sqlx::query_scalar("INSERT INTO users(id,email) VALUES ($1,$2) ON CONFLICT(email) DO UPDATE SET email=excluded.email RETURNING id")
                 .bind(Uuid::new_v4()).bind(email).fetch_one(&self.pool).await.unwrap();
             let token = Uuid::new_v4().simple().to_string().repeat(2);
-            sqlx::query("INSERT INTO sessions(token_hash,user_id,expires_at) VALUES ($1,$2,now()+interval '1 hour')")
+            sqlx::query("INSERT INTO sessions(token_hash,user_id,expires_at,admin_authenticated) VALUES ($1,$2,now()+interval '1 hour',true)")
                 .bind(auth::token_hash(&token)).bind(id).execute(&self.pool).await.unwrap();
             headers.insert("cookie", format!("brunch_session={token}").parse().unwrap());
         }

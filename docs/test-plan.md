@@ -6,7 +6,7 @@ HTTP integrační testy běží proti skutečné PostgreSQL. Každý test vytvá
 
 ```bash
 cd server
-TEST_DATABASE_URL=postgres://brunch:brunch-local@127.0.0.1:55434/brunch cargo test --test api --test mail --test security --test media -- --ignored
+TEST_DATABASE_URL=postgres://brunch:brunch-local@127.0.0.1:55434/brunch cargo test --test api --test mail --test security --test administrators --test media -- --ignored
 ```
 
 Při selhání testu může zůstat izolované schéma `brunch_test_<uuid>` pro diagnostiku. Nikdy nespouštějte testy proti produkční databázi.
@@ -30,6 +30,12 @@ Při selhání testu může zůstat izolované schéma `brunch_test_<uuid>` pro 
 | E-mailová fronta | Potvrzení zákazníkovi a provozovateli ve stejné transakci s objednávkou, chyba při ukládání druhého e-mailu vrátí i objednávku a sklad, opakování selhané zprávy |
 | Neplatná data | Chybné kontakty, prázdná adresa, datum mimo nabídku, chybná platba a množství neuloží objednávku ani e-mail |
 
+## Správci a hesla
+
+Test `administrators` používá skutečné HTTP a izolovanou PostgreSQL. Ověřuje přihlášení heslem, unikátní salt a různý hash stejných hesel, chybné přihlášení a omezení pokusů, zákaz přístupu přes zákaznický odkaz či relaci, přidání existujícího zákazníka, zachování jeho dat, reset hesla a zrušení relací, odebrání vlastní role a ochranu posledního správce při souběhu. API nesmí vracet hash ani heslo. Inicializace prvního správce je jednorázová a restart nesmí obnovit odebraná práva.
+
+V prohlížeči ověřte chybné a správné přihlášení, sekci Administrátoři, přidání správce, duplicitu, reset hesla, potvrzení a zrušení odebrání, zákaz odebrání posledního správce a šířku 390 px. Testovací účty vytvářejte pouze v oddělené místní databázi.
+
 ## Ruční ověření rozhraní
 
 Nejprve v administraci povolit testovací PSČ `110 00`. V poli i při hledání vyzkoušet mezery, tabulátor, nezalomitelnou mezeru a jejich kombinace. Duplikát se nesmí založit. Ověřit dostupnost v dialogu adresy i objednávky, vypnutí oblasti před konečným odesláním a zobrazení chyby bez vzniku objednávky. Po testu vrátit původní nastavení oblastí.
@@ -47,16 +53,16 @@ Rezervace skutečné rozvozové kapacity není součástí této verze. Online p
 
 ## Opakovatelné ověření administrace v prohlížeči
 
-Skript `scripts/test-admin-browser.cjs` používá Playwright a Chromium proti běžícímu místnímu serveru a Mailpitu. Přihlásí správce skutečným e-mailovým odkazem, nahraje fotografii, vytvoří a upraví vlastní testovací produkt, ověří historii, uloží nezměněné nastavení dopravy a projde objednávkou až do doručení včetně platby. Zkontroluje odkaz do mapy, telefon, tisk a šířku 390 px. Vlastní produkt na konci archivuje. Testovací objednávku ponechá pro kontrolu. Výchozí produkty ani cenu dopravy nemění.
+Skript `scripts/test-admin-browser.cjs` používá Playwright a Chromium proti běžícímu místnímu serveru s předem založeným administrátorem. Přihlásí správce e-mailem a heslem, nahraje fotografii, vytvoří a upraví vlastní testovací produkt, ověří historii, uloží nezměněné nastavení dopravy a projde objednávkou až do doručení včetně platby. Zkontroluje odkaz do mapy, telefon, tisk a šířku 390 px. Vlastní produkt na konci archivuje. Testovací objednávku ponechá pro kontrolu. Výchozí produkty ani cenu dopravy nemění.
 
 ```bash
 TEST_BASE_URL=http://127.0.0.1:3100 \
-TEST_MAILPIT_URL=http://127.0.0.1:18026 \
 TEST_ADMIN_EMAIL=admin@example.test \
+TEST_ADMIN_PASSWORD="$TEST_ADMIN_PASSWORD" \
 node scripts/test-admin-browser.cjs
 ```
 
-Prostředí musí mít dostupné balíčky Playwright a prohlížeč Chromium. Snímky a jednostránkový rozvozový list se ukládají do `output/admin-browser/`. Při chybě vznikne také `failure.png`.
+Před testem načtěte heslo místního testovacího správce do `TEST_ADMIN_PASSWORD`. Jde pouze o vstup testovacího nástroje, aplikace administrátory z prostředí nenačítá. Prostředí musí mít dostupné balíčky Playwright a prohlížeč Chromium. Snímky a jednostránkový rozvozový list se ukládají do `output/admin-browser/`. Při chybě vznikne také `failure.png`.
 
 Ověřeno 21. 10. 2026: tento scénář úspěšně prošel proti místnímu serveru, PostgreSQL a Mailpitu. V prohlížeči nebyla zachycena žádná neošetřená chyba. Zkontrolovány byly také snímky desktopu, mobilní šířky 390 px a jednostránkový tisk A4.
 
@@ -80,7 +86,7 @@ Samostatný `npm run test:postal` vyžaduje místní databázi bez aktivních ob
 
 Snímky a místní výsledky jsou v ignorované složce `output/`. `BRUNCH_PSQL_BIN` umožňuje zadat vlastní cestu k psql. Databázové kontroly ověřují jeden skutečně uložený záznam po opakování požadavku.
 
-Další integrační testy ověřují ochranu poštovní fronty proti pozdnímu výsledku starého pracovníka, odstranění prošlých přihlašovacích odkazů, okamžité odebrání práv původnímu správci, úplný rollback při selhání vložení e-mailu a bezpečné nahrání obrázků včetně formátu, velikosti, rozměrů a orientace fotografie.
+Další integrační testy ověřují ochranu poštovní fronty proti pozdnímu výsledku starého pracovníka, odstranění prošlých přihlašovacích odkazů, okamžité odebrání práv a relací správci, úplný rollback při selhání vložení e-mailu a bezpečné nahrání obrázků včetně formátu, velikosti, rozměrů a orientace fotografie.
 
 ### Denní kontrola objednávek a obsah e-mailů
 

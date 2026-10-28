@@ -29,7 +29,6 @@ impl Fixture {
                 "DATABASE_URL",
                 "postgres://brunch:DO-NOT-PRINT@127.0.0.1:1/brunch",
             )
-            .env("ADMIN_EMAIL", "admin@brunch-ci.cz")
             .env("ORDER_EMAIL", "orders@brunch-ci.cz")
             .env("SMTP_FROM", "Brunch Era <obchod@brunch-ci.cz>")
             .env("SMTP_HOST", "smtp.brunch-ci.cz")
@@ -55,7 +54,6 @@ impl Fixture {
         command
             .env("APP_ENV", "preview")
             .env("PUBLIC_URL", "http://127.0.0.1:3100")
-            .env("ADMIN_EMAIL", "admin@example.test")
             .env("ORDER_EMAIL", "orders@example.test")
             .env("SMTP_FROM", "Brunch Era <shop@example.test>")
             .env("SMTP_HOST", "mailpit")
@@ -213,7 +211,7 @@ fn public_ip_opt_in_is_strict_and_does_not_relax_mail_or_preview_configuration()
             .unwrap();
         assert!(output.status.success(), "{}", output_text(&output));
     }
-    for key in ["ADMIN_EMAIL", "ORDER_EMAIL", "SMTP_FROM"] {
+    for key in ["ORDER_EMAIL", "SMTP_FROM"] {
         rejected(
             fixture
                 .command()
@@ -262,15 +260,9 @@ fn deployment_rejects_insecure_placeholder_and_mismatched_payment_settings() {
     ] {
         rejected(fixture.command().env("PUBLIC_URL", url), "PUBLIC_URL");
     }
-    for setting in ["ADMIN_EMAIL", "ORDER_EMAIL", "SMTP_FROM"] {
+    for setting in ["ORDER_EMAIL", "SMTP_FROM"] {
         rejected(fixture.command().env(setting, "test@example.com"), setting);
     }
-    rejected(
-        fixture
-            .command()
-            .env("ADMIN_EMAIL", "Správce <admin@brunch-ci.cz>"),
-        "ADMIN_EMAIL",
-    );
     rejected(
         fixture.command().env("SMTP_HOST", "smtp.example.com"),
         "SMTP_HOST",
@@ -373,7 +365,6 @@ fn development_configuration_keeps_local_mail_and_http_support() {
         .command()
         .env_remove("APP_ENV")
         .env("PUBLIC_URL", "http://127.0.0.1:3100")
-        .env("ADMIN_EMAIL", "admin@example.test")
         .env("ORDER_EMAIL", "orders@example.test")
         .env("SMTP_FROM", "brunch@example.test")
         .env("SMTP_HOST", "mailpit")
