@@ -695,15 +695,12 @@ async fn notify_late_payment(conn: &mut PgConnection, id: Uuid, status: &str) ->
             .bind(id)
             .fetch_one(&mut *conn)
             .await?;
-    let shop_email: String = sqlx::query_scalar("SELECT order_email FROM shop_settings WHERE id=1")
-        .fetch_one(&mut *conn)
-        .await?;
     let label = if status == "expired" {
         "vypršelé"
     } else {
         "zrušené"
     };
-    mail::enqueue(conn, &shop_email, &format!("Pozdní platba objednávky {number}: nutná kontrola"),
+    let shop_email = mail::enqueue_order_notification(conn, &format!("Pozdní platba objednávky {number}: nutná kontrola"),
         &format!("Teya potvrdila úhradu {},{:02} Kč u {label} objednávky {number}. Peníze jsou zaevidované, objednávka nebyla znovu přijata k vyřízení a sklad se znovu neodečetl. Ověřte situaci v portálu Teya, kontaktujte zákazníka a vyřešte případné vrácení platby.", amount / 100, amount % 100)).await?;
     mail::enqueue(conn, &email, &format!("Přijatá platba k uzavřené objednávce {number}"),
         &format!("Obdrželi jsme potvrzení vaší platby k {label} objednávce {number}. Platbu jsme zaevidovali a předali obsluze k vyřešení. Objednávka se automaticky znovu neotevřela. Znovu ji neplaťte. S dotazy se obraťte na {shop_email}." )).await?;

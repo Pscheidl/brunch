@@ -13,12 +13,52 @@ use lettre::{
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use sqlx::{FromRow, PgConnection};
-use std::time::Duration;
+use std::{collections::HashSet, time::Duration};
 use uuid::Uuid;
 
 pub const LOGIN_SUBJECT: &str = "Přihlášení do Brunch Era";
 // Keep queued links created before the rebrand protected until they are removed.
 const LOGIN_SUBJECTS: &[&str] = &["Přihlášení do Brunch", LOGIN_SUBJECT];
+
+/// The primary address is first and remains the customer-facing contact.
+pub(crate) fn normalize_order_recipients(
+    primary: &str,
+    additional: &[String],
+) -> ApiResult<Vec<String>> {
+    let mut recipients = Vec::new();
+    let mut seen = HashSet::new();
+    for value in std::iter::once(primary).chain(additional.iter().map(String::as_str)) {
+        let email = auth::normalize_email(value)?;
+        if seen.insert(email.clone()) {
+            recipients.push(email);
+            if recipients.len() > 20 {
+                return Err(ApiError::bad_request(
+                    "Oznámení objednávek lze posílat nejvýše na 20 různých e-mailových adres.",
+                ));
+            }
+        }
+    }
+    Ok(recipients)
+}
+
+/// Call within the order/payment transaction so all recipients are queued atomically.
+/// Each recipient gets a separate message, with no other staff addresses exposed.
+pub async fn enqueue_order_notification(
+    conn: &mut PgConnection,
+    subject: &str,
+    body: &str,
+) -> ApiResult<String> {
+    let (primary, additional): (String, Vec<String>) =
+        sqlx::query_as("SELECT order_email,additional_order_emails FROM shop_settings WHERE id=1")
+            .fetch_one(&mut *conn)
+            .await?;
+    let recipients = normalize_order_recipients(&primary, &additional)?;
+    let contact = recipients[0].clone();
+    for recipient in recipients {
+        enqueue(conn, &recipient, subject, body).await?;
+    }
+    Ok(contact)
+}
 
 pub async fn enqueue(
     conn: &mut PgConnection,
@@ -237,4 +277,80 @@ async fn retry(
         ));
     }
     Ok(Json(json!({"ok":true})))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::normalize_order_recipients;
+
+    #[test]
+    fn order_recipients_normalize_deduplicate_and_keep_primary_first() {
+        let additional = [
+            " Delivery@Example.test ",
+            "SHOP@example.test",
+            "delivery@example.test",
+            "Kitchen@example.test",
+        ]
+        .map(String::from);
+        assert_eq!(
+            normalize_order_recipients(" Shop@Example.test ", &additional).unwrap(),
+            [
+                "shop@example.test",
+                "delivery@example.test",
+                "kitchen@example.test"
+            ]
+        );
+        assert_eq!(
+            normalize_order_recipients("delivery@example.test", &additional).unwrap(),
+            [
+                "delivery@example.test",
+                "shop@example.test",
+                "kitchen@example.test"
+            ]
+        );
+        assert_eq!(
+            normalize_order_recipients(" Shop@Example.test ", &[]).unwrap(),
+            ["shop@example.test"]
+        );
+    }
+
+    #[test]
+    fn order_recipients_reject_invalid_addresses_and_header_injection() {
+        for invalid in [
+            "",
+            " ",
+            "not-an-email",
+            "two@example.test,three@example.test",
+            "Name <one@example.test>",
+            "one@example.test\r\nBcc: other@example.test",
+            "one @example.test",
+        ] {
+            assert!(
+                normalize_order_recipients(invalid, &[]).is_err(),
+                "{invalid:?}"
+            );
+            assert!(
+                normalize_order_recipients("shop@example.test", &[invalid.to_owned()]).is_err(),
+                "{invalid:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn order_recipient_limit_counts_unique_addresses_including_primary() {
+        let mut additional: Vec<String> =
+            (1..20).map(|n| format!("staff{n}@example.test")).collect();
+        additional.push(" SHOP@example.test ".into());
+        additional.extend(vec!["STAFF1@example.test".into(); 30]);
+        assert_eq!(
+            normalize_order_recipients("shop@example.test", &additional)
+                .unwrap()
+                .len(),
+            20
+        );
+        // Changing the primary can turn a previously duplicated address into a new recipient.
+        assert!(normalize_order_recipients("new-shop@example.test", &additional).is_err());
+        additional.push("staff20@example.test".into());
+        assert!(normalize_order_recipients("shop@example.test", &additional).is_err());
+    }
 }

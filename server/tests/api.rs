@@ -698,7 +698,10 @@ async fn upgrade_preserves_existing_products_photos_orders_and_settings() {
         ("images", ""),
         ("product_prices", ""),
         ("order_items", ""),
-        ("shop_settings", " - 'delivery_slots'"),
+        (
+            "shop_settings",
+            " - 'delivery_slots' - 'additional_order_emails'",
+        ),
         ("delivery_areas", " - 'delivery_slots'"),
         (
             "orders",
@@ -751,6 +754,15 @@ async fn upgrade_preserves_existing_products_photos_orders_and_settings() {
             .await
             .unwrap();
     assert_eq!(site_defaults, (1, String::new(), 1));
+    let recipients: Vec<String> =
+        sqlx::query_scalar("SELECT additional_order_emails FROM shop_settings WHERE id=1")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert!(
+        recipients.is_empty(),
+        "upgrading keeps the existing primary recipient only"
+    );
     pool.close().await;
     sqlx::query(&format!("DROP SCHEMA {schema} CASCADE"))
         .execute(&database)
@@ -798,7 +810,7 @@ async fn production_initialization_creates_settings_without_demo_and_preserves_e
         .execute(&pool)
         .await
         .unwrap();
-    sqlx::query("UPDATE shop_settings SET delivery_fee_cents=5900,order_email='kitchen@brunch-ci.cz' WHERE id=1").execute(&pool).await.unwrap();
+    sqlx::query("UPDATE shop_settings SET delivery_fee_cents=5900,order_email='kitchen@brunch-ci.cz',additional_order_emails=ARRAY['dispatch@brunch-ci.cz','owner@brunch-ci.cz'] WHERE id=1").execute(&pool).await.unwrap();
     commerce::initialize(&pool, "new-default@brunch-ci.cz", false)
         .await
         .unwrap();
@@ -813,6 +825,12 @@ async fn production_initialization_creates_settings_without_demo_and_preserves_e
             .await
             .unwrap();
     assert_eq!(settings, (5900, "kitchen@brunch-ci.cz".into()));
+    let recipients: Vec<String> =
+        sqlx::query_scalar("SELECT additional_order_emails FROM shop_settings WHERE id=1")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(recipients, ["dispatch@brunch-ci.cz", "owner@brunch-ci.cz"]);
     pool.close().await;
     sqlx::query(&format!("DROP SCHEMA {schema} CASCADE"))
         .execute(&database)
@@ -1093,6 +1111,287 @@ impl TestApp {
             .unwrap();
         self.database.close().await;
     }
+}
+
+#[tokio::test]
+#[ignore = "requires real PostgreSQL via TEST_DATABASE_URL"]
+async fn additional_order_recipients_validate_privacy_preservation_and_conflicts() {
+    let app = TestApp::new().await;
+    let guest = app.client();
+    let customer = app.login("recipient-customer@example.test").await;
+    let admin = app.login("admin@example.test").await;
+    let initial = app.get(&admin, "/api/admin/settings").await;
+    assert_eq!(initial["additional_order_emails"], json!([]));
+    let mut update = initial.clone();
+    update["order_email"] = json!("  ORDERS@Example.Test ");
+    update["additional_order_emails"] = json!([
+        " Chef@Example.Test ",
+        "dispatch@example.test",
+        "CHEF@example.test",
+        " orders@example.test "
+    ]);
+    for (client, expected) in [
+        (&guest, StatusCode::UNAUTHORIZED),
+        (&customer, StatusCode::FORBIDDEN),
+    ] {
+        app.call(client, Method::GET, "/api/admin/settings", None, expected)
+            .await;
+        app.call(
+            client,
+            Method::PUT,
+            "/api/admin/settings",
+            Some(&update),
+            expected,
+        )
+        .await;
+    }
+    assert_eq!(app.get(&admin, "/api/admin/settings").await, initial);
+    let mut saved = app
+        .call(
+            &admin,
+            Method::PUT,
+            "/api/admin/settings",
+            Some(&update),
+            StatusCode::OK,
+        )
+        .await;
+    assert_eq!(saved["order_email"], "orders@example.test");
+    assert_eq!(
+        saved["additional_order_emails"],
+        json!(["chef@example.test", "dispatch@example.test"])
+    );
+    let public = app.get(&guest, "/api/settings").await;
+    for private_field in ["order_email", "additional_order_emails"] {
+        assert!(
+            public.get(private_field).is_none(),
+            "{private_field} is private"
+        );
+    }
+    for invalid in [
+        json!(["not-an-email"]),
+        json!([""]),
+        json!(["ok@example.test\r\nBcc: hidden@example.test"]),
+        json!(
+            (0..20)
+                .map(|i| format!("staff{i}@example.test"))
+                .collect::<Vec<_>>()
+        ),
+    ] {
+        let mut rejected = saved.clone();
+        rejected["additional_order_emails"] = invalid;
+        app.call(
+            &admin,
+            Method::PUT,
+            "/api/admin/settings",
+            Some(&rejected),
+            StatusCode::BAD_REQUEST,
+        )
+        .await;
+        assert_eq!(
+            app.get(&admin, "/api/admin/settings").await,
+            saved,
+            "invalid recipients cannot partially update settings or version"
+        );
+    }
+    // Count unique addresses after normalization, including the primary recipient.
+    let maximum: Vec<String> = (0..19).map(|i| format!("staff{i}@example.test")).collect();
+    let mut duplicate_input = maximum.clone();
+    duplicate_input.extend([
+        " STAFF0@EXAMPLE.TEST ".into(),
+        " ORDERS@EXAMPLE.TEST ".into(),
+    ]);
+    update = saved.clone();
+    update["additional_order_emails"] = json!(duplicate_input);
+    saved = app
+        .call(
+            &admin,
+            Method::PUT,
+            "/api/admin/settings",
+            Some(&update),
+            StatusCode::OK,
+        )
+        .await;
+    assert_eq!(saved["additional_order_emails"], json!(maximum));
+    for omitted in [true, false] {
+        update = saved.clone();
+        if omitted {
+            update
+                .as_object_mut()
+                .unwrap()
+                .remove("additional_order_emails");
+        } else {
+            update["additional_order_emails"] = Value::Null;
+        }
+        update["delivery_fee_cents"] = json!(saved["delivery_fee_cents"].as_i64().unwrap() + 100);
+        saved = app
+            .call(
+                &admin,
+                Method::PUT,
+                "/api/admin/settings",
+                Some(&update),
+                StatusCode::OK,
+            )
+            .await;
+        assert_eq!(
+            saved["additional_order_emails"],
+            json!(maximum),
+            "older clients preserve the list"
+        );
+    }
+    let mut a = saved.clone();
+    let mut b = saved.clone();
+    a["additional_order_emails"] = json!(["first@example.test"]);
+    b["additional_order_emails"] = json!(["second@example.test"]);
+    let (a_response, b_response) = tokio::join!(
+        admin
+            .put(format!("{}/api/admin/settings", app.url))
+            .json(&a)
+            .send(),
+        admin
+            .put(format!("{}/api/admin/settings", app.url))
+            .json(&b)
+            .send()
+    );
+    let a_status = a_response.unwrap().status();
+    let b_status = b_response.unwrap().status();
+    assert!(
+        (a_status == StatusCode::OK && b_status == StatusCode::CONFLICT)
+            || (b_status == StatusCode::OK && a_status == StatusCode::CONFLICT)
+    );
+    saved = app.get(&admin, "/api/admin/settings").await;
+    assert_eq!(
+        saved["additional_order_emails"],
+        if a_status == StatusCode::OK {
+            a["additional_order_emails"].clone()
+        } else {
+            b["additional_order_emails"].clone()
+        }
+    );
+    assert_eq!(
+        saved["version"].as_i64().unwrap(),
+        a["version"].as_i64().unwrap() + 1
+    );
+    update = saved;
+    update["additional_order_emails"] = json!([]);
+    let cleared = app
+        .call(
+            &admin,
+            Method::PUT,
+            "/api/admin/settings",
+            Some(&update),
+            StatusCode::OK,
+        )
+        .await;
+    assert_eq!(cleared["additional_order_emails"], json!([]));
+    assert_eq!(cleared["order_email"], "orders@example.test");
+    app.close().await;
+}
+
+#[tokio::test]
+#[ignore = "requires real PostgreSQL via TEST_DATABASE_URL"]
+async fn multiple_staff_order_mails_are_atomic_private_and_idempotent() {
+    let app = TestApp::new().await;
+    let guest = app.client();
+    let admin = app.login("admin@example.test").await;
+    let mut settings = app.get(&admin, "/api/admin/settings").await;
+    settings["additional_order_emails"] = json!([
+        "chef@example.test",
+        "dispatch@example.test",
+        "CHEF@example.test",
+        "orders@example.test"
+    ]);
+    app.call(
+        &admin,
+        Method::PUT,
+        "/api/admin/settings",
+        Some(&settings),
+        StatusCode::OK,
+    )
+    .await;
+    sqlx::query("UPDATE products SET stock=5")
+        .execute(&app.pool)
+        .await
+        .unwrap();
+    let products = app.get(&guest, "/api/products").await;
+    let input = app
+        .order(&guest, "guest@example.test", &products[0], 1)
+        .await;
+    sqlx::query("CREATE FUNCTION fail_extra_recipient() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN IF NEW.to_email='dispatch@example.test' THEN RAISE EXCEPTION 'Injected extra recipient failure'; END IF; RETURN NEW; END $$").execute(&app.pool).await.unwrap();
+    sqlx::query("CREATE TRIGGER fail_extra_recipient BEFORE INSERT ON outbox FOR EACH ROW EXECUTE FUNCTION fail_extra_recipient()").execute(&app.pool).await.unwrap();
+    app.call(
+        &guest,
+        Method::POST,
+        "/api/orders",
+        Some(&input),
+        StatusCode::INTERNAL_SERVER_ERROR,
+    )
+    .await;
+    assert_eq!(app.count("orders").await, 0);
+    assert_eq!(app.count("order_items").await, 0);
+    assert_eq!(app.count("outbox").await, 0);
+    let stock: i32 = sqlx::query_scalar("SELECT stock FROM products WHERE id=$1")
+        .bind(products[0]["id"].as_i64().unwrap())
+        .fetch_one(&app.pool)
+        .await
+        .unwrap();
+    assert_eq!(stock, 5, "extra recipient failure must roll back stock too");
+    sqlx::query("DROP TRIGGER fail_extra_recipient ON outbox")
+        .execute(&app.pool)
+        .await
+        .unwrap();
+    let (first, duplicate) = tokio::join!(
+        app.post(&guest, "/api/orders", &input),
+        app.post(&guest, "/api/orders", &input)
+    );
+    assert_eq!(first["id"], duplicate["id"]);
+    assert_eq!(app.count("orders").await, 1);
+    let mail: Vec<(String, String, String)> =
+        sqlx::query_as("SELECT to_email,subject,body FROM outbox ORDER BY to_email")
+            .fetch_all(&app.pool)
+            .await
+            .unwrap();
+    assert_eq!(
+        mail.iter().map(|row| row.0.as_str()).collect::<Vec<_>>(),
+        [
+            "chef@example.test",
+            "dispatch@example.test",
+            "guest@example.test",
+            "orders@example.test"
+        ]
+    );
+    for (_, _, body) in &mail {
+        assert!(body.contains(first["number"].as_str().unwrap()));
+        assert!(body.contains("Testovací 12"));
+    }
+    let customer_mail = mail
+        .iter()
+        .find(|row| row.0 == "guest@example.test")
+        .unwrap();
+    assert!(customer_mail.2.contains("orders@example.test"));
+    assert!(!customer_mail.2.contains("chef@example.test"));
+    assert!(!customer_mail.2.contains("dispatch@example.test"));
+    let recipients: Vec<String> = mail
+        .iter()
+        .filter(|row| row.0 != "guest@example.test")
+        .map(|row| row.1.clone())
+        .collect();
+    assert!(
+        recipients.windows(2).all(|pair| pair[0] == pair[1]),
+        "staff receive separate copies of the same notice"
+    );
+    app.post(&guest, "/api/orders", &input).await;
+    assert_eq!(
+        app.count("outbox").await,
+        4,
+        "replay cannot queue additional copies"
+    );
+    let stock: i32 = sqlx::query_scalar("SELECT stock FROM products WHERE id=$1")
+        .bind(products[0]["id"].as_i64().unwrap())
+        .fetch_one(&app.pool)
+        .await
+        .unwrap();
+    assert_eq!(stock, 4);
+    app.close().await;
 }
 
 #[tokio::test]

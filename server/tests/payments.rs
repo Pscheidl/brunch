@@ -547,6 +547,8 @@ async fn on_delivery_orders_are_accepted_and_unconfigured_online_checkout_is_rej
 async fn restart_recovers_lost_create_response_and_missed_webhook_without_duplicate_payment() {
     let (provider, provider_task) = FakeTeya::start().await;
     let mut app = TestApp::new(Some(provider.config())).await;
+    sqlx::query("UPDATE shop_settings SET additional_order_emails=ARRAY['chef@example.test','dispatch@example.test']")
+        .execute(&app.state.pool).await.unwrap();
     let client = app.client();
     let input = app.order_input(&client, "card").await;
     let order = app
@@ -577,6 +579,9 @@ async fn restart_recovers_lost_create_response_and_missed_webhook_without_duplic
             .2
             .contains(input["delivery_slot"].as_str().unwrap())
     );
+    assert!(pending_mail.2.contains("orders@example.test"));
+    assert!(!pending_mail.2.contains("chef@example.test"));
+    assert!(!pending_mail.2.contains("dispatch@example.test"));
     provider.state.lock().unwrap().fail_create_response_once = true;
     app.run_due().await;
     let stored_session: Option<String> =
@@ -624,7 +629,7 @@ async fn restart_recovers_lost_create_response_and_missed_webhook_without_duplic
     assert_eq!(status["status"], "new");
     assert_eq!(status["payment_status"], "paid");
     assert!(status["checkout_url"].is_null());
-    assert_eq!(app.payment_counts().await, (1, 0, 2, 3));
+    assert_eq!(app.payment_counts().await, (1, 0, 2, 5));
     let confirmations: Vec<(String, String)> = sqlx::query_as("SELECT to_email,body FROM outbox WHERE subject LIKE 'Zaplacená objednávka%' OR subject LIKE 'Přijali jsme platbu%' ORDER BY to_email")
         .fetch_all(&app.state.pool).await.unwrap();
     assert_eq!(
@@ -632,9 +637,19 @@ async fn restart_recovers_lost_create_response_and_missed_webhook_without_duplic
             .iter()
             .map(|(email, _)| email.as_str())
             .collect::<Vec<_>>(),
-        vec!["customer@example.test", "orders@example.test"]
+        vec![
+            "chef@example.test",
+            "customer@example.test",
+            "dispatch@example.test",
+            "orders@example.test"
+        ]
     );
-    for (_, body) in confirmations {
+    for (recipient, body) in confirmations {
+        if recipient == "customer@example.test" {
+            assert!(body.contains("orders@example.test"));
+            assert!(!body.contains("chef@example.test"));
+            assert!(!body.contains("dispatch@example.test"));
+        }
         for expected in [
             format!(
                 "Doručení: {} {}",
@@ -665,7 +680,7 @@ async fn restart_recovers_lost_create_response_and_missed_webhook_without_duplic
     app.run_due().await;
     assert_eq!(
         app.payment_counts().await,
-        (1, 1, 2, 3),
+        (1, 1, 2, 5),
         "late duplicate delivery must not duplicate receipts or mail"
     );
     app.close().await;
@@ -1392,6 +1407,8 @@ async fn expired_sessions_remain_unpaid_and_cancellation_restores_stock_exactly_
 async fn late_success_after_cancellation_records_money_for_review_without_fulfilment() {
     let (provider, provider_task) = FakeTeya::start().await;
     let mut app = TestApp::new(Some(provider.config())).await;
+    sqlx::query("UPDATE shop_settings SET additional_order_emails=ARRAY['chef@example.test','dispatch@example.test']")
+        .execute(&app.state.pool).await.unwrap();
     let client = app.client();
     let admin = app.login_admin().await;
     sqlx::query("UPDATE products SET stock=5")
@@ -1429,7 +1446,26 @@ async fn late_success_after_cancellation_records_money_for_review_without_fulfil
     assert_eq!(status["payment_state"], "review");
     assert!(status["checkout_url"].is_null());
     assert_eq!(app.stock(&input).await, 5);
-    assert_eq!(app.payment_counts().await, (1, 1, before.2, before.3 + 2));
+    assert_eq!(app.payment_counts().await, (1, 1, before.2, before.3 + 4));
+    let alerts: Vec<(String, String)> = sqlx::query_as("SELECT to_email,body FROM outbox WHERE subject LIKE 'Pozdní platba%' OR subject LIKE 'Přijatá platba k uzavřené%' ORDER BY to_email")
+        .fetch_all(&app.state.pool).await.unwrap();
+    assert_eq!(
+        alerts.iter().map(|row| row.0.as_str()).collect::<Vec<_>>(),
+        [
+            "chef@example.test",
+            "customer@example.test",
+            "dispatch@example.test",
+            "orders@example.test"
+        ]
+    );
+    let customer_notice = &alerts
+        .iter()
+        .find(|row| row.0 == "customer@example.test")
+        .unwrap()
+        .1;
+    assert!(customer_notice.contains("orders@example.test"));
+    assert!(!customer_notice.contains("chef@example.test"));
+    assert!(!customer_notice.contains("dispatch@example.test"));
     let detail = app
         .get(
             &admin,
@@ -1455,7 +1491,7 @@ async fn late_success_after_cancellation_records_money_for_review_without_fulfil
         StatusCode::NO_CONTENT
     );
     app.run_due().await;
-    assert_eq!(app.payment_counts().await, (1, 1, before.2, before.3 + 2));
+    assert_eq!(app.payment_counts().await, (1, 1, before.2, before.3 + 4));
     app.close().await;
     provider_task.abort();
 }
@@ -1700,6 +1736,8 @@ async fn deadline_hides_existing_checkout_and_prevents_new_session_before_expira
 async fn late_success_after_expiration_survives_restart_and_alerts_once_without_reopening() {
     let (provider, provider_task) = FakeTeya::start().await;
     let mut app = TestApp::new(Some(provider.config())).await;
+    sqlx::query("UPDATE shop_settings SET additional_order_emails=ARRAY['chef@example.test','dispatch@example.test']")
+        .execute(&app.state.pool).await.unwrap();
     let client = app.client();
     sqlx::query("UPDATE products SET stock=5")
         .execute(&app.state.pool)
@@ -1738,10 +1776,26 @@ async fn late_success_after_expiration_survives_restart_and_alerts_once_without_
         .await
         .unwrap();
     assert_eq!(error, "paid_expired_order");
-    assert_eq!(app.payment_counts().await, (1, 1, before.2, before.3 + 2));
-    let alerts: Vec<String> = sqlx::query_scalar("SELECT to_email FROM outbox WHERE subject LIKE 'Pozdní platba%' OR subject LIKE 'Přijatá platba k uzavřené%' ORDER BY to_email")
+    assert_eq!(app.payment_counts().await, (1, 1, before.2, before.3 + 4));
+    let alerts: Vec<(String, String)> = sqlx::query_as("SELECT to_email,body FROM outbox WHERE subject LIKE 'Pozdní platba%' OR subject LIKE 'Přijatá platba k uzavřené%' ORDER BY to_email")
         .fetch_all(&app.state.pool).await.unwrap();
-    assert_eq!(alerts, vec!["customer@example.test", "orders@example.test"]);
+    assert_eq!(
+        alerts.iter().map(|row| row.0.as_str()).collect::<Vec<_>>(),
+        [
+            "chef@example.test",
+            "customer@example.test",
+            "dispatch@example.test",
+            "orders@example.test"
+        ]
+    );
+    let customer_notice = &alerts
+        .iter()
+        .find(|row| row.0 == "customer@example.test")
+        .unwrap()
+        .1;
+    assert!(customer_notice.contains("orders@example.test"));
+    assert!(!customer_notice.contains("chef@example.test"));
+    assert!(!customer_notice.contains("dispatch@example.test"));
     let acceptance: i64 = sqlx::query_scalar("SELECT count(*) FROM outbox WHERE subject LIKE 'Přijali jsme platbu%' OR subject LIKE 'Zaplacená objednávka%'")
         .fetch_one(&app.state.pool).await.unwrap();
     assert_eq!(acceptance, 0);
@@ -1756,7 +1810,7 @@ async fn late_success_after_expiration_survives_restart_and_alerts_once_without_
     );
     app.run_due().await;
     payments::expire_orders(&app.state).await.unwrap();
-    assert_eq!(app.payment_counts().await, (1, 2, before.2, before.3 + 2));
+    assert_eq!(app.payment_counts().await, (1, 2, before.2, before.3 + 4));
     assert_eq!(app.stock(&input).await, 5);
     let admin = app.login_admin().await;
     let detail = app

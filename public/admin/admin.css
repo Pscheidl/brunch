@@ -26,6 +26,7 @@
 .terms-text{white-space:pre-wrap;overflow-wrap:anywhere;font-size:16px;line-height:1.75}
 .order-origin{margin-top:8px;overflow-wrap:anywhere}
 .site-settings-editor{max-width:860px}
+.settings-panel .error{overflow-wrap:anywhere}
 .site-settings-editor>[data-form-error]{margin-bottom:20px}
 .site-settings-editor h2{font-size:20px;line-height:1.4}
 .site-settings-editor>.section-note{margin-bottom:20px}

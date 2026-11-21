@@ -295,6 +295,7 @@ struct Settings {
     delivery_fee_cents: i64,
     free_delivery_from_cents: Option<i64>,
     order_email: String,
+    additional_order_emails: Option<Vec<String>>,
     delivery_slots: Option<Vec<String>>,
     version: i64,
 }
@@ -508,9 +509,31 @@ async fn update_settings(
             "Neplatné nastavení dopravy nebo verze.",
         ));
     }
-    let updated = sqlx::query_as("UPDATE shop_settings SET delivery_fee_cents=$1,free_delivery_from_cents=$2,order_email=$3,delivery_slots=COALESCE($5,delivery_slots),version=version+1,updated_at=now() WHERE id=1 AND version=$4 RETURNING *")
-        .bind(input.delivery_fee_cents).bind(input.free_delivery_from_cents).bind(input.order_email).bind(input.version).bind(input.delivery_slots)
-        .fetch_optional(&state.pool).await?.ok_or_else(|| ApiError::conflict("Nastavení se mezitím změnilo. Načtěte aktuální údaje."))?;
+    let mut tx = state.pool.begin().await?;
+    let (version, additional): (i64, Vec<String>) = sqlx::query_as(
+        "SELECT version,additional_order_emails FROM shop_settings WHERE id=1 FOR UPDATE",
+    )
+    .fetch_one(&mut *tx)
+    .await?;
+    if input.version != version {
+        return Err(ApiError::conflict(
+            "Nastavení se mezitím změnilo. Načtěte aktuální údaje.",
+        ));
+    }
+    let recipients = mail::normalize_order_recipients(
+        &input.order_email,
+        input
+            .additional_order_emails
+            .as_deref()
+            .unwrap_or(&additional),
+    )?;
+    if input.additional_order_emails.is_some() {
+        input.additional_order_emails = Some(recipients.into_iter().skip(1).collect());
+    }
+    let updated = sqlx::query_as("UPDATE shop_settings SET delivery_fee_cents=$1,free_delivery_from_cents=$2,order_email=$3,delivery_slots=COALESCE($5,delivery_slots),additional_order_emails=COALESCE($6,additional_order_emails),version=version+1,updated_at=now() WHERE id=1 AND version=$4 RETURNING *")
+        .bind(input.delivery_fee_cents).bind(input.free_delivery_from_cents).bind(input.order_email).bind(input.version).bind(input.delivery_slots).bind(input.additional_order_emails)
+        .fetch_optional(&mut *tx).await?.ok_or_else(|| ApiError::conflict("Nastavení se mezitím změnilo. Načtěte aktuální údaje."))?;
+    tx.commit().await?;
     Ok(Json(updated))
 }
 
@@ -974,9 +997,8 @@ async fn create_order(
         mail::enqueue(&mut tx, &order.email, &format!("Objednávka {} čeká na zaplacení", order.number),
             &format!("Objednávku jsme uložili a čekáme na potvrzení online platby. K vyřízení ji přijmeme až po úspěšné úhradě. Platbu dokončete v platební bráně otevřené z objednávky.\n\n{summary}\n\nPokud už jste zaplatili, další platbu neprovádějte a vyčkejte na potvrzení. S dotazy napište na {} a uveďte číslo objednávky.{terms_copy}", settings.order_email)).await?;
     } else {
-        mail::enqueue(
+        let order_email = mail::enqueue_order_notification(
             &mut tx,
-            &settings.order_email,
             &format!("Nová objednávka {}", order.number),
             &format!(
                 "Nová objednávka k vyřízení.\n\n{summary}\n\nAdministrace: {}/admin/",
@@ -985,7 +1007,7 @@ async fn create_order(
         )
         .await?;
         mail::enqueue(&mut tx, &order.email, &format!("Přijali jsme objednávku {}", order.number),
-            &format!("Děkujeme za objednávku. Přijali jsme ji ke zpracování.\nZvolený čas doručení je požadované okno, které potvrdíme při vyřízení.\n\n{summary}\n\nPotřebujete něco změnit? Napište nám na {} a uveďte číslo objednávky.{terms_copy}", settings.order_email)).await?;
+            &format!("Děkujeme za objednávku. Přijali jsme ji ke zpracování.\nZvolený čas doručení je požadované okno, které potvrdíme při vyřízení.\n\n{summary}\n\nPotřebujete něco změnit? Napište nám na {order_email} a uveďte číslo objednávky.{terms_copy}")).await?;
     }
     // A checkout may wait on stock or rate-limit locks across Prague midnight.
     // Roll back the whole new order if its day became unavailable while waiting.
@@ -1127,13 +1149,9 @@ pub(crate) async fn payment_received(conn: &mut PgConnection, id: Uuid) -> ApiRe
     .execute(&mut *conn)
     .await?;
     let order = read_order(conn, id, false).await?;
-    let order_email: String =
-        sqlx::query_scalar("SELECT order_email FROM shop_settings WHERE id=1")
-            .fetch_one(&mut *conn)
-            .await?;
     let summary = order_summary(&order);
     let terms_copy = terms::order_email_copy(conn, order.terms_version).await?;
-    mail::enqueue(conn, &order_email, &format!("Zaplacená objednávka {} k vyřízení", order.number),
+    let order_email = mail::enqueue_order_notification(conn, &format!("Zaplacená objednávka {} k vyřízení", order.number),
         &format!("Online platba byla ověřena. Objednávka je přijata k vyřízení. Při doručení již nic nevybírejte.\n\n{summary}")).await?;
     mail::enqueue(conn, &order.email, &format!("Přijali jsme platbu a objednávku {}", order.number),
         &format!("Děkujeme, online platba byla přijata a objednávku jsme přijali ke zpracování. Při doručení již nic neplatíte.\nZvolený čas doručení je požadované okno, které potvrdíme při vyřízení.\n\n{summary}\n\nPotřebujete něco změnit? Napište nám na {order_email} a uveďte číslo objednávky.{terms_copy}")).await?;
@@ -1762,6 +1780,7 @@ mod tests {
             delivery_fee_cents: 4900,
             free_delivery_from_cents: Some(35000),
             order_email: String::new(),
+            additional_order_emails: None,
             delivery_slots: None,
             version: 1,
         };

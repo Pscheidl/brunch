@@ -51,7 +51,11 @@ async function api(path, options = {}) {
   const data = await response.json().catch(() => ({}))
   if (!response.ok) {
     const conflictHint = response.status === 409 && !path.startsWith('/api/admin/administrators')
-    const conflictAction = path === '/api/admin/terms' ? 'Načtěte aktuální znění tlačítkem Obnovit. Váš rozepsaný text zatím zůstává ve formuláři.' : path === '/api/admin/site-settings' ? 'Načtěte aktuální nastavení tlačítkem Obnovit. Vybraná fotografie i rozepsaný popis zatím zůstávají ve formuláři.' : 'Zavřete okno a načtěte aktuální data tlačítkem Obnovit.'
+    const conflictAction = {
+      '/api/admin/terms': 'Načtěte aktuální znění tlačítkem Obnovit. Váš rozepsaný text zatím zůstává ve formuláři.',
+      '/api/admin/site-settings': 'Načtěte aktuální nastavení tlačítkem Obnovit. Vybraná fotografie i rozepsaný popis zatím zůstávají ve formuláři.',
+      '/api/admin/settings': 'Načtěte aktuální nastavení tlačítkem Obnovit. Rozepsané údaje zatím zůstávají ve formuláři.'
+    }[path] || 'Zavřete okno a načtěte aktuální data tlačítkem Obnovit.'
     const error = new Error(conflictHint ? `${data.error || 'Záznam se mezitím změnil.'} ${conflictAction}` : data.error || `Požadavek se nepodařil (${response.status}).`)
     error.status = response.status
     if (path.startsWith('/api/admin/') && path !== '/api/admin/auth/login' && [401, 403].includes(response.status)) {
@@ -540,14 +544,39 @@ function deliveryAreaDialog(area = null) {
   body.append(form)
 }
 
+function orderEmailRecipients(primaryValue, additionalValue) {
+  const primary = String(primaryValue || '').trim().toLowerCase()
+  const addresses = [primary, ...String(additionalValue || '').split(/[\r\n,;]+/).map(value => value.trim().toLowerCase()).filter(Boolean)]
+  const validator = document.createElement('input')
+  validator.type = 'email'
+  validator.required = true
+  const unique = new Set()
+  for (const address of addresses) {
+    validator.value = address
+    if (address.length > 254 || !validator.checkValidity()) throw new Error(`Zkontrolujte e-mailovou adresu „${address || 'prázdná adresa'}“.`)
+    unique.add(address)
+  }
+  if (unique.size > 20) throw new Error('Objednávky lze posílat nejvýše na 20 různých e-mailů včetně hlavního příjemce.')
+  unique.delete(primary)
+  return { primary, additional: [...unique] }
+}
+
 async function settingsPage() {
   const settings = await api('/api/admin/settings')
   const form = el('form', { class: 'panel settings-panel', onsubmit: event => saveForm(event, async data => {
-    await api('/api/admin/settings', { method: 'PUT', body: JSON.stringify({ delivery_fee_cents: cents(data.get('delivery_fee')), free_delivery_from_cents: cents(data.get('free_delivery_from'), true), order_email: String(data.get('order_email')).trim(), delivery_slots: readDeliverySlots(data) || [], version: settings.version }) })
-    notify('Nastavení bylo uloženo.')
-    renderPage()
-  }) }, el('p', { class: 'hint' }, 'Změny se použijí pro nové objednávky. Již přijaté objednávky uchovají původní dopravu a celkovou cenu.'), deliverySlotsField(settings.delivery_slots), field('Cena dopravy v Kč', 'delivery_fee', (settings.delivery_fee_cents / 100).toFixed(2), { required: true, inputmode: 'decimal' }), field('Doprava zdarma od částky v Kč', 'free_delivery_from', settings.free_delivery_from_cents === null ? '' : (settings.free_delivery_from_cents / 100).toFixed(2), { inputmode: 'decimal', hint: 'Prázdné pole vypne dopravu zdarma. Limit se vztahuje na cenu zboží.' }), field('E-mail pro příjem objednávek', 'order_email', settings.order_email, { type: 'email', required: true, maxlength: 254, autocomplete: 'off', hint: 'Sem dorazí nové objednávky. Potvrzení dostane i zákazník.' }), el('div', { class: 'actions' }, el('button', { type: 'submit', class: 'button primary' }, 'Uložit nastavení')))
-  return [header('Doprava a nastavení', 'Cena dopravy a doručování objednávek do vaší schránky.', button('Obnovit', renderPage)), form]
+    notice.hidden = true
+    form.querySelector('[data-form-error]')?.remove()
+    const recipients = orderEmailRecipients(data.get('order_email'), data.get('additional_order_emails'))
+    const payload = { delivery_fee_cents: cents(data.get('delivery_fee')), free_delivery_from_cents: cents(data.get('free_delivery_from'), true), order_email: recipients.primary, additional_order_emails: recipients.additional, delivery_slots: readDeliverySlots(data) || [], version: settings.version }
+    const controls = [...form.querySelectorAll('input, textarea')]
+    controls.forEach(control => { control.disabled = true })
+    try {
+      await api('/api/admin/settings', { method: 'PUT', body: JSON.stringify(payload) })
+      notify('Nastavení bylo uloženo.')
+      await renderPage()
+    } finally { controls.forEach(control => { control.disabled = false }) }
+  }) }, el('p', { class: 'hint' }, 'Změny se použijí pro nové objednávky. Již přijaté objednávky uchovají původní dopravu a celkovou cenu.'), deliverySlotsField(settings.delivery_slots), field('Cena dopravy v Kč', 'delivery_fee', (settings.delivery_fee_cents / 100).toFixed(2), { required: true, inputmode: 'decimal' }), field('Doprava zdarma od částky v Kč', 'free_delivery_from', settings.free_delivery_from_cents === null ? '' : (settings.free_delivery_from_cents / 100).toFixed(2), { inputmode: 'decimal', hint: 'Prázdné pole vypne dopravu zdarma. Limit se vztahuje na cenu zboží.' }), field('Hlavní e-mail pro příjem objednávek', 'order_email', settings.order_email, { type: 'email', required: true, maxlength: 254, autocomplete: 'off', hint: 'Tento e-mail přijímá objednávky a zákazníkům se uvádí jako kontakt pro jejich vyřízení.' }), field('Další příjemci objednávek', 'additional_order_emails', (settings.additional_order_emails || []).join('\n'), { kind: 'textarea', rows: 4, maxlength: 10000, autocomplete: 'off', placeholder: 'kuchyne@example.com\nrozvoz@example.com', hint: 'Adresy oddělte novým řádkem, čárkou nebo středníkem. Nejvýše 20 různých příjemců včetně hlavního e-mailu.' }), el('p', { class: 'hint' }, 'Každý příjemce dostane samostatné oznámení. U platby při doručení přijde po přijetí objednávky, u online platby po ověření úhrady. Zákazníkům se jako kontakt uvádí pouze hlavní e-mail.'), el('div', { class: 'actions' }, el('button', { type: 'submit', class: 'button primary' }, 'Uložit nastavení')))
+  return [header('Doprava a nastavení', 'Cena dopravy, rozvozová okna a příjemci objednávek.', button('Obnovit', renderPage)), form]
 }
 async function customersPage() {
   const data = await api(`/api/admin/customers?page=${state.customerPage}`)

@@ -133,7 +133,7 @@ Všechny příklady v šabloně je třeba nahradit. Validace odmítá ukázkové
 | `ONLINE_PAYMENT_TIMEOUT_MINUTES` | Lhůta nových nezaplacených online objednávek, 1 až 1440 minut, výchozí 60 |
 | `SECRETS_DIR` | Hostitelský adresář tajných souborů, výchozí `/etc/brunch/secrets` |
 
-`ORDER_EMAIL` nepřepisuje již uložené nastavení obchodu. Po prvním spuštění skutečného příjemce kontrolujte v **Doprava a nastavení → E-mail pro příjem objednávek**. Poplatky za dopravu a hranici dopravy zdarma upravte tamtéž. Správci jsou výhradně v databázi, žádná proměnná konfigurace je nezakládá ani nepřepisuje.
+`ORDER_EMAIL` nepřepisuje již uložené nastavení obchodu. Po prvním spuštění hlavního příjemce kontrolujte v **Doprava a nastavení → Hlavní e-mail pro příjem objednávek**. Další adresy přidejte do pole **Další příjemci objednávek**, celkem lze nastavit až 20 různých příjemců. Uložení adres v administraci nevyžaduje restart. Poplatky za dopravu a hranici dopravy zdarma upravte tamtéž. Správci jsou výhradně v databázi, žádná proměnná konfigurace je nezakládá ani nepřepisuje.
 
 ### První administrátor a přechod z přihlašování e-mailem
 
