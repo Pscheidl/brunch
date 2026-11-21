@@ -132,3 +132,11 @@ Ověření proběhlo na oddělené místní PostgreSQL 18.6 a v Chromiu. Produk�
 - Prošel Clippy se zákazem varování, release sestavení frontendu a kontrola statických souborů.
 
 Toto je záznam místního ověření, nikoli potvrzení produkčního nasazení.
+
+### Následná úprava fotografií a ověření termínů
+
+Fotografie v katalogu, detailu, košíku a náhledu administrace mají neutrální pozadí splývající s bílou stránkou. Katalog zachovává zobrazení celého snímku a omezení výšky na 220 px. Vzhled byl zkontrolován na skutečných deseti produktových fotografiích na desktopu i mobilu.
+
+Kalendář a formulář ověřují aktuální den v Praze při výběru, návratu do okna a odeslání. Zastaralý termín se posune na nejbližší pracovní den s upozorněním. Stejné opakování požadavku s neznámým výsledkem si uchová původní obsah a klíč, aby nevytvořilo další objednávku. Backend kontroluje datum také těsně před potvrzením transakce.
+
+Prošly přímé HTTP zkoušky odmítnutí dneška, minulosti a víkendů, kontrola pražské půlnoci v zimním i letním čase a prohlížečové scénáře se zastaralými daty, přechodem přes půlnoc a bezpečným opakováním po ztrátě odpovědi. Prohlížeč používal i jiné časové pásmo než Praha. Validace rozvozových oken nadále odmítá neplatné časy, opačné pořadí, duplicity a překryvy.

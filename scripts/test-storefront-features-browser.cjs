@@ -40,6 +40,7 @@ async function main() {
   try {
     const context = await browser.newContext({ viewport: { width: 1280, height: 1000 } })
     const page = await context.newPage()
+    await page.clock.setFixedTime(new Date('2026-11-21T12:00:00Z'))
     page.on('pageerror', error => errors.push(error.message))
     await page.route('**/api/**', async route => {
       const url = new URL(route.request().url())

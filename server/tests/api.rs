@@ -1696,6 +1696,94 @@ async fn delivery_area_management_permissions_normalization_and_conflicts() {
 
 #[tokio::test]
 #[ignore = "requires real PostgreSQL via TEST_DATABASE_URL"]
+async fn new_orders_reject_past_today_and_weekends_but_replay_historical_success() {
+    use chrono::{Datelike, Days, Utc, Weekday};
+    let app = TestApp::new().await;
+    let guest = app.client();
+    let products = app.get(&guest, "/api/products").await;
+    let product = &products[0];
+    let product_id = product["id"].as_i64().unwrap();
+    sqlx::query("UPDATE products SET stock=5 WHERE id=$1")
+        .bind(product_id)
+        .execute(&app.pool)
+        .await
+        .unwrap();
+    let input = app.order(&guest, "dates@example.test", product, 1).await;
+    let today = Utc::now()
+        .with_timezone(&chrono_tz::Europe::Prague)
+        .date_naive();
+    let yesterday = today.pred_opt().unwrap();
+    let saturday = (1..=7)
+        .map(|days| today.checked_add_days(Days::new(days)).unwrap())
+        .find(|day| day.weekday() == Weekday::Sat)
+        .unwrap();
+    let baseline_mail = app.count("outbox").await;
+    // Direct POSTs exercise server validation independently of all browser controls.
+    for date in [yesterday, today, saturday, saturday.succ_opt().unwrap()] {
+        let mut invalid = input.clone();
+        invalid["delivery_date"] = json!(date);
+        app.call(
+            &guest,
+            Method::POST,
+            "/api/orders",
+            Some(&invalid),
+            StatusCode::BAD_REQUEST,
+        )
+        .await;
+    }
+    assert_eq!(app.count("orders").await, 0);
+    assert_eq!(app.count("order_items").await, 0);
+    assert_eq!(app.count("outbox").await, baseline_mail);
+    let stock: i32 = sqlx::query_scalar("SELECT stock FROM products WHERE id=$1")
+        .bind(product_id)
+        .fetch_one(&app.pool)
+        .await
+        .unwrap();
+    assert_eq!(stock, 5);
+
+    let order = app.post(&guest, "/api/orders", &input).await;
+    let id: Uuid = order["id"].as_str().unwrap().parse().unwrap();
+    let mut historical: Value =
+        sqlx::query_scalar("SELECT request_payload FROM orders WHERE id=$1")
+            .bind(id)
+            .fetch_one(&app.pool)
+            .await
+            .unwrap();
+    // Model a previously accepted order whose delivery day has since passed.
+    historical["delivery_date"] = json!(yesterday);
+    sqlx::query("UPDATE orders SET delivery_date=$2,request_payload=$3 WHERE id=$1")
+        .bind(id)
+        .bind(yesterday)
+        .bind(&historical)
+        .execute(&app.pool)
+        .await
+        .unwrap();
+    let replayed = app.post(&guest, "/api/orders", &historical).await;
+    assert_eq!(replayed["id"], order["id"]);
+    assert_eq!(replayed["delivery_date"], json!(yesterday));
+    historical["idempotency_key"] = json!(Uuid::new_v4());
+    app.call(
+        &guest,
+        Method::POST,
+        "/api/orders",
+        Some(&historical),
+        StatusCode::BAD_REQUEST,
+    )
+    .await;
+    assert_eq!(app.count("orders").await, 1);
+    assert_eq!(app.count("order_items").await, 1);
+    assert_eq!(app.count("outbox").await, baseline_mail + 2);
+    let stock: i32 = sqlx::query_scalar("SELECT stock FROM products WHERE id=$1")
+        .bind(product_id)
+        .fetch_one(&app.pool)
+        .await
+        .unwrap();
+    assert_eq!(stock, 4);
+    app.close().await;
+}
+
+#[tokio::test]
+#[ignore = "requires real PostgreSQL via TEST_DATABASE_URL"]
 async fn any_future_workday_uses_current_postal_or_default_delivery_slots() {
     use chrono::{Datelike, NaiveDate, Utc, Weekday};
     let app = TestApp::new().await;

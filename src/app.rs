@@ -4,7 +4,9 @@ use crate::{
         self, Cart, DeliveryOptions, Order, OrderRequest, PaymentRecovery, PaymentResponse,
         Product, RequestedItem, Settings, User, UserResponse, money,
     },
-    delivery_calendar::{DeliveryCalendar, date_label},
+    delivery_calendar::{
+        DeliveryCalendar, date_label, earliest_date, prague_today, selectable_date,
+    },
     icons::Icon,
 };
 use leptos::{html, prelude::*, task::spawn_local};
@@ -77,6 +79,7 @@ struct Shop {
     account_dialog: NodeRef<html::Dialog>,
     selected_product: RwSignal<i64>,
     day: RwSignal<String>,
+    today: RwSignal<Option<chrono::NaiveDate>>,
     slot: RwSignal<String>,
     step: RwSignal<u8>,
     cart_title: NodeRef<html::H2>,
@@ -307,6 +310,7 @@ impl Shop {
         }
     }
     fn open_cart(self) {
+        self.check_delivery_date();
         self.step
             .set(if self.confirmation.get_untracked().is_some() {
                 3
@@ -322,6 +326,50 @@ impl Shop {
             .ok()
             .map(|date| format!("{}, {}", date_label(date), self.slot.get()))
             .unwrap_or_else(|| "Vyberte požadovaný termín".into())
+    }
+    fn earliest_delivery_date(self) -> Option<chrono::NaiveDate> {
+        earliest_date(
+            self.options
+                .with(|opts| opts.dates.first().and_then(|d| d.value.parse().ok())),
+            self.today.get(),
+        )
+    }
+    fn delivery_date_valid(self) -> bool {
+        self.day
+            .get()
+            .parse()
+            .ok()
+            .is_some_and(|date| selectable_date(date, self.earliest_delivery_date()))
+    }
+    fn check_delivery_date(self) -> bool {
+        let today = prague_today();
+        if self.today.get_untracked() != today {
+            self.today.set(today);
+        }
+        if !self.ready.get_untracked() {
+            return false;
+        }
+        if self.delivery_date_valid() {
+            return true;
+        }
+        // Keep the original payload available for an exact retry after an uncertain
+        // response. The server can recover a saved order without creating a new one.
+        if self.submitting.get_untracked() || self.attempt.get_untracked().is_some() {
+            return false;
+        }
+        let previous = self.day.get_untracked();
+        self.day.set(
+            self.earliest_delivery_date()
+                .map(|d| d.to_string())
+                .unwrap_or_default(),
+        );
+        if !previous.is_empty() {
+            self.notice.set("Původně zvolený den už není dostupný. Vybrali jsme nejbližší pracovní den. Zkontrolujte prosím termín doručení.".into());
+            if self.step.get_untracked() == 2 {
+                self.go(1);
+            }
+        }
+        false
     }
     fn available_slots(self) -> Vec<String> {
         let postal = self.details.postal.get();
@@ -366,21 +414,6 @@ impl Shop {
             match result {
                 Ok((products, settings, options)) => {
                     self.cart.update(|cart| {if catalog::reconcile(cart,&products) {self.notice.set("Košík jsme upravili podle aktuální dostupnosti. Zkontrolujte prosím počty.".into());}});
-                    // The first offered date is calculated in Prague and includes public holidays.
-                    let first = options
-                        .dates
-                        .first()
-                        .map(|d| d.value.as_str())
-                        .unwrap_or("");
-                    let current = self.day.get_untracked();
-                    if current.as_str() < first
-                        || current
-                            .parse()
-                            .ok()
-                            .is_none_or(|d| !crate::working_day::working_day(d))
-                    {
-                        self.day.set(first.to_owned());
-                    }
                     self.products.set(products);
                     if !settings.online_payment_enabled && self.payment.get_untracked() == "card" {
                         self.payment.set("card_on_delivery".into());
@@ -388,6 +421,7 @@ impl Shop {
                     self.settings.set(settings);
                     self.options.set(options);
                     self.ready.set(true);
+                    self.check_delivery_date();
                 }
                 Err(err) => self.error.set(err.message),
             }
@@ -533,6 +567,10 @@ impl Shop {
         if self.submitting.get_untracked() || !self.ready.get_untracked() {
             return;
         }
+        if !self.check_delivery_date() && self.attempt.get_untracked().is_none() {
+            self.go(1);
+            return;
+        }
         if self.payment.get_untracked() == "card"
             && self.payment_recovery.get_untracked().is_some()
             && !self
@@ -585,6 +623,16 @@ impl Shop {
             storage_get("brunch-order-attempt", true)
                 .and_then(|v| serde_json::from_str::<(String, String)>(&v).ok())
         });
+        if !self.delivery_date_valid()
+            && !saved
+                .as_ref()
+                .is_some_and(|(previous, _)| *previous == signature)
+        {
+            self.order_error
+                .set("Vyberte nový termín doručení, nejdříve následující pracovní den.".into());
+            self.go(1);
+            return;
+        }
         body.idempotency_key = match saved {
             Some((previous, key)) if previous == signature => key,
             _ => match new_key() {
@@ -633,9 +681,13 @@ impl Shop {
                 }
                 Err(err) => {
                     if err.status == 409 {
+                        self.attempt.set(None);
+                        storage_set("brunch-order-attempt", None, true);
                         self.order_error.set(format!("{} Zkontrolujte prosím aktualizovanou nabídku, cenu i termín a poté objednávku znovu potvrďte.",err.message));
                         self.refresh();
                     } else if err.status == 400 {
+                        self.attempt.set(None);
+                        storage_set("brunch-order-attempt", None, true);
                         self.order_error.set(err.message);
                         self.refresh();
                     } else {
@@ -666,6 +718,7 @@ fn Home() -> impl IntoView {
         account_dialog: NodeRef::new(),
         selected_product: RwSignal::new(0),
         day: RwSignal::new(String::new()),
+        today: RwSignal::new(prague_today()),
         slot: RwSignal::new(String::new()),
         step: RwSignal::new(0),
         cart_title: NodeRef::new(),
@@ -688,6 +741,26 @@ fn Home() -> impl IntoView {
         payment_state: RwSignal::new("pending".into()),
         payment_error: RwSignal::new(String::new()),
     };
+    #[cfg(target_arch = "wasm32")]
+    {
+        use leptos::leptos_dom::helpers::{
+            set_interval_with_handle, window_event_listener_untyped,
+        };
+        if let Ok(timer) = set_interval_with_handle(
+            move || {
+                shop.check_delivery_date();
+            },
+            std::time::Duration::from_secs(30),
+        ) {
+            on_cleanup(move || timer.clear());
+        }
+        for event in ["focus", "pageshow", "visibilitychange"] {
+            let listener = window_event_listener_untyped(event, move |_| {
+                shop.check_delivery_date();
+            });
+            on_cleanup(move || listener.remove());
+        }
+    }
     Effect::new(move |_| {
         let slots = shop.available_slots();
         if !slots.contains(&shop.slot.get_untracked()) {
@@ -770,7 +843,7 @@ fn Home() -> impl IntoView {
         <main>
             <Show when=move ||shop.payment_recovery.get().is_some()><div class="page-width api-message" role="status"><p>"Máte uloženou objednávku s online platbou. Ověřte její stav nebo pokračujte v platbě."</p><button class="button secondary" on:click=move |_|shop.resume_payment()>"Otevřít uloženou objednávku"</button></div></Show>
             <section class="hero page-width" aria-labelledby="hero-title"><div class="hero-copy"><div class="eyebrow"><span class="status-dot"></span>"Z PEKÁRNY ROVNOU K VÁM"</div><h1 id="hero-title">"Dobrá pauza."<br/><span>"Lepší den."</span></h1><p>"Poctivé pečivo. Čerstvé suroviny. Svačiny, na které se budete těšit. Až k vám do kanceláře."</p><a class="button primary hero-cta" href="#nabidka">"Co si dnes dáte?"<Icon/></a><div class="hero-footnote"><Icon name="check"/>"Pár kliknutí. Bez registrace."</div></div><div class="hero-visual"><img src="images/brunch-spread.webp" alt="Kváskový sendvič, jogurt s granolou a hummus se zeleninou na prostřeném stole" width="1536" height="1024" fetchpriority="high"/><div class="photo-caption"><span class="caption-icon"><Icon name="sun"/></span><div><strong>"Malá pauza. Velká radost."</strong><span>"Dobré věci si zaslouží svůj čas."</span></div></div><span class="photo-index">"01 / DOBRÉ RÁNO"</span></div></section>
-            <div class="page-width"><section class="delivery-strip" aria-label="Nastavení doručení"><button class="delivery-selector" on:click=move |_| open_dialog(shop.delivery_dialog)><Icon name="pin"/><span><small>"VAŠE ADRESA"</small><strong>{move || if shop.details.postal.get().is_empty() {"Kam to přivezeme?".into()} else {format!("PSČ {}",shop.details.postal.get())}}</strong></span><Icon name="chevron"/></button><button class="delivery-selector" on:click=move |_| open_dialog(shop.delivery_dialog)><Icon name="clock"/><span><small>"POŽADOVANÝ TERMÍN"</small><strong>{move ||shop.delivery_label()}</strong></span><Icon name="chevron"/></button><div class="delivery-price"><Icon name="truck"/><span>{move ||shop.delivery_info()}</span></div></section><div class="benefits"><span><Icon name="leaf"/>"Suroviny, které znáte"</span><span><Icon name="sun"/>"Připraveno na vaše ráno"</span><span><Icon name="bag"/>"Pro vás i celý tým"</span></div></div>
+            <div class="page-width"><section class="delivery-strip" aria-label="Nastavení doručení"><button class="delivery-selector" on:click=move |_| {shop.check_delivery_date();open_dialog(shop.delivery_dialog);}><Icon name="pin"/><span><small>"VAŠE ADRESA"</small><strong>{move || if shop.details.postal.get().is_empty() {"Kam to přivezeme?".into()} else {format!("PSČ {}",shop.details.postal.get())}}</strong></span><Icon name="chevron"/></button><button class="delivery-selector" on:click=move |_| {shop.check_delivery_date();open_dialog(shop.delivery_dialog);}><Icon name="clock"/><span><small>"POŽADOVANÝ TERMÍN"</small><strong>{move ||shop.delivery_label()}</strong></span><Icon name="chevron"/></button><div class="delivery-price"><Icon name="truck"/><span>{move ||shop.delivery_info()}</span></div></section><div class="benefits"><span><Icon name="leaf"/>"Suroviny, které znáte"</span><span><Icon name="sun"/>"Připraveno na vaše ráno"</span><span><Icon name="bag"/>"Pro vás i celý tým"</span></div></div>
             <section class="catalog page-width" id="nabidka" aria-labelledby="catalog-title"><div class="section-heading"><div><p class="eyebrow">"VAŠE DALŠÍ OBLÍBENÁ SVAČINA"</p><h2 id="catalog-title">"Na co máte chuť?"</h2></div><p class="catalog-note">"Něco malého. Něco dobrého. Něco pro vás."</p></div>
                 <div class="filter-bar"><div class="categories" role="group" aria-label="Kategorie svačin">{move || {let mut names = vec![String::new()]; for p in shop.products.get() {if !p.category.is_empty() && !names.contains(&p.category) {names.push(p.category);}} names.into_iter().map(move |name| {let active=name.clone(); let pressed=name.clone(); let choose=name.clone(); let label=if name.is_empty() {"Vše".to_owned()} else if name=="Vše" {"Kategorie Vše".to_owned()} else {name}; view! {<button class:active=move ||category.get()==active aria-pressed=move ||category.get()==pressed on:click=move |_|category.set(choose.clone())>{label}</button>}}).collect_view()}}</div><label class="vegan-filter"><input type="checkbox" prop:checked=move ||vegan.get() on:change=move |ev|vegan.set(event_target_checked(&ev))/><Icon name="leaf"/>"Jen rostlinné"</label></div>
                 <label class="catalog-search"><Icon name="bag"/><input type="search" aria-label="Hledat v nabídce" placeholder="Najít oblíbenou svačinu…" prop:value=move ||search.get() on:input=move |ev|search.set(event_target_value(&ev))/></label>
@@ -880,10 +953,7 @@ fn ProductDialog(shop: Shop) -> impl IntoView {
 }
 #[component]
 fn DeliveryFields(shop: Shop, prefix: &'static str) -> impl IntoView {
-    let earliest = Signal::derive(move || {
-        shop.options
-            .with(|opts| opts.dates.first().and_then(|d| d.value.parse().ok()))
-    });
+    let earliest = Signal::derive(move || shop.earliest_delivery_date());
     view! {
         <DeliveryCalendar day=shop.day earliest/>
         <label class="form-field checkout-time">"Čas doručení"<select required name=format!("{prefix}-time") prop:value=move ||shop.slot.get() on:change=move |ev|shop.slot.set(event_target_value(&ev))>{move ||shop.available_slots().into_iter().map(|slot|view! {<option value=slot.clone() selected=move ||shop.slot.get()==slot>{slot.clone()}</option>}).collect_view()}</select></label>
@@ -919,7 +989,7 @@ fn PostalAvailability(shop: Shop, id: &'static str) -> impl IntoView {
 #[component]
 fn DeliveryDialog(shop: Shop) -> impl IntoView {
     view! {
-        <dialog node_ref=shop.delivery_dialog class="delivery-dialog" aria-labelledby="delivery-title"><div class="dialog-heading"><div><p class="eyebrow">"DOBRÁ PAUZA V PRAVÝ ČAS"</p><h2 id="delivery-title">"Kam a kdy to bude?"</h2></div><button class="icon-button" aria-label="Zavřít nastavení doručení" on:click=move |_|close_dialog(shop.delivery_dialog)><Icon name="close"/></button></div><p class="dialog-intro">"Vše můžete ještě změnit v košíku."</p><form on:submit=move |ev|{ev.prevent_default();if shop.delivers_to_postal() {close_dialog(shop.delivery_dialog);}}><label class="form-field">"PSČ"<input name="delivery-postal" aria-describedby="delivery-postal-status" autocomplete="postal-code" inputmode="numeric" placeholder="Např. 110 00" pattern="[0-9]{5}" title="Zadejte pět číslic" required prop:value=move ||shop.details.postal.get() on:input=move |ev|update_postal_input(&ev,shop.details.postal)/></label><PostalAvailability shop id="delivery-postal-status"/><DeliveryFields shop prefix="delivery"/><div class="info-note"><Icon name="truck"/><p>{move ||shop.delivery_info()}</p></div><button class="button primary full-width" type="submit" disabled=move ||!shop.delivers_to_postal()>"Uložit a vybírat"<Icon/></button></form></dialog>
+        <dialog node_ref=shop.delivery_dialog class="delivery-dialog" aria-labelledby="delivery-title"><div class="dialog-heading"><div><p class="eyebrow">"DOBRÁ PAUZA V PRAVÝ ČAS"</p><h2 id="delivery-title">"Kam a kdy to bude?"</h2></div><button class="icon-button" aria-label="Zavřít nastavení doručení" on:click=move |_|close_dialog(shop.delivery_dialog)><Icon name="close"/></button></div><p class="dialog-intro">"Vše můžete ještě změnit v košíku."</p><form on:submit=move |ev|{ev.prevent_default();if shop.check_delivery_date() && shop.delivers_to_postal() {close_dialog(shop.delivery_dialog);}}><label class="form-field">"PSČ"<input name="delivery-postal" aria-describedby="delivery-postal-status" autocomplete="postal-code" inputmode="numeric" placeholder="Např. 110 00" pattern="[0-9]{5}" title="Zadejte pět číslic" required prop:value=move ||shop.details.postal.get() on:input=move |ev|update_postal_input(&ev,shop.details.postal)/></label><PostalAvailability shop id="delivery-postal-status"/><DeliveryFields shop prefix="delivery"/><div class="info-note"><Icon name="truck"/><p>{move ||shop.delivery_info()}</p></div><button class="button primary full-width" type="submit" disabled=move ||!shop.delivers_to_postal()>"Uložit a vybírat"<Icon/></button></form></dialog>
     }
 }
 #[component]
@@ -958,7 +1028,7 @@ fn CartDialog(shop: Shop) -> impl IntoView {
                     <section data-checkout-step="delivery" hidden=move ||shop.step.get()!=1 aria-label="Doručovací údaje">
                         <div class="checkout-guest"><span class="checkout-guest-icon"><Icon name="person"/></span><div><strong>{move ||if shop.user.get().is_some() {"Jste přihlášeni"} else {"Nakoupíte i bez účtu"}}</strong><span>"Potvrzení vám pošleme e-mailem. Na telefonu vás může zastihnout kurýr."</span></div></div>
                         <Show when=move ||shop.user.get().is_none()><button class="text-button optional-login" type="button" on:click=move |_|shop.open_account()>"Mám účet, přihlásit se"</button></Show>
-                        <form class="checkout-form" on:submit=move |ev|{ev.prevent_default();if shop.delivers_to_postal() {shop.go(2);}}>
+                        <form class="checkout-form" on:submit=move |ev|{ev.prevent_default();if shop.check_delivery_date() && shop.delivers_to_postal() {shop.go(2);}}>
                             <fieldset class="checkout-fieldset"><legend>"Kontaktní údaje"</legend>
                                 <label class="form-field">"Jméno příjemce"<input name="name" autocomplete="name" required pattern=r".*\S.*" maxlength="200" prop:value=move ||d.name.get() on:input=move |ev|d.name.set(event_target_value(&ev))/></label>
                                 <label class="form-field">"Telefon pro kurýra"<input type="tel" name="tel" autocomplete="tel" required pattern=r".*[0-9].*" title="Zadejte telefonní číslo" maxlength="40" prop:value=move ||d.phone.get() on:input=move |ev|d.phone.set(event_target_value(&ev))/></label>

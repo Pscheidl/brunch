@@ -39,6 +39,7 @@ async function staticServer() {
 async function setup(browser, base, options = {}) {
   const context = await browser.newContext({ viewport: { width: 1280, height: 1000 } })
   const page = await context.newPage()
+  await page.clock.setFixedTime(new Date('2026-10-24T08:00:00Z'))
   page.setDefaultTimeout(15000)
   page.on('pageerror', error => errors.push(error.message))
   const requests = { orders: [], payments: [] }

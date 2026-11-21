@@ -633,9 +633,11 @@ impl OrderInput {
     }
 
     fn validate_delivery(&self, slots: &[String]) -> ApiResult<()> {
-        let today = Utc::now()
-            .with_timezone(&chrono_tz::Europe::Prague)
-            .date_naive();
+        self.validate_delivery_at(slots, Utc::now())
+    }
+
+    fn validate_delivery_at(&self, slots: &[String], now: DateTime<Utc>) -> ApiResult<()> {
+        let today = now.with_timezone(&chrono_tz::Europe::Prague).date_naive();
         if self.delivery_date <= today
             || !working_day(self.delivery_date)
             || !slots.contains(&self.delivery_slot)
@@ -959,6 +961,9 @@ async fn create_order(
         mail::enqueue(&mut tx, &order.email, &format!("Přijali jsme objednávku {}", order.number),
             &format!("Děkujeme za objednávku. Přijali jsme ji ke zpracování.\nZvolený čas doručení je požadované okno, které potvrdíme při vyřízení.\n\n{summary}\n\nPotřebujete něco změnit? Napište nám na {} a uveďte číslo objednávky.", settings.order_email)).await?;
     }
+    // A checkout may wait on stock or rate-limit locks across Prague midnight.
+    // Roll back the whole new order if its day became unavailable while waiting.
+    input.validate_delivery(&slots)?;
     tx.commit().await?;
     Ok(Json(order))
 }
@@ -1671,6 +1676,37 @@ mod tests {
         assert_eq!(days[0], NaiveDate::from_ymd_opt(2026, 4, 7).unwrap());
         let christmas = next_dates(NaiveDate::from_ymd_opt(2026, 12, 23).unwrap());
         assert_eq!(christmas[0], NaiveDate::from_ymd_opt(2026, 12, 28).unwrap());
+    }
+
+    #[test]
+    fn delivery_date_expires_at_prague_midnight_in_winter_and_summer() {
+        let mut input: OrderInput = serde_json::from_value(json!({
+            "idempotency_key":Uuid::new_v4(), "email":"guest@example.test",
+            "street":"Test 1", "city":"Praha", "postal_code":"11000",
+            "delivery_date":"2026-01-05", "delivery_slot":"07:00–09:00",
+            "payment_method":"cash_on_delivery", "items":[{"product_id":1,"quantity":1}],
+            "expected_total_cents":100
+        }))
+        .unwrap();
+        let slots = ["07:00–09:00".to_string()];
+        for (date, before, midnight) in [
+            ("2026-01-05", "2026-01-04T22:59:59Z", "2026-01-04T23:00:00Z"),
+            ("2026-07-08", "2026-07-07T21:59:59Z", "2026-07-07T22:00:00Z"),
+        ] {
+            input.delivery_date = date.parse().unwrap();
+            assert!(
+                input
+                    .validate_delivery_at(&slots, before.parse().unwrap())
+                    .is_ok()
+            );
+            let now: DateTime<Utc> = midnight.parse().unwrap();
+            assert!(input.validate_delivery_at(&slots, now).is_err());
+            assert!(
+                input
+                    .validate_delivery_at(&slots, now + chrono::Duration::days(1))
+                    .is_err()
+            );
+        }
     }
 
     #[test]

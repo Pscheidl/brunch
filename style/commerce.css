@@ -6,13 +6,13 @@
 .api-message.error { color:#8b362d; background:#fff0ed; border-color:#edc4bc; }
 .api-message .button { margin-top:12px; }
 .shop-status { padding:24px 0; color:var(--muted); font-size:13px; }
-/* Keep the whole product visible, including tall bottles and wide platters. */
+/* Let white product photographs blend into the page without a decorative frame. */
 .photo-frame {
   display: grid;
   place-items: center;
   grid-template: minmax(0, 1fr) / minmax(0, 1fr);
   overflow: hidden;
-  background: #f7f5ee;
+  background: transparent;
 }
 .photo-frame .catalog-photo {
   width: 100%;
@@ -24,8 +24,14 @@
 .product-photo.photo-frame {
   aspect-ratio: 1.6;
   max-height: 220px;
-  padding: clamp(8px, 1.4vw, 18px);
-  border: 1px solid #eae7dd;
+  padding: 6px;
+  border: 0;
+  border-radius: 0;
+}
+.product-photo.photo-frame:hover { filter: none; }
+.product-photo.photo-frame .catalog-photo { transition: transform .25s ease; }
+@media (hover: hover) and (prefers-reduced-motion: no-preference) {
+  .product-photo.photo-frame:hover .catalog-photo { transform: translateY(-2px) scale(1.02); }
 }
 .detail-photo.photo-frame {
   width: 100%;
