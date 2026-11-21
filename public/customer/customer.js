@@ -7,6 +7,18 @@ const requestStatuses = { pending: 'Čeká na vyřízení', resolved: 'Vyřízen
 const money = value => new Intl.NumberFormat('cs-CZ', { style: 'currency', currency: 'CZK' }).format(value / 100)
 const date = value => new Intl.DateTimeFormat('cs-CZ', { dateStyle: 'long', timeZone: 'Europe/Prague' }).format(new Date(`${value}T12:00:00Z`))
 const datetime = value => new Intl.DateTimeFormat('cs-CZ', { dateStyle: 'medium', timeStyle: 'short', timeZone: 'Europe/Prague' }).format(new Date(value))
+const pickup = order => order.fulfillment_method === 'pickup'
+const statusLabel = (order, status = order.status) => pickup(order) && status === 'out_for_delivery' ? 'Připraveno k vyzvednutí' : pickup(order) && status === 'delivered' ? 'Vyzvednuto' : statuses[status] || status
+const paymentLabel = order => ({ card: 'Online kartou', card_on_delivery: `Kartou při ${pickup(order) ? 'vyzvednutí' : 'doručení'}`, cash_on_delivery: `Hotově při ${pickup(order) ? 'vyzvednutí' : 'doručení'}` }[order.payment_method] || order.payment_method)
+function fulfillmentDetails(order) {
+  const location = pickup(order) ? order.pickup_location || order : order
+  const address = `${location.street}, ${location.postal_code} ${location.city}`
+  return el('section', { class: 'fulfillment-details' }, el('strong', {}, pickup(order) ? 'Osobní odběr' : 'Doručení na adresu'),
+    pickup(order) && location.name ? el('p', {}, location.name) : null, el('p', {}, address),
+    pickup(order) && location.parking_free ? el('p', { class: 'pickup-parking' }, 'Parkování zdarma') : null,
+    pickup(order) && location.instructions ? el('p', { class: 'address-lines' }, location.instructions) : null,
+    pickup(order) ? el('a', { href: `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(`${address}, Česko`)}`, target: '_blank', rel: 'noopener noreferrer', class: 'no-print' }, 'Otevřít místo odběru v mapě') : null)
+}
 function el(tag, attributes = {}, ...children) {
   const element = document.createElement(tag)
   for (const [key, value] of Object.entries(attributes)) {
@@ -81,13 +93,13 @@ function setSession(key, value) {
 function timeline(order) {
   const steps = ['new', 'confirmed', 'out_for_delivery', 'delivered']
   const position = steps.indexOf(order.status)
-  return el('ol', { class: 'timeline', 'aria-label': 'Průběh objednávky' }, steps.map((step, index) => el('li', { class: index <= position ? 'done' : '', 'aria-current': step === order.status ? 'step' : null }, statuses[step])))
+  return el('ol', { class: 'timeline', 'aria-label': 'Průběh objednávky' }, steps.map((step, index) => el('li', { class: index <= position ? 'done' : '', 'aria-current': step === order.status ? 'step' : null }, statusLabel(order, step))))
 }
 function activeCard(order) {
-  return el('article', { class: 'card' }, el('div', { class: 'order-head' }, el('h3', {}, `Objednávka ${order.number}`), el('span', { class: 'status' }, statuses[order.status])),
+  return el('article', { class: 'card' }, el('div', { class: 'order-head' }, el('h3', {}, `Objednávka ${order.number}`), el('span', { class: 'status' }, statusLabel(order))),
     el('p', {}, `${date(order.delivery_date)} · ${order.delivery_slot}`),
-    el('p', { class: 'muted' }, order.status === 'new' || order.status === 'awaiting_payment' ? 'Požadovaný termín čeká na potvrzení obsluhou.' : 'Termín doručení je potvrzený.'),
-    el('p', {}, `${order.street}, ${order.postal_code} ${order.city}`), timeline(order),
+    el('p', { class: 'muted' }, order.status === 'new' || order.status === 'awaiting_payment' ? 'Požadovaný termín čeká na potvrzení obsluhou.' : pickup(order) ? 'Termín osobního odběru je potvrzený.' : 'Termín doručení je potvrzený.'),
+    fulfillmentDetails(order), timeline(order),
     el('div', { class: 'actions' }, button('Detail a možnosti', () => orderDetail(order))))
 }
 async function loadOrders() {
@@ -98,10 +110,10 @@ async function loadOrders() {
   try {
     const data = await api(`/api/customer/orders?page=${state.page}&q=${encodeURIComponent(state.query)}`)
     if (generation !== state.generation || !state.user || !target.isConnected) return
-    active.replaceChildren(...(data.active.length ? data.active.map(activeCard) : [el('p', { class: 'muted' }, 'Žádná objednávka nyní nečeká na doručení.')]))
+    active.replaceChildren(...(data.active.length ? data.active.map(activeCard) : [el('p', { class: 'muted' }, 'Žádná objednávka nyní nečeká na doručení nebo vyzvednutí.')]))
     target.replaceChildren(...data.items.map(order => el('article', { class: 'card' },
-      el('div', { class: 'order-head' }, el('strong', {}, order.number), el('span', { class: 'status' }, statuses[order.status]), el('strong', {}, money(order.total_cents))),
-      el('p', {}, `${date(order.delivery_date)} · ${order.delivery_slot}`), el('p', { class: 'muted' }, `${order.street}, ${order.city}`),
+      el('div', { class: 'order-head' }, el('strong', {}, order.number), el('span', { class: 'status' }, statusLabel(order)), el('strong', {}, money(order.total_cents))),
+      el('p', {}, `${date(order.delivery_date)} · ${order.delivery_slot}`), el('p', { class: 'muted' }, `${pickup(order) ? 'Osobní odběr' : 'Doručení'} · ${order.street}, ${order.city}`),
       el('div', { class: 'actions' }, button('Detail, doklad a změny', () => orderDetail(order))))))
     if (!data.items.length) target.append(el('p', {}, state.query ? 'Žádná objednávka neodpovídá hledání.' : 'Zatím nemáte žádné objednávky.'))
     const previous = button('Předchozí', () => { state.page--; loadOrders() })
@@ -188,22 +200,23 @@ async function orderDetail(order) {
       api(`/api/customer/orders/${order.id}/invoice`), api(`/api/customer/orders/${order.id}/billing`), api(`/api/customer/orders/${order.id}/requests`)
     ])
     if (!body.isConnected) return
-    body.replaceChildren(el('span', { class: 'status' }, statuses[order.status]),
-      el('p', {}, `${date(order.delivery_date)} · ${order.delivery_slot}`), el('p', {}, `${order.street}, ${order.postal_code} ${order.city}`),
+    body.replaceChildren(el('span', { class: 'status' }, statusLabel(order)),
+      el('p', {}, `${date(order.delivery_date)} · ${order.delivery_slot}`), fulfillmentDetails(order),
       el('p', { class: 'address-lines' }, order.notes), timeline(order),
       order.items?.length ? el('ul', { class: 'order-items' }, order.items.map(item => el('li', {}, `${item.quantity}× ${item.name} · ${money(item.total_cents)}`))) : null,
-      el('p', {}, `Celkem ${money(order.total_cents)}`),
+      el('p', {}, `Celkem ${money(order.total_cents)}`), el('p', {}, `Způsob úhrady: ${paymentLabel(order)}.`),
       el('section', { class: 'section-gap' }, el('h3', {}, 'Faktura'), invoice ? el('a', { class: 'button primary', href: `/customer/?invoice=${encodeURIComponent(order.id)}` }, `Otevřít fakturu ${invoice.number}`) : el('p', { class: 'muted' }, 'Faktura zatím nebyla vystavena. Zde můžete doplnit její údaje.')))
     if (!invoice) {
       const details = el('details', {}, el('summary', {}, 'Fakturační údaje této objednávky'))
-      const value = billing || { name: order.organization || order.name, address: `${order.street}\n${order.postal_code} ${order.city}` }
+      const value = billing || { name: order.organization || order.name, address: pickup(order) ? '' : `${order.street}\n${order.postal_code} ${order.city}` }
+      if (pickup(order) && !billing) details.append(el('p', { class: 'hint' }, 'Pro fakturu vyplňte svou fakturační adresu. Adresa odběrného místa není adresou odběratele.'))
       details.append(billingForm(value, async data => { await api(`/api/customer/orders/${order.id}/billing`, { method: 'PUT', body: JSON.stringify(data) }); await orderDetail(order) }))
       body.append(details)
     }
     body.append(el('h3', { class: 'section-gap' }, 'Žádosti o změnu'))
     for (const request of requests) body.append(el('article', { class: 'request' }, el('strong', {}, `${request.kind === 'cancel' ? 'Zrušení' : 'Změna'} · ${requestStatuses[request.status]}`), el('p', { class: 'muted' }, datetime(request.created_at)), el('p', {}, request.message), request.response ? el('p', {}, `Odpověď: ${request.response}`) : null))
     if (!['delivered', 'cancelled', 'expired'].includes(order.status) && !requests.some(request => request.status === 'pending')) {
-      body.append(el('div', { class: 'actions' }, button('Změnit doručení nebo údaje', () => requestForm(order, 'change')), button('Požádat o zrušení', () => requestForm(order, 'cancel'))))
+      body.append(el('div', { class: 'actions' }, button(pickup(order) ? 'Změnit odběr nebo údaje' : 'Změnit doručení nebo údaje', () => requestForm(order, 'change')), button('Požádat o zrušení', () => requestForm(order, 'cancel'))))
     }
     body.append(el('p', { class: 'hint' }, 'Odeslaná žádost sama nemění objednávku. Výsledek vám obsluha potvrdí e-mailem.'))
   } catch (error) { if (body.isConnected) body.replaceChildren(message(error.message, true), button('Zkusit znovu', () => orderDetail(order))) }
@@ -232,7 +245,8 @@ function invoiceView(invoice) {
     table(['Položka', 'Množství', vat ? 'Cena za kus s DPH' : 'Cena za kus', ...(vat ? ['DPH'] : []), 'Celkem'], rows),
     vat ? el('section', {}, el('h2', {}, 'Rekapitulace DPH'), table(['Sazba', 'Základ', 'DPH', 'Celkem'], [...taxes.entries()].sort(([a], [b]) => a - b).map(([rate, group]) => el('tr', {}, el('td', {}, `${rate / 100} %`), el('td', {}, money(group.net)), el('td', {}, money(group.tax)), el('td', {}, money(group.net + group.tax)))))) : el('p', {}, 'Dodavatel není plátcem DPH.'),
     el('p', { class: 'invoice-total' }, `Celkem ${money(invoice.total_cents)}`),
-    el('p', {}, `Způsob úhrady: ${{ card: 'Online kartou', card_on_delivery: 'Kartou při doručení', cash_on_delivery: 'Hotově při doručení' }[invoice.payment_method]}.`),
+    el('p', {}, `Způsob úhrady: ${paymentLabel(invoice)}.`),
+    pickup(invoice) && invoice.pickup_location ? fulfillmentDetails(invoice) : null,
     el('p', {}, `Stav při vystavení: ${invoice.payment_status === 'paid' ? 'Zaplaceno' : 'Nezaplaceno'}.`),
     el('div', { class: 'actions no-print' }, el('a', { class: 'button', href: '/customer/' }, 'Zpět do účtu'), button('Vytisknout / uložit PDF', () => window.print(), 'primary')))
 }
@@ -251,7 +265,7 @@ async function start() {
     }
     main.replaceChildren(el('h1', {}, 'Můj účet'), el('p', { class: 'muted' }, state.user.email),
       el('nav', { class: 'tabs', 'aria-label': 'Sekce zákaznického účtu' }, el('a', { href: '#orders' }, 'Objednávky'), el('a', { href: '#addresses' }, 'Místa doručení'), el('a', { href: '#billing' }, 'Fakturační údaje'), el('a', { href: '/team/' }, 'Společná objednávka')),
-      el('section', { id: 'orders' }, el('div', { class: 'heading-row' }, el('h2', {}, 'Nejbližší doručení'), button('Obnovit stav', loadOrders)), el('div', { id: 'active-list' }), el('h2', {}, 'Historie a doklady'),
+      el('section', { id: 'orders' }, el('div', { class: 'heading-row' }, el('h2', {}, 'Nejbližší objednávky'), button('Obnovit stav', loadOrders)), el('div', { id: 'active-list' }), el('h2', {}, 'Historie a doklady'),
         el('form', { class: 'search', onsubmit: event => { event.preventDefault(); state.query = new FormData(event.currentTarget).get('q').trim(); state.page = 1; loadOrders() } }, field('Hledat podle čísla, adresy nebo firmy', 'q', '', { maxlength: 100, type: 'search' }), el('button', { type: 'submit' }, 'Vyhledat')), el('div', { id: 'order-list' })),
       el('section', { id: 'addresses' }, el('div', { class: 'heading-row' }, el('h2', {}, 'Místa doručení'), button('Přidat místo', () => addressForm(), 'primary')), el('div', { id: 'address-list' })),
       el('section', { id: 'billing', class: 'panel' }, el('h2', {}, 'Výchozí fakturační údaje'), el('p', { class: 'hint' }, 'Použijte je pro další nákup. Údaje již vystavených faktur se nemění.'), el('div', { id: 'billing-form' })))

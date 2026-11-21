@@ -1,5 +1,6 @@
 mod categories;
 mod customer;
+mod pickup;
 mod team_orders;
 
 mod invoices;
@@ -40,6 +41,7 @@ pub fn routes() -> Router<AppState> {
     Router::new()
         .merge(invoices::routes())
         .merge(customer::routes())
+        .merge(pickup::routes())
         .merge(team_orders::routes())
         .merge(categories::routes())
         .merge(site_settings::routes())
@@ -325,8 +327,9 @@ async fn settings(State(state): State<AppState>) -> ApiResult<Json<Value>> {
             "SELECT delivery_fee_cents,free_delivery_from_cents,ARRAY(SELECT postal_code FROM delivery_areas WHERE active ORDER BY postal_code) AS delivery_postal_codes FROM shop_settings WHERE id=1",
         ).fetch_one(&state.pool).await?;
     let site = site_settings::read(&state.pool).await?;
+    let pickup = pickup::read(&state.pool).await?;
     Ok(Json(
-        json!({"delivery_fee_cents":delivery_fee_cents,"free_delivery_from_cents":free_delivery_from_cents,"delivery_postal_codes":delivery_postal_codes,"online_payment_enabled":state.config.teya.is_some(),"hero_image":site.hero_image,"hero_image_alt":site.hero_image_alt,"public_contact_email":site.public_contact_email,"public_contact_phone":site.public_contact_phone,"seller_name":site.seller_name,"seller_address":site.seller_address,"seller_ico":site.seller_ico,"delivery_area_label":site.delivery_area_label}),
+        json!({"delivery_fee_cents":delivery_fee_cents,"free_delivery_from_cents":free_delivery_from_cents,"delivery_postal_codes":delivery_postal_codes,"online_payment_enabled":state.config.teya.is_some(),"hero_image":site.hero_image,"hero_image_alt":site.hero_image_alt,"public_contact_email":site.public_contact_email,"public_contact_phone":site.public_contact_phone,"seller_name":site.seller_name,"seller_address":site.seller_address,"seller_ico":site.seller_ico,"delivery_area_label":site.delivery_area_label,"pickup":pickup}),
     ))
 }
 
@@ -605,6 +608,10 @@ struct CartItem {
 #[serde(deny_unknown_fields)]
 struct OrderInput {
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    fulfillment_method: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pickup_version: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     team_order_id: Option<Uuid>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     team_revision: Option<i64>,
@@ -620,8 +627,11 @@ struct OrderInput {
     phone: String,
     #[serde(default)]
     organization: String,
+    #[serde(default)]
     street: String,
+    #[serde(default)]
     city: String,
+    #[serde(default)]
     postal_code: String,
     #[serde(default)]
     notes: String,
@@ -633,21 +643,44 @@ struct OrderInput {
 }
 
 impl OrderInput {
+    fn is_pickup(&self) -> bool {
+        self.fulfillment_method.as_deref() == Some("pickup")
+    }
+
     fn normalize(&mut self) -> ApiResult<()> {
+        match self.fulfillment_method.as_deref() {
+            None | Some("delivery") => self.fulfillment_method = None,
+            Some("pickup") => (),
+            _ => return Err(ApiError::bad_request("Vyberte doručení nebo osobní odběr.")),
+        }
+        if self.is_pickup() {
+            if !self.pickup_version.is_some_and(|version| version > 0) {
+                return Err(ApiError::bad_request("Potvrďte aktuální odběrné místo."));
+            }
+            self.street.clear();
+            self.city.clear();
+            self.postal_code.clear();
+        } else if self.pickup_version.is_some() {
+            return Err(ApiError::bad_request(
+                "Verze odběrného místa patří pouze k osobnímu odběru.",
+            ));
+        }
         self.email = email(&self.email)?;
         self.name = clean(&self.name, "jméno", 200, false)?;
         self.phone = clean(&self.phone, "telefon", 40, false)?;
         self.organization = clean(&self.organization, "firma", 200, false)?;
-        self.street = clean(&self.street, "ulice a číslo", 250, true)?;
-        self.city = clean(&self.city, "obec", 100, true)?;
-        self.notes = clean(&self.notes, "poznámka k doručení", 2000, false)?;
-        self.postal_code = normalize_postal_code(&self.postal_code)?;
+        self.street = clean(&self.street, "ulice a číslo", 250, !self.is_pickup())?;
+        self.city = clean(&self.city, "obec", 100, !self.is_pickup())?;
+        self.notes = clean(&self.notes, "poznámka k objednávce", 2000, false)?;
+        if !self.is_pickup() {
+            self.postal_code = normalize_postal_code(&self.postal_code)?;
+        }
         if !matches!(
             self.payment_method.as_str(),
             "card" | "card_on_delivery" | "cash_on_delivery"
         ) {
             return Err(ApiError::bad_request(
-                "Vyberte platbu online nebo při doručení.",
+                "Vyberte platbu online nebo při převzetí.",
             ));
         }
         if self.items.is_empty() || self.items.len() > 50 {
@@ -683,7 +716,7 @@ impl OrderInput {
         }
         if !self.phone.bytes().any(|c| c.is_ascii_digit()) {
             return Err(ApiError::bad_request(
-                "Vyplňte prosím telefonní číslo pro kurýra.",
+                "Vyplňte prosím kontaktní telefonní číslo.",
             ));
         }
         Ok(())
@@ -699,7 +732,11 @@ impl OrderInput {
             || !working_day(self.delivery_date)
             || !slots.contains(&self.delivery_slot)
         {
-            return Err(ApiError::bad_request("Zvolte dostupný den a čas doručení."));
+            return Err(ApiError::bad_request(if self.is_pickup() {
+                "Zvolte dostupný den a čas osobního odběru."
+            } else {
+                "Zvolte dostupný den a čas doručení."
+            }));
         }
         Ok(())
     }
@@ -708,6 +745,8 @@ impl OrderInput {
 #[derive(Serialize, FromRow)]
 struct Order {
     id: Uuid,
+    fulfillment_method: String,
+    pickup_location: Option<Value>,
     terms_version: Option<i64>,
     number: String,
     email: String,
@@ -945,24 +984,31 @@ async fn create_order(
     let online = input.payment_method == "card";
     if online && state.config.teya.is_none() {
         return Err(ApiError::conflict(
-            "Online platba momentálně není dostupná. Zvolte platbu při doručení.",
+            "Online platba momentálně není dostupná. Zvolte platbu při převzetí.",
         ));
     }
     let settings: Settings = sqlx::query_as("SELECT * FROM shop_settings WHERE id=1 FOR SHARE")
         .fetch_one(&mut *tx)
         .await?;
-    let slots: Vec<String> = sqlx::query_scalar(
-        "SELECT COALESCE(delivery_slots, $2) FROM delivery_areas WHERE postal_code=$1 AND active",
-    )
-    .bind(&input.postal_code)
-    .bind(&settings.delivery_slots)
-    .fetch_optional(&mut *tx)
-    .await?
-    .ok_or_else(|| {
-        ApiError::bad_request(
-            "Na zadané PSČ momentálně nerozvážíme. Zadejte adresu v podporované oblasti rozvozu.",
+    let pickup = if input.is_pickup() {
+        Some(pickup::for_checkout(&mut tx, input.pickup_version).await?)
+    } else {
+        None
+    };
+    let slots: Vec<String> = if let Some(pickup) = &pickup {
+        pickup.slots.clone()
+    } else {
+        sqlx::query_scalar(
+            "SELECT COALESCE(delivery_slots, $2) FROM delivery_areas WHERE postal_code=$1 AND active",
         )
-    })?;
+        .bind(&input.postal_code)
+        .bind(&settings.delivery_slots)
+        .fetch_optional(&mut *tx)
+        .await?
+        .ok_or_else(|| ApiError::bad_request(
+            "Na zadané PSČ momentálně nerozvážíme. Zadejte adresu v podporované oblasti rozvozu.",
+        ))?
+    };
     input.validate_delivery(&slots)?;
     let ids: Vec<_> = input.items.iter().map(|i| i.product_id).collect();
     // The stable lock order prevents concurrent checkouts from overselling or deadlocking.
@@ -1009,7 +1055,11 @@ async fn create_order(
             .filter(|sum| *sum <= MAX_TOTAL)
             .ok_or_else(|| ApiError::bad_request("Objednávka překračuje maximální částku."))?;
     }
-    let fee = delivery_fee(subtotal, &settings);
+    let fee = if input.is_pickup() {
+        0
+    } else {
+        delivery_fee(subtotal, &settings)
+    };
     let total = subtotal
         .checked_add(fee)
         .filter(|v| *v <= MAX_TOTAL)
@@ -1021,7 +1071,7 @@ async fn create_order(
     }
     if online && total == 0 {
         return Err(ApiError::bad_request(
-            "Objednávku s nulovou částkou potvrďte s platbou při doručení.",
+            "Objednávku s nulovou částkou potvrďte s platbou při převzetí.",
         ));
     }
     // Counters share this transaction, so replays and rejected orders do not consume limits.
@@ -1040,12 +1090,18 @@ async fn create_order(
     }
     let id = Uuid::new_v4();
     let initial_status = if online { "awaiting_payment" } else { "new" };
-    sqlx::query("INSERT INTO orders(id,idempotency_key,request_payload,user_id,email,name,phone,organization,street,city,postal_code,notes,delivery_date,delivery_slot,payment_method,subtotal_cents,delivery_fee_cents,total_cents,status,created_from_ip,terms_version) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20::text::inet,$21)")
+    let pickup_location = pickup.as_ref().map(pickup::Settings::snapshot);
+    let (street, city, postal_code) = pickup
+        .as_ref()
+        .map(|p| (&p.street, &p.city, &p.postal_code))
+        .unwrap_or((&input.street, &input.city, &input.postal_code));
+    sqlx::query("INSERT INTO orders(id,idempotency_key,request_payload,user_id,email,name,phone,organization,street,city,postal_code,notes,delivery_date,delivery_slot,payment_method,subtotal_cents,delivery_fee_cents,total_cents,status,created_from_ip,terms_version,fulfillment_method,pickup_location) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20::text::inet,$21,$22,$23)")
         .bind(id).bind(input.idempotency_key).bind(payload).bind(user_id).bind(&input.email)
-        .bind(&input.name).bind(&input.phone).bind(&input.organization).bind(&input.street)
-        .bind(&input.city).bind(&input.postal_code).bind(&input.notes).bind(input.delivery_date)
+        .bind(&input.name).bind(&input.phone).bind(&input.organization).bind(street)
+        .bind(city).bind(postal_code).bind(&input.notes).bind(input.delivery_date)
         .bind(&input.delivery_slot).bind(&input.payment_method).bind(subtotal).bind(fee).bind(total)
         .bind(initial_status).bind(created_from_ip).bind(accepted_terms.version)
+        .bind(if input.is_pickup() { "pickup" } else { "delivery" }).bind(pickup_location)
         .execute(&mut *tx).await?;
     if let Some(team_id) = input.team_order_id {
         team_orders::claim_checkout(
@@ -1086,6 +1142,7 @@ async fn create_order(
     let order = read_order(&mut tx, id, false).await?;
     let summary = order_summary(&order);
     let terms_copy = accepted_terms.email_copy();
+    let requested_time = requested_time_note(&order);
     if online {
         mail::enqueue(&mut tx, &order.email, &format!("Objednávka {} čeká na zaplacení", order.number),
             &format!("Objednávku jsme uložili a čekáme na potvrzení online platby. K vyřízení ji přijmeme až po úspěšné úhradě. Platbu dokončete v platební bráně otevřené z objednávky.\n\n{summary}\n\nPokud už jste zaplatili, další platbu neprovádějte a vyčkejte na potvrzení. S dotazy napište na {} a uveďte číslo objednávky.{terms_copy}", settings.order_email)).await?;
@@ -1100,7 +1157,7 @@ async fn create_order(
         )
         .await?;
         mail::enqueue(&mut tx, &order.email, &format!("Přijali jsme objednávku {}", order.number),
-            &format!("Děkujeme za objednávku. Přijali jsme ji ke zpracování.\nZvolený čas doručení je požadované okno, které potvrdíme při vyřízení.\n\n{summary}\n\nPotřebujete něco změnit? Napište nám na {order_email} a uveďte číslo objednávky.{terms_copy}")).await?;
+            &format!("Děkujeme za objednávku. Přijali jsme ji ke zpracování.\n{requested_time}\n\n{summary}\n\nPotřebujete něco změnit? Napište nám na {order_email} a uveďte číslo objednávky.{terms_copy}")).await?;
     }
     // A checkout may wait on stock or rate-limit locks across Prague midnight.
     // Roll back the whole new order if its day became unavailable while waiting.
@@ -1244,11 +1301,42 @@ pub(crate) async fn payment_received(conn: &mut PgConnection, id: Uuid) -> ApiRe
     let order = read_order(conn, id, false).await?;
     let summary = order_summary(&order);
     let terms_copy = terms::order_email_copy(conn, order.terms_version).await?;
+    let handover = if order.fulfillment_method == "pickup" {
+        "vyzvednutí"
+    } else {
+        "doručení"
+    };
+    let requested_time = requested_time_note(&order);
     let order_email = mail::enqueue_order_notification(conn, &format!("Zaplacená objednávka {} k vyřízení", order.number),
-        &format!("Online platba byla ověřena. Objednávka je přijata k vyřízení. Při doručení již nic nevybírejte.\n\n{summary}")).await?;
+        &format!("Online platba byla ověřena. Objednávka je přijata k vyřízení. Při {handover} již nic nevybírejte.\n\n{summary}")).await?;
     mail::enqueue(conn, &order.email, &format!("Přijali jsme platbu a objednávku {}", order.number),
-        &format!("Děkujeme, online platba byla přijata a objednávku jsme přijali ke zpracování. Při doručení již nic neplatíte.\nZvolený čas doručení je požadované okno, které potvrdíme při vyřízení.\n\n{summary}\n\nPotřebujete něco změnit? Napište nám na {order_email} a uveďte číslo objednávky.{terms_copy}")).await?;
+        &format!("Děkujeme, online platba byla přijata a objednávku jsme přijali ke zpracování. Při {handover} již nic neplatíte.\n{requested_time}\n\n{summary}\n\nPotřebujete něco změnit? Napište nám na {order_email} a uveďte číslo objednávky.{terms_copy}")).await?;
     Ok(())
+}
+
+fn requested_time_note(order: &Order) -> &'static str {
+    if order.fulfillment_method == "pickup" {
+        "Zvolený čas osobního odběru je požadované okno, které potvrdíme při vyřízení. Vyčkejte na zprávu, že je objednávka připravena k vyzvednutí."
+    } else {
+        "Zvolený čas doručení je požadované okno, které potvrdíme při vyřízení."
+    }
+}
+
+fn pickup_details(order: &Order) -> String {
+    let Some(location) = &order.pickup_location else {
+        return String::new();
+    };
+    let name = location["name"].as_str().unwrap_or_default();
+    let instructions = location["instructions"].as_str().unwrap_or_default();
+    let parking = if location["parking_free"] == true {
+        "\nParkování zdarma."
+    } else {
+        ""
+    };
+    format!(
+        "\nOdběrné místo: {name}\nAdresa odběru: {}, {} {}\nPokyny k odběru: {instructions}{parking}",
+        order.street, order.postal_code, order.city
+    )
 }
 
 fn order_summary(order: &Order) -> String {
@@ -1266,27 +1354,45 @@ fn order_summary(order: &Order) -> String {
         })
         .collect::<Vec<_>>()
         .join("\n");
-    let payment = match order.payment_method.as_str() {
-        "card" => "Online kartou",
-        "card_on_delivery" => "Kartou při doručení",
-        _ => "Hotově při doručení",
+    let pickup = order.fulfillment_method == "pickup";
+    let payment = match (order.payment_method.as_str(), pickup) {
+        ("card", _) => "Online kartou",
+        ("card_on_delivery", true) => "Kartou při vyzvednutí",
+        ("card_on_delivery", false) => "Kartou při doručení",
+        (_, true) => "Hotově při vyzvednutí",
+        (_, false) => "Hotově při doručení",
     };
     let total_label = if order.payment_status == "paid" {
         "Celkem uhrazeno"
     } else if order.payment_method == "card" {
         "Celkem k úhradě online"
+    } else if pickup {
+        "Celkem k úhradě při vyzvednutí"
     } else {
         "Celkem k úhradě při doručení"
     };
+    let method_label = if pickup {
+        "Osobní odběr"
+    } else {
+        "Doručení"
+    };
+    let fee_label = if pickup { "Osobní odběr" } else { "Doprava" };
+    let notes_label = if pickup {
+        "Poznámka k objednávce"
+    } else {
+        "Pokyny k doručení"
+    };
     format!(
-        "Objednávka: {}\n\n{}\n\nZboží: {}\nDoprava: {}\n{}: {}\nPlatba: {}\n\nDoručení: {} {}\nJméno: {}\nFirma: {}\nAdresa: {}, {} {}\nE-mail: {}\nTelefon: {}\nPokyny k doručení: {}",
+        "Objednávka: {}\n\n{}\n\nZboží: {}\n{}: {}\n{}: {}\nPlatba: {}\n\n{}: {} {}\nJméno: {}\nFirma: {}\nAdresa: {}, {} {}\nE-mail: {}\nTelefon: {}\n{}: {}{}",
         order.number,
         lines,
         money(order.subtotal_cents),
+        fee_label,
         money(order.delivery_fee_cents),
         total_label,
         money(order.total_cents),
         payment,
+        method_label,
         order.delivery_date,
         order.delivery_slot,
         order.name,
@@ -1296,7 +1402,9 @@ fn order_summary(order: &Order) -> String {
         order.city,
         order.email,
         order.phone,
-        order.notes
+        notes_label,
+        order.notes,
+        pickup_details(order)
     )
 }
 
@@ -1464,12 +1572,12 @@ fn validate_transition(
         && input.status != "delivered"
     {
         return Err(ApiError::conflict(
-            "Platbu při doručení lze potvrdit až během rozvozu.",
+            "Platbu při převzetí lze potvrdit až po přípravě objednávky k předání.",
         ));
     }
     if input.status == "delivered" && input.payment_status != "paid" {
         return Err(ApiError::conflict(
-            "Při dokončení doručení potvrďte také přijetí platby.",
+            "Při dokončení objednávky potvrďte také přijetí platby.",
         ));
     }
     Ok(())
@@ -1567,7 +1675,7 @@ async fn bulk_order_status(
             && order.payment_method != "card";
         if collecting && !input.confirm_payments {
             return Err(ApiError::conflict(
-                "Pro doručení potvrďte převzetí všech plateb při rozvozu.",
+                "Pro dokončení potvrďte přijetí všech plateb při převzetí.",
             ));
         }
         let update = OrderUpdate {
@@ -1621,16 +1729,29 @@ async fn apply_order_update(
     .execute(&mut *conn)
     .await?;
     if old.status != input.status {
-        let label = status_label(&input.status);
+        let pickup = old.fulfillment_method == "pickup";
+        let label = match (pickup, input.status.as_str()) {
+            (true, "out_for_delivery") => "Připravena k vyzvednutí",
+            (true, "delivered") => "Vyzvednuta",
+            _ => status_label(&input.status),
+        };
         let payment_note = if input.payment_status == "paid" {
             "Platba byla přijata."
         } else if input.status == "cancelled" {
             "Objednávka byla zrušena. Nic neplaťte."
+        } else if pickup {
+            "Platíte až při vyzvednutí."
         } else {
             "Platíte až při doručení."
         };
+        let method_label = if pickup {
+            "Požadovaný osobní odběr"
+        } else {
+            "Požadované doručení"
+        };
+        let location = pickup_details(old);
         mail::enqueue(conn, &old.email, &format!("Objednávka {}: {}", old.number, label),
-            &format!("Vaše objednávka {} má nový stav: {}.\n{}\nPožadované doručení: {} {}\nCelková částka: {}\n\nDěkujeme.",old.number,label,payment_note,old.delivery_date,old.delivery_slot,money(old.total_cents))).await?;
+            &format!("Vaše objednávka {} má nový stav: {}.\n{}\n{method_label}: {} {}\nCelková částka: {}{location}\n\nDěkujeme.",old.number,label,payment_note,old.delivery_date,old.delivery_slot,money(old.total_cents))).await?;
     }
     Ok(())
 }

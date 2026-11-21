@@ -41,6 +41,8 @@ impl Product {
 
 #[derive(Clone, Debug, Default, Deserialize)]
 pub struct Settings {
+    #[serde(default)]
+    pub pickup: PickupSettings,
     pub delivery_fee_cents: i64,
     pub free_delivery_from_cents: Option<i64>,
     pub delivery_postal_codes: Vec<String>,
@@ -62,6 +64,31 @@ pub struct Settings {
     pub seller_ico: String,
     #[serde(default)]
     pub delivery_area_label: String,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq)]
+#[serde(default)]
+pub struct PickupSettings {
+    pub enabled: bool,
+    pub name: String,
+    pub street: String,
+    pub city: String,
+    pub postal_code: String,
+    pub instructions: String,
+    pub parking_free: bool,
+    pub slots: Vec<String>,
+    pub version: i64,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+#[serde(default)]
+pub struct PickupLocation {
+    pub name: String,
+    pub street: String,
+    pub city: String,
+    pub postal_code: String,
+    pub instructions: String,
+    pub parking_free: bool,
 }
 
 pub const DEFAULT_HERO_IMAGE: &str = "images/brunch-spread.webp";
@@ -100,6 +127,10 @@ pub struct UserResponse {
 }
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct Order {
+    #[serde(default)]
+    pub fulfillment_method: String,
+    #[serde(default)]
+    pub pickup_location: Option<PickupLocation>,
     pub id: String,
     pub number: String,
     pub status: String,
@@ -135,6 +166,18 @@ pub struct Order {
     pub created_at: String,
     #[serde(default)]
     pub items: Vec<OrderItem>,
+}
+impl Order {
+    pub fn is_pickup(&self) -> bool {
+        self.fulfillment_method == "pickup"
+    }
+    pub fn status_label(&self) -> &'static str {
+        match (self.is_pickup(), self.status.as_str()) {
+            (true, "out_for_delivery") => "Připraveno k vyzvednutí",
+            (true, "delivered") => "Vyzvednuto",
+            _ => status_label(&self.status),
+        }
+    }
 }
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct OrderItem {
@@ -179,6 +222,10 @@ pub struct BillingInput {
 
 #[derive(Clone, Debug, Serialize)]
 pub struct OrderRequest {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub fulfillment_method: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pickup_version: Option<i64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub team_order_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -314,6 +361,8 @@ mod tests {
     use super::*;
     fn order_request() -> OrderRequest {
         OrderRequest {
+            fulfillment_method: None,
+            pickup_version: None,
             team_order_id: None,
             team_revision: None,
             billing: None,

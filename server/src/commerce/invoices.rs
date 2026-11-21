@@ -218,6 +218,7 @@ async fn issue(
         "supply_date": input.supply_date, "due_date": input.due_date,
         "supplier": supplier, "customer": customer, "lines": lines,
         "payment_method": order.payment_method, "payment_status": order.payment_status,
+        "fulfillment_method": order.fulfillment_method, "pickup_location": order.pickup_location,
         "total_cents": order.total_cents, "currency": "CZK",
     });
     sqlx::query("INSERT INTO invoices (order_id,number,issued_by,document) VALUES ($1,$2,$3,$4)")

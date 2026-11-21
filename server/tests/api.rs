@@ -918,7 +918,7 @@ async fn upgrade_preserves_existing_products_photos_orders_and_settings() {
         ("delivery_areas", " - 'delivery_slots'"),
         (
             "orders",
-            " - 'status' - 'version' - 'updated_at' - 'created_from_ip' - 'terms_version' - 'user_id'",
+            " - 'status' - 'version' - 'updated_at' - 'created_from_ip' - 'terms_version' - 'user_id' - 'fulfillment_method' - 'pickup_location'",
         ),
     ];
     let mut before = Vec::new();
@@ -944,6 +944,20 @@ async fn upgrade_preserves_existing_products_photos_orders_and_settings() {
         let actual: Value = sqlx::query_scalar(&query).fetch_one(&pool).await.unwrap();
         assert_eq!(actual, expected, "upgrade changed existing {table} fields");
     }
+    assert!(
+        sqlx::query_scalar::<_, bool>(
+            "SELECT bool_and(fulfillment_method='delivery' AND pickup_location IS NULL) FROM orders"
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap()
+    );
+    assert!(
+        !sqlx::query_scalar::<_, bool>("SELECT enabled FROM pickup_settings WHERE id=1")
+            .fetch_one(&pool)
+            .await
+            .unwrap()
+    );
     assert!(
         sqlx::query_scalar::<_, bool>("SELECT bool_and(cardinality(variants)=0) FROM products")
             .fetch_one(&pool)
@@ -1046,7 +1060,7 @@ async fn order_account_migration_backfills_emails_and_preserves_existing_identit
         SELECT id,status,payment_status,user_id FROM orders;
     "#).execute(&pool).await.unwrap();
     let snapshot_sql = "SELECT jsonb_build_object(
-        'orders',(SELECT jsonb_agg(to_jsonb(o)-'user_id' ORDER BY id) FROM orders o),
+        'orders',(SELECT jsonb_agg(to_jsonb(o)-'user_id'-'fulfillment_method'-'pickup_location' ORDER BY id) FROM orders o),
         'history',(SELECT jsonb_agg(to_jsonb(h) ORDER BY id) FROM order_history h),
         'existing_users',(SELECT jsonb_agg(to_jsonb(u) ORDER BY id) FROM users u WHERE email<>'new@example.test'),
         'sessions',(SELECT jsonb_agg(to_jsonb(s) ORDER BY token_hash) FROM sessions s))";

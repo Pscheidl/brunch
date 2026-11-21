@@ -9,6 +9,10 @@ const state = { user: null, page: 'orders', generation: 0, orderPage: 1, custome
 const money = value => new Intl.NumberFormat('cs-CZ', { style: 'currency', currency: 'CZK' }).format(value / 100)
 const dateTime = value => value ? new Intl.DateTimeFormat('cs-CZ', { dateStyle: 'medium', timeStyle: 'short', timeZone: 'Europe/Prague' }).format(new Date(value)) : 'Dosud neodesláno'
 const statuses = { awaiting_payment: 'Čeká na zaplacení', new: 'Přijatá', confirmed: 'Potvrzená', out_for_delivery: 'Na cestě', delivered: 'Doručená', cancelled: 'Zrušená', expired: 'Vypršela' }
+const isPickup = order => order.fulfillment_method === 'pickup'
+const fulfillmentLabel = order => isPickup(order) ? 'Osobní odběr' : 'Rozvoz'
+const orderStatusLabel = (order, status = order.status) => isPickup(order) && status === 'out_for_delivery' ? 'Připraveno k vyzvednutí' : isPickup(order) && status === 'delivered' ? 'Vyzvednuto' : statuses[status] || (status === 'preparing' ? 'Připravuje se (dřívější stav)' : status)
+const orderAddress = order => isPickup(order) && order.pickup_location ? order.pickup_location : order
 const payments = { unpaid: 'Nezaplaceno', paid: 'Zaplaceno' }
 const onlinePaymentStates = { pending: 'Čeká na přípravu nebo ověření', ready: 'Platební brána je připravena, platba čeká', paid: 'Platba ověřena', failed: 'Platba neproběhla', expired: 'Platnost platby skončila', review: 'Vyžaduje kontrolu obsluhy' }
 const mailStates = { pending: 'Čeká na odeslání', sent: 'Odesláno', failed: 'Odeslání selhalo' }
@@ -54,6 +58,7 @@ async function api(path, options = {}) {
     const conflictAction = {
       '/api/admin/terms': 'Načtěte aktuální znění tlačítkem Obnovit. Váš rozepsaný text zatím zůstává ve formuláři.',
       '/api/admin/site-settings': 'Načtěte aktuální nastavení tlačítkem Obnovit. Vybraná fotografie i rozepsaný popis zatím zůstávají ve formuláři.',
+      '/api/admin/pickup-settings': 'Načtěte aktuální adresu a časy tlačítkem Obnovit osobní odběr. Rozepsané údaje zatím zůstávají ve formuláři.',
       '/api/admin/settings': 'Načtěte aktuální nastavení tlačítkem Obnovit. Rozepsané údaje zatím zůstávají ve formuláři.'
     }[path] || 'Zavřete okno a načtěte aktuální data tlačítkem Obnovit.'
     const error = new Error(conflictHint ? `${data.error || 'Záznam se mezitím změnil.'} ${conflictAction}` : data.error || `Požadavek se nepodařil (${response.status}).`)
@@ -208,10 +213,10 @@ async function ordersPage() {
   const filter = el('form', { class: 'filters', onsubmit: event => {
     event.preventDefault()
     applyFilters(event.currentTarget)
-  } }, field('Vyhledat objednávku', 'q', state.orderQuery, { type: 'search', placeholder: 'Číslo nebo e-mail', maxlength: 100 }), selectField('Stav objednávky', 'status', [['', 'Všechny stavy'], ...Object.entries(statuses)], state.orderStatus), el('button', { class: 'button', type: 'submit' }, 'Vyhledat'))
+  } }, field('Vyhledat objednávku', 'q', state.orderQuery, { type: 'search', placeholder: 'Číslo nebo e-mail', maxlength: 100 }), selectField('Stav objednávky', 'status', [['', 'Všechny stavy'], ...Object.entries(statuses).map(([key, label]) => [key, key === 'out_for_delivery' ? 'Na cestě / Připraveno k vyzvednutí' : key === 'delivered' ? 'Doručená / Vyzvednuto' : label])], state.orderStatus), el('button', { class: 'button', type: 'submit' }, 'Vyhledat'))
   filter.firstChild.classList.add('search')
-  const deliveryDate = field('Den doručení', 'delivery_date', state.orderDeliveryDate, { type: 'date', 'aria-describedby': 'order-delivery-date-hint', onchange: () => applyFilters(filter) })
-  const shortcuts = el('div', { class: 'date-shortcuts', role: 'group', 'aria-label': 'Rychlá volba dne doručení' }, [['Dnes', 0], ['Zítra', 1], ['Všechny dny', null]].map(([label, offset]) => {
+  const deliveryDate = field('Den doručení / odběru', 'delivery_date', state.orderDeliveryDate, { type: 'date', 'aria-describedby': 'order-delivery-date-hint', onchange: () => applyFilters(filter) })
+  const shortcuts = el('div', { class: 'date-shortcuts', role: 'group', 'aria-label': 'Rychlá volba dne doručení nebo odběru' }, [['Dnes', 0], ['Zítra', 1], ['Všechny dny', null]].map(([label, offset]) => {
     const value = offset === null ? '' : pragueCalendarDate(offset)
     const shortcut = button(label, () => {
       deliveryDate.querySelector('input').value = offset === null ? '' : pragueCalendarDate(offset)
@@ -220,10 +225,10 @@ async function ordersPage() {
     shortcut.setAttribute('aria-pressed', String(state.orderDeliveryDate === value))
     return shortcut
   }))
-  filter.prepend(el('div', { class: 'order-delivery-filter' }, deliveryDate, shortcuts, el('p', { class: 'hint', id: 'order-delivery-date-hint' }, 'Vybírá den doručení objednávky. Dnes a zítra se řídí českým časem.')))
+  filter.prepend(el('div', { class: 'order-delivery-filter' }, deliveryDate, shortcuts, el('p', { class: 'hint', id: 'order-delivery-date-hint' }, 'Vybírá den doručení nebo osobního odběru objednávky. Dnes a zítra se řídí českým časem.')))
   const bulk = orderSelection(data.orders)
-  const rows = data.orders.map(order => el('tr', {}, el('td', {}, bulk.checkboxes.get(order.id)), el('td', {}, el('strong', {}, order.number), el('small', {}, dateTime(order.created_at))), el('td', {}, order.name || order.email, order.name ? el('small', {}, order.email) : null), el('td', {}, order.delivery_date, el('small', {}, order.delivery_slot), el('small', {}, order.city)), el('td', {}, badge(statuses[order.status] || order.status, order.status), el('small', {}, payments[order.payment_status] || order.payment_status)), el('td', { class: 'number' }, money(order.total_cents)), el('td', {}, button('Detail', () => orderDialog(order.id), 'small'))))
-  return [header('Objednávky', 'Od potvrzení až po předání zákazníkovi.', button('Obnovit', renderPage)), filter, bulk.actions, rows.length ? table(['Výběr', 'Objednávka', 'Zákazník', 'Den doručení', 'Stav', 'Celkem', 'Akce'], rows) : empty('Žádné objednávky', state.orderStatus || state.orderQuery || state.orderDeliveryDate ? 'Zkuste změnit hledání nebo filtr.' : 'Nové objednávky se zobrazí na tomto místě.'), pager(data.page, data.total, page => { state.orderPage = page; renderPage() })]
+  const rows = data.orders.map(order => el('tr', {}, el('td', {}, bulk.checkboxes.get(order.id)), el('td', {}, el('strong', {}, order.number), el('small', {}, dateTime(order.created_at))), el('td', {}, order.name || order.email, order.name ? el('small', {}, order.email) : null), el('td', {}, order.delivery_date, el('small', {}, order.delivery_slot), el('small', {}, fulfillmentLabel(order)), el('small', {}, orderAddress(order).city)), el('td', {}, badge(orderStatusLabel(order), order.status), el('small', {}, payments[order.payment_status] || order.payment_status)), el('td', { class: 'number' }, money(order.total_cents)), el('td', {}, button('Detail', () => orderDialog(order.id), 'small'))))
+  return [header('Objednávky', 'Od potvrzení až po předání zákazníkovi.', button('Obnovit', renderPage)), filter, bulk.actions, rows.length ? table(['Výběr', 'Objednávka', 'Zákazník', 'Den doručení / odběru', 'Stav', 'Celkem', 'Akce'], rows) : empty('Žádné objednávky', state.orderStatus || state.orderQuery || state.orderDeliveryDate ? 'Zkuste změnit hledání nebo filtr.' : 'Nové objednávky se zobrazí na tomto místě.'), pager(data.page, data.total, page => { state.orderPage = page; renderPage() })]
 }
 function orderSelection(orders) {
   const selected = new Map()
@@ -240,19 +245,19 @@ function orderSelection(orders) {
     const first = group[0]
     for (const order of orders) {
       const box = checkboxes.get(order.id)
-      box.disabled = !offers(order).length || Boolean(first && order.status !== first.status)
+      box.disabled = !offers(order).length || Boolean(first && (order.status !== first.status || isPickup(order) !== isPickup(first)))
       box.checked = selected.has(order.id)
     }
     actions.hidden = !first
     if (!first) return
     const choices = offers(first).filter(status => group.every(order => offers(order).includes(status)))
     const selectAll = button('Vybrat všechny ve stejném stavu na stránce', () => {
-      for (const order of orders) if (order.status === first.status && offers(order).length) selected.set(order.id, order)
+      for (const order of orders) if (order.status === first.status && isPickup(order) === isPickup(first) && offers(order).length) selected.set(order.id, order)
       refresh()
     }, 'small')
-    actions.replaceChildren(el('span', { role: 'status' }, `Vybráno: ${group.length} · ${statuses[first.status]}`),
+    actions.replaceChildren(el('span', { role: 'status' }, `Vybráno: ${group.length} · ${fulfillmentLabel(first)} · ${orderStatusLabel(first)}`),
       selectAll, button('Zrušit výběr', () => { selected.clear(); refresh() }, 'small'),
-      selectField('Nový stav', 'status', choices.map(status => [status, statuses[status]]), choices[0]),
+      selectField('Nový stav', 'status', choices.map(status => [status, orderStatusLabel(first, status)]), choices[0]),
       el('button', { class: 'button primary', type: 'submit', disabled: choices.length === 0 }, 'Změnit stav vybraných'))
   }
   async function apply(data) {
@@ -261,7 +266,7 @@ function orderSelection(orders) {
     const collect = status === 'delivered' ? group.filter(o => o.payment_status === 'unpaid' && o.payment_method !== 'card') : []
     const payment = collect.length ? ` Současně potvrzujete převzetí ${money(collect.reduce((sum, o) => sum + o.total_cents, 0))} za ${collect.length} objednávek.` : ''
     const stock = status === 'cancelled' ? ' Rezervované kusy se vrátí na sklad.' : ''
-    if (!confirm(`Změnit stav ${group.length} objednávek na „${statuses[status]}“?${payment}${stock}`)) return
+    if (!confirm(`Změnit stav ${group.length} objednávek na „${orderStatusLabel(group[0], status)}“?${payment}${stock}`)) return
     const result = await api('/api/admin/orders/bulk-status', { method: 'POST', body: JSON.stringify({
       orders: group.map(({ id, version }) => ({ id, version })), from_status: group[0].status,
       status, confirm_payments: collect.length > 0
@@ -293,11 +298,13 @@ async function orderDialog(id) {
     const contact = el('p', {}, [order.name, order.organization].filter(Boolean).join('\n'))
     contact.append(el('br'), el('a', { href: `mailto:${encodeURIComponent(order.email)}` }, order.email))
     if (order.phone) contact.append(el('br'), /^\+?[0-9 ()-]{5,40}$/.test(order.phone) ? el('a', { href: `tel:${order.phone.replace(/[^\d+]/g, '')}` }, order.phone) : order.phone)
-    const mapUrl = `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(`${order.street}, ${order.postal_code} ${order.city}, Česko`)}`
-    body.replaceChildren(el('div', { class: 'summary-grid' }, el('section', {}, el('h3', {}, 'Zákazník'), contact), el('section', {}, el('h3', {}, 'Doručení'), el('p', {}, `${order.street}\n${order.postal_code} ${order.city}\n${order.delivery_date} · ${order.delivery_slot}`))), el('div', { class: 'actions no-print' }, el('a', { class: 'button small', href: mapUrl, target: '_blank', rel: 'noopener noreferrer' }, 'Otevřít adresu v mapě ↗'), button('Faktura', () => invoiceDialog(order), 'small')))
-    if (order.notes) body.append(el('div', { class: 'note' }, el('strong', {}, 'Pokyny pro doručení\n'), order.notes))
-    body.append(el('h3', {}, 'Položky objednávky'), table(['Zboží', 'Množství', 'Cena za kus', 'Celkem'], order.items.map(item => el('tr', {}, el('td', {}, item.name), el('td', {}, `${item.quantity} ks`), el('td', { class: 'number' }, money(item.unit_price_cents)), el('td', { class: 'number' }, money(item.total_cents)))), true), el('div', { class: 'totals' }, el('div', {}, el('span', {}, 'Zboží'), money(order.subtotal_cents)), el('div', {}, el('span', {}, 'Doprava'), money(order.delivery_fee_cents)), el('div', {}, el('span', {}, 'Celkem'), money(order.total_cents))))
-    body.append(el('p', { class: 'hint' }, `${order.payment_method === 'card' ? 'Online platba kartou přes Teya' : `Platba ${order.payment_method === 'card_on_delivery' ? 'kartou' : 'hotově'} při doručení`}. ${payments[order.payment_status]}. Stav: ${statuses[order.status]}. Vytvořeno ${dateTime(order.created_at)}.`))
+    const pickup = isPickup(order)
+    const address = orderAddress(order)
+    const mapUrl = `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(`${address.street}, ${address.postal_code} ${address.city}, Česko`)}`
+    body.replaceChildren(el('div', { class: 'summary-grid' }, el('section', {}, el('h3', {}, 'Zákazník'), contact), el('section', {}, el('h3', {}, pickup ? 'Osobní odběr' : 'Doručení'), el('p', {}, `${pickup && address.name ? address.name + '\n' : ''}${address.street}\n${address.postal_code} ${address.city}\n${order.delivery_date} · ${order.delivery_slot}`), pickup && address.parking_free ? el('p', { class: 'pickup-parking' }, 'Parkování zdarma') : null, pickup && address.instructions ? el('p', { class: 'pickup-instructions' }, address.instructions) : null)), el('div', { class: 'actions no-print' }, el('a', { class: 'button small', href: mapUrl, target: '_blank', rel: 'noopener noreferrer' }, 'Otevřít adresu v mapě ↗'), button('Faktura', () => invoiceDialog(order), 'small')))
+    if (order.notes) body.append(el('div', { class: 'note' }, el('strong', {}, pickup ? 'Poznámka k osobnímu odběru\n' : 'Pokyny pro doručení\n'), order.notes))
+    body.append(el('h3', {}, 'Položky objednávky'), table(['Zboží', 'Množství', 'Cena za kus', 'Celkem'], order.items.map(item => el('tr', {}, el('td', {}, item.name), el('td', {}, `${item.quantity} ks`), el('td', { class: 'number' }, money(item.unit_price_cents)), el('td', { class: 'number' }, money(item.total_cents)))), true), el('div', { class: 'totals' }, el('div', {}, el('span', {}, 'Zboží'), money(order.subtotal_cents)), el('div', {}, el('span', {}, pickup ? 'Osobní odběr' : 'Doprava'), money(order.delivery_fee_cents)), el('div', {}, el('span', {}, 'Celkem'), money(order.total_cents))))
+    body.append(el('p', { class: 'hint' }, `${order.payment_method === 'card' ? 'Online platba kartou přes Teya' : `Platba ${order.payment_method === 'card_on_delivery' ? 'kartou' : 'hotově'} ${pickup ? 'při vyzvednutí' : 'při doručení'}`}. ${payments[order.payment_status]}. Stav: ${orderStatusLabel(order)}. Vytvořeno ${dateTime(order.created_at)}.`))
     body.append(el('p', { class: 'hint order-origin' }, el('strong', {}, 'IP adresa při objednání: '), order.created_from_ip || 'U starších objednávek neevidována'))
     if (Number.isSafeInteger(order.terms_version) && order.terms_version > 0) body.append(el('p', { class: 'hint order-origin' }, el('a', {
       href: `/obchodni-podminky/?version=${order.terms_version}`, target: '_blank', rel: 'noopener noreferrer'
@@ -327,7 +334,7 @@ async function orderDialog(id) {
       notify('Objednávka byla uložena.')
       await orderDialog(order.id)
       renderPage()
-    }) }, el('h3', {}, 'Průběh objednávky'), el('div', { class: 'form-grid' }, selectField('Stav', 'status', allowed.map(key => [key, statuses[key]]), order.status), selectField('Platba', 'payment_status', Object.entries(payments), order.payment_status)), el('p', { class: 'hint' }, terminal ? 'Objednávka má konečný stav a nelze ji dále měnit.' : awaitingPayment && onlineCancellable ? 'Platební brána potvrdila, že platba skončila bez zaplacení. Objednávku můžete zrušit a vrátit rezervované kusy na sklad. Platbu nelze ručně označit jako přijatou.' : awaitingPayment ? 'Čekáme na ověření online platby. Do té doby nelze objednávku přijmout, připravovat ani ručně označit jako zaplacenou. Stav aktualizujte tlačítkem Obnovit stav platby.' : online ? 'Online platba byla ověřena platební bránou. Její stav nelze měnit ručně. Změnu stavu objednávky oznámíme zákazníkovi e-mailem.' : 'Platbu lze přijmout při rozvozu. Označení Doručená vyžaduje potvrzení přijetí platby. Změnu stavu oznámíme zákazníkovi e-mailem.'), el('div', { class: 'actions' }, el('button', { class: 'button primary', type: 'submit' }, 'Uložit změny')))
+    }) }, el('h3', {}, 'Průběh objednávky'), el('div', { class: 'form-grid' }, selectField('Stav', 'status', allowed.map(key => [key, orderStatusLabel(order, key)]), order.status), selectField('Platba', 'payment_status', Object.entries(payments), order.payment_status)), el('p', { class: 'hint' }, terminal ? 'Objednávka má konečný stav a nelze ji dále měnit.' : awaitingPayment && onlineCancellable ? 'Platební brána potvrdila, že platba skončila bez zaplacení. Objednávku můžete zrušit a vrátit rezervované kusy na sklad. Platbu nelze ručně označit jako přijatou.' : awaitingPayment ? 'Čekáme na ověření online platby. Do té doby nelze objednávku přijmout, připravovat ani ručně označit jako zaplacenou. Stav aktualizujte tlačítkem Obnovit stav platby.' : online ? 'Online platba byla ověřena platební bránou. Její stav nelze měnit ručně. Změnu stavu objednávky oznámíme zákazníkovi e-mailem.' : pickup ? 'Platbu lze přijmout při vyzvednutí. Označení Vyzvednuto vyžaduje potvrzení přijetí platby. Stav Připraveno k vyzvednutí oznámíme zákazníkovi e-mailem.' : 'Platbu lze přijmout při rozvozu. Označení Doručená vyžaduje potvrzení přijetí platby. Změnu stavu oznámíme zákazníkovi e-mailem.'), el('div', { class: 'actions' }, el('button', { class: 'button primary', type: 'submit' }, 'Uložit změny')))
     const orderStatus = form.querySelector('[name=status]')
     const paymentStatus = form.querySelector('[name=payment_status]')
     const updatePaymentOptions = () => {
@@ -352,7 +359,7 @@ async function orderDialog(id) {
     }
     body.append(form)
     if (online) body.append(button('Obnovit stav platby', () => orderDialog(id)))
-    if (order.history?.length) body.append(el('h3', {}, 'Historie změn'), el('ol', { class: 'history' }, order.history.map(item => el('li', {}, `${statuses[item.status] || (item.status === 'preparing' ? 'Připravuje se (dřívější stav)' : item.status)} · ${payments[item.payment_status] || item.payment_status}`, el('small', {}, `${dateTime(item.created_at)}${item.changed_by ? ` · ${item.changed_by}` : ''}`)))))
+    if (order.history?.length) body.append(el('h3', {}, 'Historie změn'), el('ol', { class: 'history' }, order.history.map(item => el('li', {}, `${orderStatusLabel(order, item.status)} · ${payments[item.payment_status] || item.payment_status}`, el('small', {}, `${dateTime(item.created_at)}${item.changed_by ? ` · ${item.changed_by}` : ''}`)))))
   } catch (error) { body.replaceChildren(errorBox(error), button('Načíst znovu', () => orderDialog(id))) }
 }
 
@@ -613,8 +620,76 @@ function orderEmailRecipients(primaryValue, additionalValue) {
   return { primary, additional: [...unique] }
 }
 
+function pickupSettingsForm(pickup) {
+  const form = el('form', { class: 'panel settings-panel pickup-settings', 'aria-labelledby': 'pickup-settings-title', onsubmit: event => saveForm(event, async data => {
+    form.querySelector('[data-form-error]')?.remove()
+    const payload = {
+      enabled: data.has('pickup_enabled'), name: String(data.get('pickup_name') || '').trim(),
+      street: String(data.get('pickup_street') || '').trim(), city: String(data.get('pickup_city') || '').trim(),
+      postal_code: normalizePostalCode(data.get('pickup_postal_code')),
+      instructions: String(data.get('pickup_instructions') || '').trim(), parking_free: data.has('pickup_parking_free'),
+      slots: String(data.get('pickup_slots') || '').split(/\r?\n/).map(value => value.trim()).filter(Boolean), version: pickup.version
+    }
+    if (payload.enabled && (!payload.name || !payload.street || !payload.city || !/^[0-9]{5}$/.test(payload.postal_code) || !payload.slots.length)) throw new Error('Pro zapnutí osobního odběru doplňte název místa, celou adresu a alespoň jedno časové okno.')
+    if (payload.postal_code && !/^[0-9]{5}$/.test(payload.postal_code)) throw new Error('PSČ odběrného místa musí obsahovat pět číslic.')
+    if (payload.slots.length > 24) throw new Error('Zadejte nejvýše 24 časových oken osobního odběru.')
+    let previousEnd = ''
+    payload.slots = payload.slots.map(value => {
+      const match = value.match(/^([0-2][0-9]:[0-5][0-9])\s*[–-]\s*([0-2][0-9]:[0-5][0-9])$/)
+      if (!match || match[1] >= '24:00' || match[2] > '24:00' || match[1] >= match[2]) throw new Error('Časové okno osobního odběru zadejte například jako 08:00–10:00. Konec musí být po začátku.')
+      return `${match[1]}–${match[2]}`
+    }).sort()
+    for (const slot of payload.slots) {
+      const [start, end] = slot.split('–')
+      if (start < previousEnd) throw new Error('Časová okna osobního odběru se nesmějí překrývat.')
+      previousEnd = end
+    }
+    const controls = [...form.querySelectorAll('input, textarea, button')]
+    controls.forEach(control => { control.disabled = true })
+    try {
+      const updated = await api('/api/admin/pickup-settings', { method: 'PUT', body: JSON.stringify(payload) })
+      Object.assign(pickup, updated)
+      applySaved()
+      notify('Nastavení osobního odběru bylo uloženo.')
+    } finally { controls.forEach(control => { control.disabled = false }) }
+  }) }, el('h2', { id: 'pickup-settings-title' }, 'Osobní odběr'),
+  el('p', { class: 'hint' }, 'Zákazník si vybere osobní odběr bez poplatku za dopravu. Změny adresy a časů platí pro nové objednávky. Přijaté objednávky uchovají místo a pokyny platné při objednání.'),
+  field('Povolit osobní odběr', 'pickup_enabled', pickup.enabled, { type: 'checkbox' }),
+  field('Název odběrného místa', 'pickup_name', pickup.name, { maxlength: 200 }),
+  field('Ulice a číslo odběrného místa', 'pickup_street', pickup.street, { maxlength: 250, autocomplete: 'off' }),
+  el('div', { class: 'form-grid' }, field('Město odběrného místa', 'pickup_city', pickup.city, { maxlength: 100, autocomplete: 'off' }), field('PSČ odběrného místa', 'pickup_postal_code', formatPostalCode(pickup.postal_code), { maxlength: 8, inputmode: 'numeric', autocomplete: 'off', pattern: '[0-9 ]{5,8}' })),
+  field('Časová okna osobního odběru', 'pickup_slots', (pickup.slots || []).join('\n'), { kind: 'textarea', rows: 3, maxlength: 1000, placeholder: '08:00–10:00\n14:00–16:00', hint: 'Jedno okno na řádek. Odběr se nabízí od nejbližšího pracovního dne. Zákazník zvolí den i čas a obsluha je potvrdí.' }),
+  field('Pokyny k odběru', 'pickup_instructions', pickup.instructions, { kind: 'textarea', rows: 3, maxlength: 2000, placeholder: 'Například vstup do prodejny ze dvora.' }),
+  field('Parkování zdarma', 'pickup_parking_free', pickup.parking_free !== false, { type: 'checkbox', hint: 'Informace se zobrazí u odběrného místa i v potvrzení objednávky.' }),
+  el('div', { class: 'actions' }, el('button', { class: 'button primary', type: 'submit' }, 'Uložit osobní odběr'), button('Obnovit osobní odběr', async event => {
+    if (!confirm('Načíst uloženou adresu a časy osobního odběru? Rozepsané změny v této části se ztratí.')) return
+    const trigger = event.currentTarget
+    trigger.disabled = true
+    try {
+      Object.assign(pickup, await api('/api/admin/pickup-settings'))
+      applySaved()
+      form.querySelector('[data-form-error]')?.remove()
+    } catch (error) { formError(form, error) }
+    finally { trigger.disabled = false }
+  })))
+  function updateRequired() {
+    for (const name of ['name', 'street', 'city', 'postal_code', 'slots']) form.elements[`pickup_${name}`].required = form.elements.pickup_enabled.checked
+  }
+  function applySaved() {
+    for (const name of ['name', 'street', 'city', 'instructions']) form.elements[`pickup_${name}`].value = pickup[name] || ''
+    form.elements.pickup_postal_code.value = formatPostalCode(pickup.postal_code)
+    form.elements.pickup_slots.value = (pickup.slots || []).join('\n')
+    form.elements.pickup_enabled.checked = Boolean(pickup.enabled)
+    form.elements.pickup_parking_free.checked = pickup.parking_free !== false
+    updateRequired()
+  }
+  form.elements.pickup_enabled.addEventListener('change', updateRequired)
+  updateRequired()
+  return form
+}
+
 async function settingsPage() {
-  const settings = await api('/api/admin/settings')
+  const [settings, pickup] = await Promise.all([api('/api/admin/settings'), api('/api/admin/pickup-settings')])
   const form = el('form', { class: 'panel settings-panel', onsubmit: event => saveForm(event, async data => {
     notice.hidden = true
     form.querySelector('[data-form-error]')?.remove()
@@ -623,12 +698,14 @@ async function settingsPage() {
     const controls = [...form.querySelectorAll('input, textarea')]
     controls.forEach(control => { control.disabled = true })
     try {
-      await api('/api/admin/settings', { method: 'PUT', body: JSON.stringify(payload) })
+      Object.assign(settings, await api('/api/admin/settings', { method: 'PUT', body: JSON.stringify(payload) }))
+      form.elements.order_email.value = settings.order_email
+      form.elements.additional_order_emails.value = (settings.additional_order_emails || []).join('\n')
+      form.elements.delivery_slots.value = (settings.delivery_slots || []).join('\n')
       notify('Nastavení bylo uloženo.')
-      await renderPage()
     } finally { controls.forEach(control => { control.disabled = false }) }
-  }) }, el('p', { class: 'hint' }, 'Změny se použijí pro nové objednávky. Již přijaté objednávky uchovají původní dopravu a celkovou cenu.'), deliverySlotsField(settings.delivery_slots), field('Cena dopravy v Kč', 'delivery_fee', (settings.delivery_fee_cents / 100).toFixed(2), { required: true, inputmode: 'decimal' }), field('Doprava zdarma od částky v Kč', 'free_delivery_from', settings.free_delivery_from_cents === null ? '' : (settings.free_delivery_from_cents / 100).toFixed(2), { inputmode: 'decimal', hint: 'Prázdné pole vypne dopravu zdarma. Limit se vztahuje na cenu zboží.' }), field('Hlavní e-mail pro příjem objednávek', 'order_email', settings.order_email, { type: 'email', required: true, maxlength: 254, autocomplete: 'off', hint: 'Tento e-mail přijímá objednávky a zákazníkům se uvádí jako kontakt pro jejich vyřízení.' }), field('Další příjemci objednávek', 'additional_order_emails', (settings.additional_order_emails || []).join('\n'), { kind: 'textarea', rows: 4, maxlength: 10000, autocomplete: 'off', placeholder: 'kuchyne@example.com\nrozvoz@example.com', hint: 'Adresy oddělte novým řádkem, čárkou nebo středníkem. Nejvýše 20 různých příjemců včetně hlavního e-mailu.' }), el('p', { class: 'hint' }, 'Každý příjemce dostane samostatné oznámení. U platby při doručení přijde po přijetí objednávky, u online platby po ověření úhrady. Zákazníkům se jako kontakt uvádí pouze hlavní e-mail.'), el('div', { class: 'actions' }, el('button', { type: 'submit', class: 'button primary' }, 'Uložit nastavení')))
-  return [header('Doprava a nastavení', 'Cena dopravy, rozvozová okna a příjemci objednávek.', button('Obnovit', renderPage)), form]
+  }) }, el('p', { class: 'hint' }, 'Změny se použijí pro nové objednávky. Již přijaté objednávky uchovají původní dopravu a celkovou cenu.'), deliverySlotsField(settings.delivery_slots), field('Cena dopravy v Kč', 'delivery_fee', (settings.delivery_fee_cents / 100).toFixed(2), { required: true, inputmode: 'decimal' }), field('Doprava zdarma od částky v Kč', 'free_delivery_from', settings.free_delivery_from_cents === null ? '' : (settings.free_delivery_from_cents / 100).toFixed(2), { inputmode: 'decimal', hint: 'Prázdné pole vypne dopravu zdarma. Limit se vztahuje na cenu zboží.' }), field('Hlavní e-mail pro příjem objednávek', 'order_email', settings.order_email, { type: 'email', required: true, maxlength: 254, autocomplete: 'off', hint: 'Tento e-mail přijímá objednávky a zákazníkům se uvádí jako kontakt pro jejich vyřízení.' }), field('Další příjemci objednávek', 'additional_order_emails', (settings.additional_order_emails || []).join('\n'), { kind: 'textarea', rows: 4, maxlength: 10000, autocomplete: 'off', placeholder: 'kuchyne@example.com\nrozvoz@example.com', hint: 'Adresy oddělte novým řádkem, čárkou nebo středníkem. Nejvýše 20 různých příjemců včetně hlavního e-mailu.' }), el('p', { class: 'hint' }, 'Každý příjemce dostane samostatné oznámení. U platby při převzetí přijde po přijetí objednávky, u online platby po ověření úhrady. Zákazníkům se jako kontakt uvádí pouze hlavní e-mail.'), el('div', { class: 'actions' }, el('button', { type: 'submit', class: 'button primary' }, 'Uložit nastavení')))
+  return [header('Doprava a nastavení', 'Rozvoz, osobní odběr a příjemci objednávek.', button('Obnovit', renderPage)), form, pickupSettingsForm(pickup)]
 }
 async function customersPage() {
   const data = await api(`/api/admin/customers?page=${state.customerPage}`)

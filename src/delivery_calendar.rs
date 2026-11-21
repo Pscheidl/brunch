@@ -81,6 +81,7 @@ pub fn date_label(date: NaiveDate) -> String {
 pub fn DeliveryCalendar(
     day: RwSignal<String>,
     earliest: Signal<Option<NaiveDate>>,
+    pickup: Signal<bool>,
 ) -> impl IntoView {
     let month = RwSignal::new(None::<NaiveDate>);
     Effect::new(move |_| {
@@ -112,7 +113,7 @@ pub fn DeliveryCalendar(
         });
     };
     view! {
-        <div class="delivery-calendar" role="group" aria-label="Kalendář doručení">
+        <div class="delivery-calendar" role="group" aria-label=move ||if pickup.get() {"Kalendář odběru"}else{"Kalendář doručení"}>
             <div class="calendar-nav">
                 <button type="button" aria-label="Předchozí měsíc"
                     disabled=move ||month.get() <= earliest.get().and_then(|d| d.with_day(1))
