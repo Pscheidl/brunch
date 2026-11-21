@@ -93,8 +93,6 @@ button { border: 0; background: none; }
 .button-secondary, .button.secondary, .secondary-button { color: var(--ink); background: var(--surface); border: 1px solid var(--line); }
 .button-secondary:hover, .button.secondary:hover, .secondary-button:hover { background: var(--soft); border-color: #cbd4c1; }
 .text-link { display: inline-flex; align-items: center; gap: 8px; color: var(--accent); font-size: 13px; font-weight: 550; }
-.hero-footnote { display: flex; align-items: center; gap: 8px; margin-top: 25px; color: var(--muted); font-size: 11px; }
-.hero-footnote .icon { width: 15px; height: 15px; color: var(--accent); }
 .hero-image, .hero-visual { position: relative; min-width: 0; margin: 0; }
 .hero-visual { isolation: isolate; }
 .hero-visual::before { content: ''; position: absolute; z-index: -1; inset: -9px; border-radius: 29px; background: linear-gradient(135deg, #e5edd9, #f8f5e9 55%, var(--warm)); pointer-events: none; }
@@ -388,7 +386,6 @@ legend { margin-bottom: 9px; padding: 0; font-size: 12px; font-weight: 500; }
   .hero-description, .hero-copy > p:not(.eyebrow) { margin-top: 20px; font-size: 13px; }
   .hero-actions { gap: 16px; margin-top: 23px; }
   .hero-actions .button, .hero-actions .primary-button { min-height: 44px; padding-inline: 16px; font-size: 12px; }
-  .hero-footnote { font-size: 10px; line-height: 1.5; }
   .hero-image > img, .hero-visual > img { height: 365px; border-radius: 16px; }
   .photo-caption { bottom: 14px; left: 14px; max-width: calc(100% - 28px); padding: 11px; gap: 8px; }
   .photo-caption strong { font-size: 11px; }
@@ -438,7 +435,6 @@ legend { margin-bottom: 9px; padding: 0; font-size: 12px; font-weight: 500; }
   .hero-actions { margin-top: 23px; }
   .hero-cta { margin-top: 18px; }
   .hero-actions .button, .hero-actions .primary-button { min-height: 45px; padding-inline: 18px; font-size: 12px; }
-  .hero-footnote { margin-top: 13px; font-size: 10px; }
   .hero-image > img, .hero-visual > img { height: 220px; object-fit: cover; }
   .photo-caption { bottom: 15px; left: 15px; padding: 12px 14px; }
   .photo-caption strong { font-size: 11px; }
