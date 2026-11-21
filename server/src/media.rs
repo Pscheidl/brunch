@@ -1,32 +1,35 @@
 use crate::{ApiError, ApiResult, AppState, auth};
 use axum::{
     Json, Router,
-    extract::{DefaultBodyLimit, Path, State},
+    body::{Bytes, to_bytes},
+    extract::{Path, Request, State},
     http::{HeaderMap, HeaderValue, StatusCode, header},
     response::{IntoResponse, Response},
     routing::{get, post},
 };
 use base64::{Engine, engine::general_purpose::STANDARD};
-use image::{ImageDecoder, ImageEncoder, ImageFormat, ImageReader, Limits};
+use image::{
+    DynamicImage, GenericImageView, ImageDecoder, ImageEncoder, ImageFormat, ImageReader, Limits,
+    imageops::FilterType,
+};
 use serde::Deserialize;
 use serde_json::{Value, json};
 use std::io::{Cursor, Write};
 use tokio::sync::Semaphore;
 use uuid::Uuid;
 
-const MAX_SOURCE: usize = 2 * 1024 * 1024;
+const MAX_SOURCE: usize = 40 * 1024 * 1024;
 const MAX_ENCODED: usize = MAX_SOURCE.div_ceil(3) * 4;
 const MAX_OUTPUT: usize = 8 * 1024 * 1024;
-const MAX_DIMENSION: u32 = 4096;
-const MAX_PIXELS: u64 = 16_000_000;
-static IMAGE_WORKERS: Semaphore = Semaphore::const_new(2);
+const MAX_DIMENSION: u32 = 16_384;
+const MAX_PIXELS: u64 = 52_000_000;
+const DISPLAY_DIMENSION: u32 = 1440;
+// The application shares a 640 MiB container with checkout and the mail worker.
+static IMAGE_WORKERS: Semaphore = Semaphore::const_new(1);
 
 pub fn routes() -> Router<AppState> {
     Router::new()
-        .route(
-            "/api/admin/images",
-            post(upload).layer(DefaultBodyLimit::max(3 * 1024 * 1024)),
-        )
+        .route("/api/admin/images", post(upload))
         .route("/api/images/{id}", get(read))
 }
 
@@ -64,7 +67,7 @@ impl Write for BoundedOutput {
 
 fn sanitize_image(source: &[u8]) -> ApiResult<SanitizedImage> {
     if source.is_empty() || source.len() > MAX_SOURCE {
-        return Err(ApiError::bad_request("Obrázek smí mít nejvýše 2 MB."));
+        return Err(ApiError::bad_request("Obrázek smí mít nejvýše 40 MB."));
     }
     let format = image::guess_format(source)
         .map_err(|_| ApiError::bad_request("Vyberte skutečný obrázek JPEG, PNG nebo WebP."))?;
@@ -79,49 +82,52 @@ fn sanitize_image(source: &[u8]) -> ApiResult<SanitizedImage> {
     let mut limits = Limits::default();
     limits.max_image_width = Some(MAX_DIMENSION);
     limits.max_image_height = Some(MAX_DIMENSION);
-    limits.max_alloc = Some(128 * 1024 * 1024);
-    let reader = || {
-        let mut reader = ImageReader::with_format(Cursor::new(source), format);
-        reader.limits(limits.clone());
-        reader
-    };
-    let (width, height) = reader()
-        .into_dimensions()
+    limits.max_alloc = Some(224 * 1024 * 1024);
+    let mut reader = ImageReader::with_format(Cursor::new(source), format);
+    reader.limits(limits.clone());
+    let mut decoder = reader
+        .into_decoder()
         .map_err(|_| ApiError::bad_request("Obrázek je poškozený nebo má příliš velké rozměry."))?;
-    if width == 0
-        || height == 0
-        || width > MAX_DIMENSION
-        || height > MAX_DIMENSION
-        || u64::from(width) * u64::from(height) > MAX_PIXELS
-    {
+    let (width, height) = decoder.dimensions();
+    if width == 0 || height == 0 || u64::from(width) * u64::from(height) > MAX_PIXELS {
         return Err(ApiError::bad_request(
-            "Obrázek smí mít nejvýše 4096 pixelů na straně a 16 megapixelů.",
+            "Obrázek smí mít nejvýše 16 384 pixelů na straně a 52 megapixelů.",
         ));
     }
-    let orientation = reader()
-        .into_decoder()
-        .and_then(|mut decoder| decoder.orientation())
+    limits
+        .reserve(decoder.total_bytes())
+        .and_then(|()| decoder.set_limits(limits))
+        .map_err(|_| ApiError::bad_request("Obrázek má pro zpracování příliš velké rozměry."))?;
+    let orientation = decoder
+        .orientation()
         .map_err(|_| ApiError::bad_request("Obrázek obsahuje neplatné údaje o otočení."))?;
-    let mut decoded = reader()
-        .decode()
+    let mut decoded = DynamicImage::from_decoder(decoder)
         .map_err(|_| ApiError::bad_request("Obrázek nelze bezpečně načíst. Zvolte jiný soubor."))?;
+    // Pre-shrink large originals to bound the temporary buffers used by Lanczos resampling.
+    if width.max(height) > 2 * DISPLAY_DIMENSION {
+        decoded = decoded.thumbnail(2 * DISPLAY_DIMENSION, 2 * DISPLAY_DIMENSION);
+    }
+    if decoded.width().max(decoded.height()) > DISPLAY_DIMENSION {
+        decoded = decoded.resize(DISPLAY_DIMENSION, DISPLAY_DIMENSION, FilterType::Lanczos3);
+    }
     decoded.apply_orientation(orientation);
     let (width, height) = (decoded.width(), decoded.height());
     let mut output = BoundedOutput::default();
     let content_type;
-    let encoded = if decoded.color().has_alpha() {
+    let has_transparency =
+        decoded.color().has_alpha() && decoded.pixels().any(|(_, _, p)| p[3] < 255);
+    let encoded = if has_transparency {
         content_type = "image/png";
-        let rgba = decoded.to_rgba8();
         image::codecs::png::PngEncoder::new(&mut output).write_image(
-            rgba.as_raw(),
+            decoded.into_rgba8().as_raw(),
             width,
             height,
             image::ColorType::Rgba8.into(),
         )
     } else {
         content_type = "image/jpeg";
-        let rgb = decoded.to_rgb8();
-        image::codecs::jpeg::JpegEncoder::new_with_quality(&mut output, 85).encode_image(&rgb)
+        image::codecs::jpeg::JpegEncoder::new_with_quality(&mut output, 88)
+            .encode_image(&decoded.into_rgb8())
     };
     encoded.map_err(|_| {
         ApiError::bad_request("Obrázek je po úpravě příliš velký. Zmenšete jeho rozměry.")
@@ -132,12 +138,10 @@ fn sanitize_image(source: &[u8]) -> ApiResult<SanitizedImage> {
     })
 }
 
-async fn upload(
-    State(state): State<AppState>,
-    headers: HeaderMap,
-    Json(input): Json<ImageInput>,
-) -> ApiResult<Json<Value>> {
-    let admin = auth::require_admin(&state, &headers).await?;
+fn legacy_json_image(body: Bytes) -> ApiResult<Bytes> {
+    let input: ImageInput = serde_json::from_slice(&body)
+        .map_err(|_| ApiError::bad_request("Neplatné údaje o obrázku."))?;
+    drop(body);
     if input.filename.trim().is_empty()
         || input.filename.chars().count() > 200
         || input.filename.chars().any(char::is_control)
@@ -145,20 +149,46 @@ async fn upload(
         return Err(ApiError::bad_request("Neplatný název obrázku."));
     }
     if input.content_base64.len() > MAX_ENCODED {
-        return Err(ApiError::bad_request("Obrázek smí mít nejvýše 2 MB."));
+        return Err(ApiError::bad_request("Obrázek smí mít nejvýše 40 MB."));
     }
+    STANDARD
+        .decode(input.content_base64)
+        .map(Bytes::from)
+        .map_err(|_| ApiError::bad_request("Neplatná data obrázku."))
+}
+
+async fn upload(State(state): State<AppState>, request: Request) -> ApiResult<Json<Value>> {
+    let admin = auth::require_admin(&state, request.headers()).await?;
+    // Authenticate and acquire the worker before buffering any part of a large upload.
+    let binary = request
+        .headers()
+        .get(header::CONTENT_TYPE)
+        .is_some_and(|value| value == "application/octet-stream");
     let permit = IMAGE_WORKERS.try_acquire().map_err(|_| {
         ApiError::new(
             StatusCode::TOO_MANY_REQUESTS,
             "Právě zpracováváme jiné obrázky. Zkuste to za chvíli.",
         )
     })?;
-    let source = STANDARD
-        .decode(&input.content_base64)
-        .map_err(|_| ApiError::bad_request("Neplatná data obrázku."))?;
+    let limit = if binary {
+        MAX_SOURCE
+    } else {
+        MAX_ENCODED + 4096
+    };
+    let body = to_bytes(request.into_body(), limit).await.map_err(|_| {
+        ApiError::new(
+            StatusCode::PAYLOAD_TOO_LARGE,
+            "Obrázek smí mít nejvýše 40 MB.",
+        )
+    })?;
     let sanitized = tokio::task::spawn_blocking(move || {
         // Retain the processing permit even if the HTTP request is disconnected.
         let _permit = permit;
+        let source = if binary {
+            body
+        } else {
+            legacy_json_image(body)?
+        };
         sanitize_image(&source)
     })
     .await
@@ -216,4 +246,31 @@ async fn read(
         HeaderValue::from_str(&etag).expect("UUID ETag"),
     );
     Ok(response)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn large_phone_photo_is_resized_compressed_and_oriented() {
+        let rgb = image::RgbImage::from_pixel(4800, 1200, image::Rgb([81, 144, 62]));
+        let mut source = Vec::new();
+        let mut encoder = image::codecs::jpeg::JpegEncoder::new(&mut source);
+        encoder
+            .set_exif_metadata(
+                b"II*\0\x08\0\0\0\x01\0\x12\x01\x03\0\x01\0\0\0\x06\0\0\0\0\0\0\0".to_vec(),
+            )
+            .unwrap();
+        encoder.encode_image(&rgb).unwrap();
+        source.resize(MAX_SOURCE, 0);
+        let result = sanitize_image(&source).unwrap();
+        assert_eq!(result.content_type, "image/jpeg");
+        assert!(result.data.len() < 100_000);
+        let img = image::load_from_memory(&result.data).unwrap();
+        assert_eq!(img.dimensions(), (360, 1440));
+        assert!(!result.data.windows(6).any(|part| part == b"Exif\0\0"));
+        source.push(0);
+        assert!(sanitize_image(&source).is_err());
+    }
 }

@@ -29,6 +29,7 @@ RUN cd /out && find dist -type f -exec sha256sum {} + | LC_ALL=C sort -k2 > asse
 
 FROM toolchain AS backend
 COPY server/Cargo.toml server/Cargo.lock server/
+COPY src/working_day.rs src/working_day.rs
 COPY server/src/ server/src/
 COPY server/migrations/ server/migrations/
 RUN --mount=type=cache,id=brunch-cargo-registry,target=/usr/local/cargo/registry \

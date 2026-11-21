@@ -1,3 +1,7 @@
+mod categories;
+
+mod invoices;
+
 use crate::{ApiError, ApiResult, AppState, auth, mail};
 use axum::{
     Json, Router,
@@ -5,7 +9,10 @@ use axum::{
     http::{HeaderMap, StatusCode},
     routing::{get, post, put},
 };
-use chrono::{DateTime, Datelike, Days, NaiveDate, Utc, Weekday};
+use chrono::{DateTime, Datelike, Days, NaiveDate, Utc};
+#[path = "../../src/working_day.rs"]
+mod calendar;
+use calendar::working_day;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sqlx::{FromRow, PgConnection, PgPool};
@@ -15,12 +22,10 @@ use uuid::Uuid;
 const MAX_PRICE: i64 = 10_000_000;
 const MAX_TOTAL: i64 = 1_000_000_000;
 const MAX_STOCK: i32 = 1_000_000;
-const SLOTS: [&str; 3] = ["07:00–09:00", "09:00–11:00", "11:00–13:00"];
-const STATUSES: [&str; 8] = [
+const STATUSES: [&str; 7] = [
     "awaiting_payment",
     "new",
     "confirmed",
-    "preparing",
     "out_for_delivery",
     "delivered",
     "cancelled",
@@ -29,6 +34,8 @@ const STATUSES: [&str; 8] = [
 
 pub fn routes() -> Router<AppState> {
     Router::new()
+        .merge(invoices::routes())
+        .merge(categories::routes())
         .route("/api/products", get(products))
         .route("/api/settings", get(settings))
         .route("/api/delivery-options", get(delivery_options))
@@ -41,6 +48,7 @@ pub fn routes() -> Router<AppState> {
         .route("/api/admin/products/{id}", put(update_product))
         .route("/api/admin/products/{id}/prices", get(price_history))
         .route("/api/admin/orders", get(admin_orders))
+        .route("/api/admin/orders/bulk-status", post(bulk_order_status))
         .route(
             "/api/admin/orders/{id}",
             get(admin_order).patch(update_order),
@@ -72,6 +80,7 @@ struct Product {
     image: String,
     active: bool,
     stock: Option<i32>,
+    minimum_quantity: i32,
     version: i64,
 }
 
@@ -103,6 +112,7 @@ struct ProductInput {
     #[serde(default = "default_true")]
     active: bool,
     stock: Option<i32>,
+    minimum_quantity: Option<i32>,
     version: Option<i64>,
 }
 
@@ -138,6 +148,14 @@ impl ProductInput {
         {
             return Err(ApiError::bad_request(
                 "Cena nebo skladové množství jsou mimo povolený rozsah.",
+            ));
+        }
+        if self
+            .minimum_quantity
+            .is_some_and(|n| !(0..=99).contains(&n))
+        {
+            return Err(ApiError::bad_request(
+                "Minimální odběr musí být od 0 do 99 kusů.",
             ));
         }
         if self.image.starts_with("//")
@@ -181,12 +199,13 @@ async fn create_product(
     let admin = auth::require_admin(&state, &headers).await?;
     input.validate()?;
     let mut tx = state.pool.begin().await?;
+    categories::ensure(&mut tx, &input.category).await?;
     let product: Product = sqlx::query_as(
-        "INSERT INTO products(name,description,category,tag,weight,price_cents,vegan,ingredients,allergens,image,active,stock) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) RETURNING *",
+        "INSERT INTO products(name,description,category,tag,weight,price_cents,vegan,ingredients,allergens,image,active,stock,minimum_quantity) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13) RETURNING *",
     ).bind(&input.name).bind(&input.description).bind(&input.category).bind(&input.tag)
         .bind(&input.weight).bind(input.price_cents).bind(input.vegan).bind(&input.ingredients)
         .bind(&input.allergens).bind(&input.image).bind(input.active).bind(input.stock)
-        .fetch_one(&mut *tx).await?;
+        .bind(input.minimum_quantity.unwrap_or(0)).fetch_one(&mut *tx).await?;
     sqlx::query("INSERT INTO product_prices(product_id,price_cents,changed_by) VALUES ($1,$2,$3)")
         .bind(product.id)
         .bind(product.price_cents)
@@ -210,6 +229,7 @@ async fn update_product(
         .filter(|v| *v > 0)
         .ok_or_else(|| ApiError::bad_request("Chybí verze produktu."))?;
     let mut tx = state.pool.begin().await?;
+    categories::ensure(&mut tx, &input.category).await?;
     let old: Product = sqlx::query_as("SELECT * FROM products WHERE id=$1 FOR UPDATE")
         .bind(id)
         .fetch_optional(&mut *tx)
@@ -221,11 +241,11 @@ async fn update_product(
         ));
     }
     let product = sqlx::query_as(
-        "UPDATE products SET name=$2,description=$3,category=$4,tag=$5,weight=$6,price_cents=$7,vegan=$8,ingredients=$9,allergens=$10,image=$11,active=$12,stock=$13,version=version+1,updated_at=now() WHERE id=$1 RETURNING *",
+        "UPDATE products SET name=$2,description=$3,category=$4,tag=$5,weight=$6,price_cents=$7,vegan=$8,ingredients=$9,allergens=$10,image=$11,active=$12,stock=$13,minimum_quantity=COALESCE($14,minimum_quantity),version=version+1,updated_at=now() WHERE id=$1 RETURNING *",
     ).bind(id).bind(&input.name).bind(&input.description).bind(&input.category).bind(&input.tag)
         .bind(&input.weight).bind(input.price_cents).bind(input.vegan).bind(&input.ingredients)
         .bind(&input.allergens).bind(&input.image).bind(input.active).bind(input.stock)
-        .fetch_one(&mut *tx).await?;
+        .bind(input.minimum_quantity).fetch_one(&mut *tx).await?;
     if old.price_cents != input.price_cents {
         sqlx::query(
             "INSERT INTO product_prices(product_id,price_cents,changed_by) VALUES ($1,$2,$3)",
@@ -271,6 +291,7 @@ struct Settings {
     delivery_fee_cents: i64,
     free_delivery_from_cents: Option<i64>,
     order_email: String,
+    delivery_slots: Option<Vec<String>>,
     version: i64,
 }
 
@@ -301,6 +322,7 @@ fn normalize_postal_code(value: &str) -> ApiResult<String> {
 
 #[derive(Serialize, FromRow)]
 struct DeliveryArea {
+    delivery_slots: Option<Vec<String>>,
     id: i64,
     postal_code: String,
     label: String,
@@ -311,6 +333,9 @@ struct DeliveryArea {
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct DeliveryAreaInput {
+    // Omitted by older clients, null to inherit, or the replacement schedule.
+    #[serde(default, deserialize_with = "provided_slots")]
+    delivery_slots: Option<Option<Vec<String>>>,
     postal_code: String,
     #[serde(default)]
     label: String,
@@ -319,10 +344,58 @@ struct DeliveryAreaInput {
     version: Option<i64>,
 }
 
+fn provided_slots<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Option<Option<Vec<String>>>, D::Error> {
+    Option::deserialize(deserializer).map(Some)
+}
+
+fn valid_clock(value: &str) -> bool {
+    let bytes = value.as_bytes();
+    bytes.len() == 5
+        && bytes[2] == b':'
+        && [0, 1, 3, 4].iter().all(|&i| bytes[i].is_ascii_digit())
+        && &value[..2] < "24"
+        && &value[3..] < "60"
+}
+
+fn normalize_slots(slots: &mut [String]) -> ApiResult<()> {
+    if slots.is_empty() {
+        return Err(ApiError::bad_request(
+            "Zadejte alespoň jedno rozvozové okno.",
+        ));
+    }
+    slots.sort_unstable_by(|a, b| a.trim_start().cmp(b.trim_start()));
+    let mut previous_end = String::new();
+    for slot in slots.iter_mut() {
+        let (start, end) = slot
+            .split_once(['–', '-'])
+            .map(|(s, e)| (s.trim(), e.trim()))
+            .filter(|(s, e)| valid_clock(s) && (valid_clock(e) || *e == "24:00") && s < e)
+            .ok_or_else(|| {
+                ApiError::bad_request(
+                    "Rozvozové okno zadejte například jako 07:00–09:00. Konec musí být po začátku.",
+                )
+            })?;
+        if start < previous_end.as_str() {
+            return Err(ApiError::bad_request(
+                "Rozvozová okna se nesmějí překrývat.",
+            ));
+        }
+        previous_end.clear();
+        previous_end.push_str(end);
+        *slot = format!("{start}–{end}");
+    }
+    Ok(())
+}
+
 impl DeliveryAreaInput {
     fn normalize(&mut self) -> ApiResult<()> {
         self.postal_code = normalize_postal_code(&self.postal_code)?;
         self.label = clean(&self.label, "popis oblasti rozvozu", 100, false)?;
+        if let Some(Some(slots)) = &mut self.delivery_slots {
+            normalize_slots(slots)?;
+        }
         Ok(())
     }
 }
@@ -340,7 +413,7 @@ async fn admin_delivery_areas(
     headers: HeaderMap,
 ) -> ApiResult<Json<Vec<DeliveryArea>>> {
     auth::require_admin(&state, &headers).await?;
-    Ok(Json(sqlx::query_as("SELECT id,postal_code,label,active,version FROM delivery_areas ORDER BY postal_code,id")
+    Ok(Json(sqlx::query_as("SELECT id,postal_code,label,active,version,delivery_slots FROM delivery_areas ORDER BY postal_code,id")
         .fetch_all(&state.pool).await?))
 }
 
@@ -356,8 +429,8 @@ async fn create_delivery_area(
     sqlx::query("SELECT id FROM shop_settings WHERE id=1 FOR UPDATE")
         .fetch_one(&mut *tx)
         .await?;
-    let area = sqlx::query_as("INSERT INTO delivery_areas(postal_code,label,active) VALUES ($1,$2,$3) RETURNING id,postal_code,label,active,version")
-        .bind(input.postal_code).bind(input.label).bind(input.active)
+    let area = sqlx::query_as("INSERT INTO delivery_areas(postal_code,label,active,delivery_slots) VALUES ($1,$2,$3,$4) RETURNING id,postal_code,label,active,version,delivery_slots")
+        .bind(input.postal_code).bind(input.label).bind(input.active).bind(input.delivery_slots.flatten())
         .fetch_one(&mut *tx).await.map_err(delivery_area_error)?;
     tx.commit().await?;
     Ok(Json(area))
@@ -380,7 +453,7 @@ async fn update_delivery_area(
         .fetch_one(&mut *tx)
         .await?;
     let old: DeliveryArea = sqlx::query_as(
-        "SELECT id,postal_code,label,active,version FROM delivery_areas WHERE id=$1 FOR UPDATE",
+        "SELECT id,postal_code,label,active,version,delivery_slots FROM delivery_areas WHERE id=$1 FOR UPDATE",
     )
     .bind(id)
     .fetch_optional(&mut *tx)
@@ -391,8 +464,8 @@ async fn update_delivery_area(
             "Oblast rozvozu se mezitím změnila. Načtěte aktuální údaje.",
         ));
     }
-    let area = sqlx::query_as("UPDATE delivery_areas SET postal_code=$2,label=$3,active=$4,version=version+1 WHERE id=$1 RETURNING id,postal_code,label,active,version")
-        .bind(id).bind(input.postal_code).bind(input.label).bind(input.active)
+    let area = sqlx::query_as("UPDATE delivery_areas SET postal_code=$2,label=$3,active=$4,delivery_slots=$5,version=version+1 WHERE id=$1 RETURNING id,postal_code,label,active,version,delivery_slots")
+        .bind(id).bind(input.postal_code).bind(input.label).bind(input.active).bind(input.delivery_slots.unwrap_or(old.delivery_slots))
         .fetch_one(&mut *tx).await.map_err(delivery_area_error)?;
     tx.commit().await?;
     Ok(Json(area))
@@ -417,6 +490,9 @@ async fn update_settings(
 ) -> ApiResult<Json<Settings>> {
     auth::require_admin(&state, &headers).await?;
     input.order_email = email(&input.order_email)?;
+    if let Some(slots) = &mut input.delivery_slots {
+        normalize_slots(slots)?;
+    }
     if !(0..=MAX_PRICE).contains(&input.delivery_fee_cents)
         || input
             .free_delivery_from_cents
@@ -427,50 +503,10 @@ async fn update_settings(
             "Neplatné nastavení dopravy nebo verze.",
         ));
     }
-    let updated = sqlx::query_as("UPDATE shop_settings SET delivery_fee_cents=$1,free_delivery_from_cents=$2,order_email=$3,version=version+1,updated_at=now() WHERE id=1 AND version=$4 RETURNING *")
-        .bind(input.delivery_fee_cents).bind(input.free_delivery_from_cents).bind(input.order_email).bind(input.version)
+    let updated = sqlx::query_as("UPDATE shop_settings SET delivery_fee_cents=$1,free_delivery_from_cents=$2,order_email=$3,delivery_slots=COALESCE($5,delivery_slots),version=version+1,updated_at=now() WHERE id=1 AND version=$4 RETURNING *")
+        .bind(input.delivery_fee_cents).bind(input.free_delivery_from_cents).bind(input.order_email).bind(input.version).bind(input.delivery_slots)
         .fetch_optional(&state.pool).await?.ok_or_else(|| ApiError::conflict("Nastavení se mezitím změnilo. Načtěte aktuální údaje."))?;
     Ok(Json(updated))
-}
-
-fn easter_sunday(year: i32) -> NaiveDate {
-    let a = year % 19;
-    let b = year / 100;
-    let c = year % 100;
-    let d = b / 4;
-    let e = b % 4;
-    let f = (b + 8) / 25;
-    let g = (b - f + 1) / 3;
-    let h = (19 * a + b - d - g + 15) % 30;
-    let i = c / 4;
-    let k = c % 4;
-    let l = (32 + 2 * e + 2 * i - h - k) % 7;
-    let m = (a + 11 * h + 22 * l) / 451;
-    let month = (h + l - 7 * m + 114) / 31;
-    let day = (h + l - 7 * m + 114) % 31 + 1;
-    NaiveDate::from_ymd_opt(year, month as u32, day as u32).expect("Gregorian Easter date")
-}
-
-fn working_day(date: NaiveDate) -> bool {
-    let holiday = matches!(
-        (date.month(), date.day()),
-        (1, 1)
-            | (5, 1)
-            | (5, 8)
-            | (7, 5)
-            | (7, 6)
-            | (9, 28)
-            | (10, 28)
-            | (11, 17)
-            | (12, 24)
-            | (12, 25)
-            | (12, 26)
-    );
-    let easter = easter_sunday(date.year());
-    !matches!(date.weekday(), Weekday::Sat | Weekday::Sun)
-        && !holiday
-        && Some(date) != easter.checked_sub_days(Days::new(2))
-        && Some(date) != easter.checked_add_days(Days::new(1))
 }
 
 fn next_dates(today: NaiveDate) -> Vec<NaiveDate> {
@@ -481,7 +517,14 @@ fn next_dates(today: NaiveDate) -> Vec<NaiveDate> {
         .collect()
 }
 
-async fn delivery_options() -> Json<Value> {
+async fn delivery_options(State(state): State<AppState>) -> ApiResult<Json<Value>> {
+    let (slots, postal_slots): (Vec<String>, Value) = sqlx::query_as(
+        "SELECT delivery_slots, COALESCE((SELECT jsonb_object_agg(postal_code,delivery_slots)
+         FROM delivery_areas WHERE active AND delivery_slots IS NOT NULL), '{}'::jsonb)
+         FROM shop_settings WHERE id=1",
+    )
+    .fetch_one(&state.pool)
+    .await?;
     let today = Utc::now()
         .with_timezone(&chrono_tz::Europe::Prague)
         .date_naive();
@@ -497,7 +540,9 @@ async fn delivery_options() -> Json<Value> {
     let dates: Vec<_> = next_dates(today).into_iter().map(|date| {
         json!({"value":date.to_string(),"label":format!("{} {}. {}.",labels[date.weekday().num_days_from_monday() as usize],date.day(),date.month())})
     }).collect();
-    Json(json!({"dates":dates,"slots":SLOTS}))
+    Ok(Json(
+        json!({"dates":dates,"slots":slots,"postal_slots":postal_slots}),
+    ))
 }
 
 #[derive(Deserialize, Serialize)]
@@ -573,12 +618,27 @@ impl OrderInput {
         Ok(())
     }
 
-    fn validate_delivery(&self) -> ApiResult<()> {
+    // Apply new contact requirements only to new orders. An exact retry of an
+    // existing order may still have the empty fields accepted by older versions.
+    fn validate_contact(&self) -> ApiResult<()> {
+        if self.name.is_empty() {
+            return Err(ApiError::bad_request("Vyplňte prosím jméno příjemce."));
+        }
+        if !self.phone.bytes().any(|c| c.is_ascii_digit()) {
+            return Err(ApiError::bad_request(
+                "Vyplňte prosím telefonní číslo pro kurýra.",
+            ));
+        }
+        Ok(())
+    }
+
+    fn validate_delivery(&self, slots: &[String]) -> ApiResult<()> {
         let today = Utc::now()
             .with_timezone(&chrono_tz::Europe::Prague)
             .date_naive();
-        if !next_dates(today).contains(&self.delivery_date)
-            || !SLOTS.contains(&self.delivery_slot.as_str())
+        if self.delivery_date <= today
+            || !working_day(self.delivery_date)
+            || !slots.contains(&self.delivery_slot)
         {
             return Err(ApiError::bad_request("Zvolte dostupný den a čas doručení."));
         }
@@ -620,6 +680,9 @@ struct Order {
     #[sqlx(skip)]
     #[serde(skip_serializing_if = "Option::is_none")]
     pub payment_expires_at: Option<DateTime<Utc>>,
+    #[sqlx(default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    online_cancellable: Option<bool>,
 }
 
 #[derive(Serialize, FromRow)]
@@ -763,27 +826,29 @@ async fn create_order(
         tx.commit().await?;
         return Ok(Json(order));
     }
+    input.validate_contact()?;
     let online = input.payment_method == "card";
     if online && state.config.teya.is_none() {
         return Err(ApiError::conflict(
             "Online platba momentálně není dostupná. Zvolte platbu při doručení.",
         ));
     }
-    input.validate_delivery()?;
     let settings: Settings = sqlx::query_as("SELECT * FROM shop_settings WHERE id=1 FOR SHARE")
         .fetch_one(&mut *tx)
         .await?;
-    let supported: bool = sqlx::query_scalar(
-        "SELECT EXISTS(SELECT 1 FROM delivery_areas WHERE postal_code=$1 AND active)",
+    let slots: Vec<String> = sqlx::query_scalar(
+        "SELECT COALESCE(delivery_slots, $2) FROM delivery_areas WHERE postal_code=$1 AND active",
     )
     .bind(&input.postal_code)
-    .fetch_one(&mut *tx)
-    .await?;
-    if !supported {
-        return Err(ApiError::bad_request(
+    .bind(&settings.delivery_slots)
+    .fetch_optional(&mut *tx)
+    .await?
+    .ok_or_else(|| {
+        ApiError::bad_request(
             "Na zadané PSČ momentálně nerozvážíme. Zadejte adresu v podporované oblasti rozvozu.",
-        ));
-    }
+        )
+    })?;
+    input.validate_delivery(&slots)?;
     let ids: Vec<_> = input.items.iter().map(|i| i.product_id).collect();
     // The stable lock order prevents concurrent checkouts from overselling or deadlocking.
     let products: Vec<Product> =
@@ -800,6 +865,12 @@ async fn create_order(
             .ok_or_else(|| {
                 ApiError::conflict("Některý produkt již není v nabídce. Aktualizujte košík.")
             })?;
+        if item.quantity < product.minimum_quantity {
+            return Err(ApiError::conflict(format!(
+                "Minimální odběr u položky {} je {} ks.",
+                product.name, product.minimum_quantity
+            )));
+        }
         if product.stock.is_some_and(|stock| stock < item.quantity) {
             return Err(ApiError::conflict(format!(
                 "Produkt {} není dostupný v požadovaném množství.",
@@ -1006,7 +1077,7 @@ pub(crate) async fn payment_received(conn: &mut PgConnection, id: Uuid) -> ApiRe
     if old.payment_status == "paid"
         && matches!(
             old.status.as_str(),
-            "new" | "confirmed" | "preparing" | "out_for_delivery" | "delivered"
+            "new" | "confirmed" | "out_for_delivery" | "delivered"
         )
     {
         return Ok(());
@@ -1154,7 +1225,7 @@ async fn admin_orders(
     let mut conn = state.pool.acquire().await?;
     let total: i64 = sqlx::query_scalar("SELECT count(*) FROM orders WHERE ($1::text IS NULL OR status=$1) AND (number ILIKE $2 OR email ILIKE $2 OR name ILIKE $2 OR street ILIKE $2 OR city ILIKE $2) AND ($3::date IS NULL OR delivery_date=$3)")
         .bind(&status).bind(&q).bind(delivery_date).fetch_one(&mut *conn).await?;
-    let mut orders = sqlx::query_as("SELECT * FROM orders WHERE ($1::text IS NULL OR status=$1) AND (number ILIKE $2 OR email ILIKE $2 OR name ILIKE $2 OR street ILIKE $2 OR city ILIKE $2) AND ($3::date IS NULL OR delivery_date=$3) ORDER BY created_at DESC,id DESC LIMIT 50 OFFSET $4")
+    let mut orders = sqlx::query_as("SELECT orders.*, (SELECT state IN ('failed','expired') AND checked_at IS NOT NULL FROM payment_attempts WHERE order_id=orders.id) AS online_cancellable FROM orders WHERE ($1::text IS NULL OR status=$1) AND (number ILIKE $2 OR email ILIKE $2 OR name ILIKE $2 OR street ILIKE $2 OR city ILIKE $2) AND ($3::date IS NULL OR delivery_date=$3) ORDER BY created_at DESC,id DESC LIMIT 50 OFFSET $4")
         .bind(&status).bind(&q).bind(delivery_date).bind((page - 1) * 50).fetch_all(&mut *conn).await?;
     attach_items(&mut conn, &mut orders).await?;
     Ok(Json(json!({"orders":orders,"total":total,"page":page})))
@@ -1235,8 +1306,7 @@ fn validate_transition(
     }
     let next = match old_status {
         "new" => "confirmed",
-        "confirmed" => "preparing",
-        "preparing" => "out_for_delivery",
+        "confirmed" => "out_for_delivery",
         "out_for_delivery" => "delivered",
         _ => return Err(ApiError::conflict("Neplatný přechod stavu.")),
     };
@@ -1266,7 +1336,6 @@ fn status_label(status: &str) -> &'static str {
     match status {
         "awaiting_payment" => "Čeká na zaplacení",
         "confirmed" => "Potvrzena",
-        "preparing" => "Připravujeme",
         "out_for_delivery" => "Na cestě",
         "delivered" => "Doručena",
         "cancelled" => "Zrušena",
@@ -1288,56 +1357,139 @@ async fn update_order(
         .fetch_optional(&mut *tx)
         .await?
         .ok_or_else(|| ApiError::not_found("Objednávka neexistuje."))?;
+    apply_order_update(&mut tx, admin.id, &old, &input).await?;
+    let order = read_order(&mut tx, id, true).await?;
+    tx.commit().await?;
+    Ok(Json(order))
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SelectedOrder {
+    id: Uuid,
+    version: i64,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct BulkStatus {
+    orders: Vec<SelectedOrder>,
+    from_status: String,
+    status: String,
+    #[serde(default)]
+    confirm_payments: bool,
+}
+
+async fn bulk_order_status(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(input): Json<BulkStatus>,
+) -> ApiResult<Json<Value>> {
+    let admin = auth::require_admin(&state, &headers).await?;
+    let versions: BTreeMap<_, _> = input.orders.iter().map(|o| (o.id, o.version)).collect();
+    if versions.is_empty()
+        || versions.len() > 50
+        || versions.len() != input.orders.len()
+        || input.from_status == input.status
+        || !STATUSES.contains(&input.from_status.as_str())
+    {
+        return Err(ApiError::bad_request(
+            "Vyberte až 50 různých objednávek a nový společný stav.",
+        ));
+    }
+    let ids: Vec<_> = versions.keys().copied().collect();
+    let mut tx = state.pool.begin().await?;
+    let orders: Vec<Order> =
+        sqlx::query_as("SELECT * FROM orders WHERE id=ANY($1) ORDER BY id FOR UPDATE")
+            .bind(&ids)
+            .fetch_all(&mut *tx)
+            .await?;
+    if orders.len() != ids.len()
+        || orders.iter().any(|order| {
+            order.status != input.from_status || versions.get(&order.id) != Some(&order.version)
+        })
+    {
+        return Err(ApiError::conflict(
+            "Objednávky se změnily nebo nemají stejný výchozí stav.",
+        ));
+    }
+    if input.status == "cancelled" {
+        // Reserve all affected stock rows in checkout's product order before restoring any stock.
+        sqlx::query("SELECT id FROM products WHERE id IN (SELECT product_id FROM order_items WHERE order_id=ANY($1) AND tracked_stock) ORDER BY id FOR UPDATE")
+            .bind(&ids).fetch_all(&mut *tx).await?;
+    }
+    for order in &orders {
+        let collecting = input.status == "delivered"
+            && order.payment_status == "unpaid"
+            && order.payment_method != "card";
+        if collecting && !input.confirm_payments {
+            return Err(ApiError::conflict(
+                "Pro doručení potvrďte převzetí všech plateb při rozvozu.",
+            ));
+        }
+        let update = OrderUpdate {
+            status: input.status.clone(),
+            payment_status: if collecting {
+                "paid".to_owned()
+            } else {
+                order.payment_status.clone()
+            },
+            version: order.version,
+        };
+        apply_order_update(&mut tx, admin.id, order, &update).await?;
+    }
+    tx.commit().await?;
+    Ok(Json(json!({ "updated": orders.len() })))
+}
+
+async fn apply_order_update(
+    conn: &mut PgConnection,
+    admin_id: Uuid,
+    old: &Order,
+    input: &OrderUpdate,
+) -> ApiResult<()> {
+    let id = old.id;
     if old.version != input.version {
         return Err(ApiError::conflict(
             "Objednávka se mezitím změnila. Načtěte aktuální údaje.",
         ));
     }
-    validate_transition(
-        &old.payment_method,
-        &old.status,
-        &old.payment_status,
-        &input,
-    )?;
+    validate_transition(&old.payment_method, &old.status, &old.payment_status, input)?;
     if old.status == input.status && old.payment_status == input.payment_status {
-        let order = read_order(&mut tx, id, true).await?;
-        tx.commit().await?;
-        return Ok(Json(order));
+        return Ok(());
     }
     if input.status == "cancelled" {
-        if old.payment_method == "card" && !crate::payments::can_cancel(&mut tx, id).await? {
+        if old.payment_method == "card" && !crate::payments::can_cancel(conn, id).await? {
             return Err(ApiError::conflict(
                 "Online platba ještě může být dokončena. Objednávku lze zrušit až po ověřeném ukončení platby.",
             ));
         }
-        restore_order_stock(&mut tx, id).await?;
+        restore_order_stock(conn, id).await?;
     }
     sqlx::query("UPDATE orders SET status=$2,payment_status=$3,version=version+1,updated_at=now(),stock_restored=($2='cancelled') WHERE id=$1")
-        .bind(id).bind(&input.status).bind(&input.payment_status).execute(&mut *tx).await?;
+        .bind(id).bind(&input.status).bind(&input.payment_status).execute(&mut *conn).await?;
     sqlx::query(
         "INSERT INTO order_history(order_id,status,payment_status,changed_by) VALUES ($1,$2,$3,$4)",
     )
     .bind(id)
     .bind(&input.status)
     .bind(&input.payment_status)
-    .bind(admin.id)
-    .execute(&mut *tx)
+    .bind(admin_id)
+    .execute(&mut *conn)
     .await?;
-    let order = read_order(&mut tx, id, true).await?;
-    if old.status != order.status {
-        let label = status_label(&order.status);
-        let payment_note = if order.payment_status == "paid" {
+    if old.status != input.status {
+        let label = status_label(&input.status);
+        let payment_note = if input.payment_status == "paid" {
             "Platba byla přijata."
-        } else if order.status == "cancelled" {
+        } else if input.status == "cancelled" {
             "Objednávka byla zrušena. Nic neplaťte."
         } else {
             "Platíte až při doručení."
         };
-        mail::enqueue(&mut tx, &order.email, &format!("Objednávka {}: {}", order.number, label),
-            &format!("Vaše objednávka {} má nový stav: {}.\n{}\nPožadované doručení: {} {}\nCelková částka: {}\n\nDěkujeme.",order.number,label,payment_note,order.delivery_date,order.delivery_slot,money(order.total_cents))).await?;
+        mail::enqueue(conn, &old.email, &format!("Objednávka {}: {}", old.number, label),
+            &format!("Vaše objednávka {} má nový stav: {}.\n{}\nPožadované doručení: {} {}\nCelková částka: {}\n\nDěkujeme.",old.number,label,payment_note,old.delivery_date,old.delivery_slot,money(old.total_cents))).await?;
     }
-    tx.commit().await?;
-    Ok(Json(order))
+    Ok(())
 }
 
 #[derive(Serialize, FromRow)]
@@ -1454,6 +1606,7 @@ pub async fn initialize(pool: &PgPool, order_email: &str, seed_demo: bool) -> Ap
         for (name, description, category, tag, weight, price, vegan, ingredients, allergens) in
             products
         {
+            categories::ensure(&mut tx, category).await?;
             let id: i64 = sqlx::query_scalar("INSERT INTO products(name,description,category,tag,weight,price_cents,vegan,ingredients,allergens) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING id")
                 .bind(name).bind(description).bind(category).bind(tag).bind(weight).bind(price).bind(vegan)
                 .bind(ingredients).bind(allergens).fetch_one(&mut *tx).await?;
@@ -1521,11 +1674,31 @@ mod tests {
     }
 
     #[test]
+    fn scheduled_windows_are_canonical_ordered_and_non_overlapping() {
+        let mut windows = ["21:00-24:00", " 08:30 - 09:00 ", "09:00–12:45"].map(String::from);
+        normalize_slots(&mut windows).unwrap();
+        assert_eq!(windows, ["08:30–09:00", "09:00–12:45", "21:00–24:00"]);
+        for invalid in [
+            "24:00-24:00",
+            "10:00-08:00",
+            "7:00-10:10",
+            "07:60-10:00",
+            "🕐-🕛",
+            "07:00-24:01",
+        ] {
+            assert!(normalize_slots(&mut [invalid.to_string()]).is_err());
+        }
+        assert!(normalize_slots(&mut []).is_err());
+        assert!(normalize_slots(&mut ["10:00–11:00", "10:59–16:00"].map(String::from)).is_err());
+    }
+
+    #[test]
     fn shipping_threshold_is_inclusive() {
         let settings = Settings {
             delivery_fee_cents: 4900,
             free_delivery_from_cents: Some(35000),
             order_email: String::new(),
+            delivery_slots: None,
             version: 1,
         };
         assert_eq!(delivery_fee(34999, &settings), 4900);
@@ -1588,7 +1761,7 @@ mod tests {
         assert!(
             validate_transition(
                 "cash_on_delivery",
-                "preparing",
+                "confirmed",
                 "unpaid",
                 &update("cancelled", "unpaid")
             )
@@ -1693,8 +1866,7 @@ mod tests {
     fn online_payment_stays_paid_while_order_advances() {
         for (before, after) in [
             ("new", "confirmed"),
-            ("confirmed", "preparing"),
-            ("preparing", "out_for_delivery"),
+            ("confirmed", "out_for_delivery"),
             ("out_for_delivery", "delivered"),
         ] {
             let mut update = OrderUpdate {
@@ -1750,7 +1922,7 @@ mod tests {
         };
         assert!(validate_transition("card", "awaiting_payment", "unpaid", &update).is_err());
         for payment_method in ["cash_on_delivery", "card_on_delivery"] {
-            for before in ["new", "confirmed", "preparing", "out_for_delivery"] {
+            for before in ["new", "confirmed", "out_for_delivery"] {
                 assert!(
                     validate_transition(payment_method, before, "unpaid", &update).is_err(),
                     "delivery order expired from {before}"
@@ -1761,8 +1933,15 @@ mod tests {
 
     #[test]
     fn duplicate_cart_items_and_invalid_addresses_are_rejected() {
-        let mut input: OrderInput = serde_json::from_value(json!({"idempotency_key":Uuid::new_v4(),"email":"Guest@Example.cz ","street":"Test 1","city":"Praha","postal_code":"110 00","delivery_date":"2026-10-22","delivery_slot":SLOTS[0],"payment_method":"cash_on_delivery","items":[{"product_id":1,"quantity":2}],"expected_total_cents":23800})).unwrap();
+        let mut input: OrderInput = serde_json::from_value(json!({"idempotency_key":Uuid::new_v4(),"email":"Guest@Example.cz ","street":"Test 1","city":"Praha","postal_code":"110 00","delivery_date":"2026-10-22","delivery_slot":"07:00–09:00","payment_method":"cash_on_delivery","items":[{"product_id":1,"quantity":2}],"expected_total_cents":23800})).unwrap();
         assert!(input.normalize().is_ok());
+        assert!(input.validate_contact().is_err());
+        input.name = "Jana Nová".into();
+        assert!(input.validate_contact().is_err());
+        input.phone = "bez čísla".into();
+        assert!(input.validate_contact().is_err());
+        input.phone = "+420 777 123 456".into();
+        assert!(input.validate_contact().is_ok());
         assert_eq!(input.email, "guest@example.cz");
         assert_eq!(input.postal_code, "11000");
         input.payment_method = "card".to_owned();

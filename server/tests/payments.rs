@@ -362,6 +362,7 @@ impl TestApp {
         };
         json!({
             "idempotency_key": Uuid::new_v4(), "email": "customer@example.test",
+            "name": "Anna Testerová", "phone": "+420 777 123 456",
             "street": "Testovací 12", "city": "Praha", "postal_code": "11000",
             "delivery_date": options["dates"][0]["value"], "delivery_slot": options["slots"][0],
             "payment_method": payment_method,

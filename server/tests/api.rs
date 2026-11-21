@@ -17,6 +17,112 @@ struct TestApp {
 }
 
 #[tokio::test]
+#[ignore = "requires real PostgreSQL via TEST_DATABASE_URL"]
+async fn upgrade_preserves_existing_products_photos_orders_and_settings() {
+    let database_url = std::env::var("TEST_DATABASE_URL").unwrap();
+    let database = PgPoolOptions::new()
+        .max_connections(2)
+        .connect(&database_url)
+        .await
+        .unwrap();
+    let schema = format!("brunch_upgrade_{}", Uuid::new_v4().simple());
+    sqlx::query(&format!("CREATE SCHEMA {schema}"))
+        .execute(&database)
+        .await
+        .unwrap();
+    let options = sqlx::postgres::PgConnectOptions::from_str(&database_url)
+        .unwrap()
+        .options([("search_path", schema.as_str())]);
+    let pool = PgPoolOptions::new()
+        .max_connections(2)
+        .connect_with(options)
+        .await
+        .unwrap();
+    let mut legacy = sqlx::migrate!();
+    legacy.migrations = legacy
+        .iter()
+        .filter(|migration| migration.version <= 11)
+        .cloned()
+        .collect::<Vec<_>>()
+        .into();
+    legacy.run(&pool).await.unwrap();
+    sqlx::raw_sql(r#"
+        INSERT INTO users(id,email) VALUES ('00000000-0000-0000-0000-000000000001','staff@example.test');
+        INSERT INTO images(id,content_type,data,created_by) VALUES
+            ('00000000-0000-0000-0000-000000000002','image/jpeg',decode('ffd8ffd9','hex'),'00000000-0000-0000-0000-000000000001');
+        INSERT INTO products(name,category,price_cents,image,stock) VALUES
+            ('Původní zboží','Pečivo',10450,'/api/images/00000000-0000-0000-0000-000000000002',31),
+            ('Další pečivo','Pečivo',9990,'',NULL),('Bez kategorie','',5500,'',NULL);
+        INSERT INTO product_prices(product_id,price_cents) VALUES (1,10450),(2,9990),(3,5500);
+        INSERT INTO shop_settings(id,delivery_fee_cents,order_email) VALUES (1,2600,'staff@example.test');
+        INSERT INTO delivery_areas(postal_code,label) VALUES ('11000','Praha');
+        INSERT INTO orders(id,idempotency_key,request_payload,email,street,city,postal_code,delivery_date,delivery_slot,payment_method,status,subtotal_cents,delivery_fee_cents,total_cents) VALUES
+            ('00000000-0000-0000-0000-000000000003','00000000-0000-0000-0000-000000000004','{}','guest@example.test','Dlouhá','Praha','11000','2026-11-24','07:00–09:00','card_on_delivery','preparing',10450,2600,13050);
+        INSERT INTO order_items(order_id,product_id,name,quantity,unit_price_cents,total_cents,tracked_stock) VALUES
+            ('00000000-0000-0000-0000-000000000003',1,'Původní zboží',1,10450,10450,true);
+        INSERT INTO order_history(order_id,status,payment_status) VALUES
+            ('00000000-0000-0000-0000-000000000003','preparing','unpaid');
+    "#).execute(&pool).await.unwrap();
+
+    // Compare every existing field, including image bytes and historical prices.
+    let comparisons = [
+        ("products", " - 'minimum_quantity'"),
+        ("images", ""),
+        ("product_prices", ""),
+        ("order_items", ""),
+        ("shop_settings", " - 'delivery_slots'"),
+        ("delivery_areas", " - 'delivery_slots'"),
+        ("orders", " - 'status' - 'version' - 'updated_at'"),
+    ];
+    let mut before = Vec::new();
+    for (table, exclusions) in comparisons {
+        let query =
+            format!("SELECT jsonb_agg(to_jsonb(p){exclusions} ORDER BY p.id) FROM {table} p");
+        before.push(
+            sqlx::query_scalar::<_, Value>(&query)
+                .fetch_one(&pool)
+                .await
+                .unwrap(),
+        );
+    }
+    migrate(&pool).await.unwrap();
+    commerce::initialize(&pool, "other@example.test", false)
+        .await
+        .unwrap();
+    // A repeated application start must also preserve migrated data and history.
+    migrate(&pool).await.unwrap();
+    for ((table, exclusions), expected) in comparisons.into_iter().zip(before) {
+        let query =
+            format!("SELECT jsonb_agg(to_jsonb(p){exclusions} ORDER BY p.id) FROM {table} p");
+        let actual: Value = sqlx::query_scalar(&query).fetch_one(&pool).await.unwrap();
+        assert_eq!(actual, expected, "upgrade changed existing {table} fields");
+    }
+    let state: (String, i64) = sqlx::query_as("SELECT status,version FROM orders")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(state, ("confirmed".into(), 2));
+    let history: Vec<String> = sqlx::query_scalar("SELECT status FROM order_history ORDER BY id")
+        .fetch_all(&pool)
+        .await
+        .unwrap();
+    assert_eq!(history, ["preparing", "confirmed"]);
+    let categories: Vec<String> = sqlx::query_scalar("SELECT name FROM categories ORDER BY name")
+        .fetch_all(&pool)
+        .await
+        .unwrap();
+    assert_eq!(categories, ["", "Pečivo"]);
+    let defaults: (bool, bool, bool) = sqlx::query_as("SELECT (SELECT bool_and(minimum_quantity=0) FROM products), (SELECT cardinality(delivery_slots)=3 FROM shop_settings), (SELECT delivery_slots IS NULL FROM delivery_areas)").fetch_one(&pool).await.unwrap();
+    assert_eq!(defaults, (true, true, true));
+    pool.close().await;
+    sqlx::query(&format!("DROP SCHEMA {schema} CASCADE"))
+        .execute(&database)
+        .await
+        .unwrap();
+    database.close().await;
+}
+
+#[tokio::test]
 #[ignore = "requires TEST_DATABASE_URL pointing to local PostgreSQL"]
 async fn production_initialization_creates_settings_without_demo_and_preserves_existing_data() {
     let database_url = std::env::var("TEST_DATABASE_URL").expect("TEST_DATABASE_URL is required");
@@ -82,6 +188,81 @@ fn product_input(value: &Value) -> Value {
     let mut value = value.clone();
     value.as_object_mut().unwrap().remove("id");
     value
+}
+
+#[tokio::test]
+#[ignore = "requires real PostgreSQL via TEST_DATABASE_URL"]
+async fn broadcast_uses_distinct_order_addresses_and_retries_atomically() {
+    let app = TestApp::new().await;
+    let guest = app.client();
+    let admin = app.login("admin@example.test").await;
+    let non_buyer = app.login("account-only@example.test").await;
+    let route = "/api/admin/mail/broadcast";
+    let payload = json!({"idempotency_key":Uuid::new_v4(),"subject":"Nové rozvozové hodiny","body":"V pondělí rozvážíme od osmi."});
+    app.call(
+        &non_buyer,
+        Method::POST,
+        route,
+        Some(&payload),
+        StatusCode::FORBIDDEN,
+    )
+    .await;
+    app.call(&guest, Method::GET, route, None, StatusCode::UNAUTHORIZED)
+        .await;
+    assert_eq!(app.get(&admin, route).await["recipient_count"], 0);
+    app.call(
+        &admin,
+        Method::POST,
+        route,
+        Some(&payload),
+        StatusCode::BAD_REQUEST,
+    )
+    .await;
+
+    let products = app.get(&guest, "/api/products").await;
+    let mut order = app
+        .order(&guest, "guest@example.test", &products[0], 1)
+        .await;
+    order["name"] = json!("Anna Testerová");
+    order["phone"] = json!("+420 777 123 456");
+    for email in [
+        "guest@example.test",
+        "Guest@Example.Test",
+        "other@example.test",
+    ] {
+        order["idempotency_key"] = json!(Uuid::new_v4());
+        order["email"] = json!(email);
+        app.post(&guest, "/api/orders", &order).await;
+    }
+    assert_eq!(app.get(&admin, route).await["recipient_count"], 2);
+    let (first, concurrent) = tokio::join!(
+        app.post(&admin, route, &payload),
+        app.post(&admin, route, &payload)
+    );
+    assert_eq!(first, json!({"recipient_count":2}));
+    assert_eq!(concurrent, first);
+    order["idempotency_key"] = json!(Uuid::new_v4());
+    order["email"] = json!("later@example.test");
+    app.post(&guest, "/api/orders", &order).await;
+    assert_eq!(app.post(&admin, route, &payload).await, first);
+    let mut changed = payload.clone();
+    changed["body"] = json!("Jiná zpráva");
+    app.call(
+        &admin,
+        Method::POST,
+        route,
+        Some(&changed),
+        StatusCode::CONFLICT,
+    )
+    .await;
+    let recipients: Vec<String> = sqlx::query_scalar(
+        "SELECT to_email FROM outbox WHERE broadcast_id IS NOT NULL AND status='pending' ORDER BY to_email",
+    )
+    .fetch_all(&app.pool)
+    .await
+    .unwrap();
+    assert_eq!(recipients, ["guest@example.test", "other@example.test"]);
+    app.close().await;
 }
 
 impl TestApp {
@@ -232,7 +413,7 @@ impl TestApp {
             settings["delivery_fee_cents"].as_i64().unwrap()
         };
         json!({
-            "idempotency_key":Uuid::new_v4(),"email":email,"street":"Testovací 12",
+            "idempotency_key":Uuid::new_v4(),"email":email,"name":"Anna Testerová","phone":"+420 777 123 456","street":"Testovací 12",
             "city":"Praha","postal_code":"110 00","notes":"3. patro, výtah vlevo. Zvoňte Novák.",
             "delivery_date":options["dates"][0]["value"],"delivery_slot":options["slots"][0],
             "payment_method":"card_on_delivery","items":[{"product_id":product["id"],"quantity":quantity}],
@@ -879,6 +1060,135 @@ async fn customer_order_isolation_and_all_admin_routes_require_role() {
 
 #[tokio::test]
 #[ignore = "requires real PostgreSQL via TEST_DATABASE_URL"]
+async fn minimum_order_quantity_and_category_removal_preserve_catalog_and_orders() {
+    let app = TestApp::new().await;
+    let admin = app.login("admin@example.test").await;
+    let guest = app.client();
+    let categories = "/api/admin/categories";
+    app.call(
+        &guest,
+        Method::GET,
+        categories,
+        None,
+        StatusCode::UNAUTHORIZED,
+    )
+    .await;
+    let category = app
+        .post(&admin, categories, &json!({"name":"Snídaňové boxy"}))
+        .await;
+    let category_path = format!("{categories}/{}", category["id"]);
+    let product = app
+        .post(
+            &admin,
+            "/api/admin/products",
+            &json!({
+                "name":"Mini koláč", "category":"Snídaňové boxy", "stock":12, "minimum_quantity":6,
+                "price_cents":2200, "image":"/images/mini.jpg"
+            }),
+        )
+        .await;
+    let product_path = format!("/api/admin/products/{}", product["id"]);
+    let mut insufficient = app
+        .order(&guest, "customer@example.test", &product, 5)
+        .await;
+    insufficient["name"] = json!("Jana Nová");
+    insufficient["phone"] = json!("+420 777 123 456");
+    app.call(
+        &guest,
+        Method::POST,
+        "/api/orders",
+        Some(&insufficient),
+        StatusCode::CONFLICT,
+    )
+    .await;
+    assert_eq!(app.count("orders").await, 0);
+    let mut exact = app
+        .order(&guest, "customer@example.test", &product, 6)
+        .await;
+    exact["name"] = insufficient["name"].clone();
+    exact["phone"] = insufficient["phone"].clone();
+    let order = app.post(&guest, "/api/orders", &exact).await;
+
+    app.call(
+        &admin,
+        Method::PUT,
+        &category_path,
+        Some(&json!({"name":"Krabičky","version":1})),
+        StatusCode::OK,
+    )
+    .await;
+    let changed = app.get(&guest, "/api/products").await;
+    let updated = changed
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|p| p["id"] == product["id"])
+        .unwrap();
+    assert_eq!(updated["category"], "Krabičky");
+    app.call(
+        &admin,
+        Method::DELETE,
+        &category_path,
+        Some(&json!({"version":1})),
+        StatusCode::CONFLICT,
+    )
+    .await;
+    app.call(
+        &admin,
+        Method::DELETE,
+        &category_path,
+        Some(&json!({"version":2})),
+        StatusCode::OK,
+    )
+    .await;
+    app.call(
+        &admin,
+        Method::PUT,
+        &product_path,
+        Some(&product_input(updated)),
+        StatusCode::CONFLICT,
+    )
+    .await;
+    let catalog = app.get(&guest, "/api/products").await;
+    let retained = catalog
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|p| p["id"] == product["id"])
+        .unwrap();
+    assert_eq!(retained["category"], "");
+    assert_eq!(retained["stock"], 6);
+    for field in [
+        "id",
+        "name",
+        "image",
+        "price_cents",
+        "minimum_quantity",
+        "active",
+    ] {
+        assert_eq!(retained[field], product[field]);
+    }
+    let remaining = app.get(&admin, categories).await;
+    assert!(
+        !remaining
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|c| c["name"] == "Krabičky")
+    );
+    let receipt = app
+        .get(
+            &admin,
+            &format!("/api/admin/orders/{}", order["id"].as_str().unwrap()),
+        )
+        .await;
+    assert_eq!(receipt["items"][0]["quantity"], 6);
+    assert_eq!(receipt["items"][0]["product_id"], product["id"]);
+    app.close().await;
+}
+
+#[tokio::test]
+#[ignore = "requires real PostgreSQL via TEST_DATABASE_URL"]
 async fn catalog_price_history_delivery_settings_conflicts_and_mail_retry() {
     let app = TestApp::new().await;
     let admin = app.login("admin@example.test").await;
@@ -1062,8 +1372,8 @@ async fn order_state_machine_payment_and_audit_history() {
         StatusCode::CONFLICT,
     )
     .await;
-    for status in ["confirmed", "preparing", "out_for_delivery", "delivered"] {
-        if status == "preparing" {
+    for status in ["confirmed", "out_for_delivery", "delivered"] {
+        if status == "confirmed" {
             let premature =
                 json!({"status":status,"payment_status":"paid","version":order["version"]});
             app.call(
@@ -1091,7 +1401,7 @@ async fn order_state_machine_payment_and_audit_history() {
     .await;
     let detail = app.get(&admin, &path).await;
     assert_eq!(detail["payment_method"], "cash_on_delivery");
-    assert_eq!(detail["history"].as_array().unwrap().len(), 5);
+    assert_eq!(detail["history"].as_array().unwrap().len(), 4);
     assert_eq!(detail["payment_status"], "paid");
     let filtered = app
         .get(
@@ -1109,7 +1419,7 @@ async fn order_state_machine_payment_and_audit_history() {
         .await;
     let mut order = app.post(&guest, "/api/orders", &input).await;
     let path = format!("/api/admin/orders/{}", order["id"].as_str().unwrap());
-    for status in ["confirmed", "preparing", "out_for_delivery"] {
+    for status in ["confirmed", "out_for_delivery"] {
         let update = json!({"status":status,"payment_status":if status == "out_for_delivery" {"paid"} else {"unpaid"},"version":order["version"]});
         order = app
             .call(&admin, Method::PATCH, &path, Some(&update), StatusCode::OK)
@@ -1138,6 +1448,9 @@ async fn checkout_rejects_invalid_input_without_order_or_email_side_effects() {
         .await;
     let cases = [
         ("email", json!("invalid")),
+        ("name", json!("  ")),
+        ("phone", json!("")),
+        ("phone", json!("chybí telefon")),
         ("street", json!("  ")),
         ("city", json!("")),
         ("postal_code", json!("abc")),
@@ -1383,6 +1696,102 @@ async fn delivery_area_management_permissions_normalization_and_conflicts() {
 
 #[tokio::test]
 #[ignore = "requires real PostgreSQL via TEST_DATABASE_URL"]
+async fn any_future_workday_uses_current_postal_or_default_delivery_slots() {
+    use chrono::{Datelike, NaiveDate, Utc, Weekday};
+    let app = TestApp::new().await;
+    let admin = app.login("admin@example.test").await;
+    let guest = app.client();
+    let products = app.get(&guest, "/api/products").await;
+    let mut input = app
+        .order(&guest, "future@example.test", &products[0], 1)
+        .await;
+    let mut settings = app.get(&admin, "/api/admin/settings").await;
+    settings["delivery_slots"] = json!(["06:30-08:45"]);
+    app.call(
+        &admin,
+        Method::PUT,
+        "/api/admin/settings",
+        Some(&settings),
+        StatusCode::OK,
+    )
+    .await;
+    let mut area = app
+        .post(
+            &admin,
+            "/api/admin/delivery-areas",
+            &json!({
+                "postal_code":"12000", "delivery_slots":["18:00-20:00"]
+            }),
+        )
+        .await;
+    let options = app.get(&guest, "/api/delivery-options").await;
+    assert_eq!(options["slots"], json!(["06:30–08:45"]));
+    assert_eq!(options["postal_slots"], json!({"12000":["18:00–20:00"]}));
+    let year = Utc::now().year() + 2;
+    let workday = (1..=7)
+        .map(|day| NaiveDate::from_ymd_opt(year, 6, day).unwrap())
+        .find(|date| date.weekday() == Weekday::Mon)
+        .unwrap();
+    input["delivery_date"] = json!(workday);
+    input["delivery_slot"] = json!("18:00–20:00");
+    app.call(
+        &guest,
+        Method::POST,
+        "/api/orders",
+        Some(&input),
+        StatusCode::BAD_REQUEST,
+    )
+    .await;
+    input["postal_code"] = json!("12000");
+    let created = app.post(&guest, "/api/orders", &input).await;
+    assert_eq!(created["delivery_date"], json!(workday));
+    let id = area
+        .as_object_mut()
+        .unwrap()
+        .remove("id")
+        .unwrap()
+        .as_i64()
+        .unwrap();
+    area["delivery_slots"] = Value::Null;
+    app.call(
+        &admin,
+        Method::PUT,
+        &format!("/api/admin/delivery-areas/{id}"),
+        Some(&area),
+        StatusCode::OK,
+    )
+    .await;
+    assert_eq!(
+        app.post(&guest, "/api/orders", &input).await["id"],
+        created["id"]
+    );
+    input["idempotency_key"] = json!(Uuid::new_v4());
+    app.call(
+        &guest,
+        Method::POST,
+        "/api/orders",
+        Some(&input),
+        StatusCode::BAD_REQUEST,
+    )
+    .await;
+    input["delivery_slot"] = json!("06:30–08:45");
+    let sunday = workday.pred_opt().unwrap();
+    input["delivery_date"] = json!(sunday);
+    app.call(
+        &guest,
+        Method::POST,
+        "/api/orders",
+        Some(&input),
+        StatusCode::BAD_REQUEST,
+    )
+    .await;
+    input["delivery_date"] = json!(workday);
+    app.post(&guest, "/api/orders", &input).await;
+    app.close().await;
+}
+
+#[tokio::test]
+#[ignore = "requires real PostgreSQL via TEST_DATABASE_URL"]
 async fn delivery_allowlist_blocks_new_orders_preserves_replays_and_has_no_side_effects() {
     let app = TestApp::with_delivery_area(false).await;
     let guest = app.client();
@@ -1474,5 +1883,170 @@ async fn delivery_allowlist_blocks_new_orders_preserves_replays_and_has_no_side_
     let second = app.post(&guest, "/api/orders", &input).await;
     assert_ne!(second["id"], created["id"]);
     assert_eq!(app.count("orders").await, 2);
+    app.close().await;
+}
+
+#[tokio::test]
+#[ignore = "requires real PostgreSQL via TEST_DATABASE_URL"]
+async fn bulk_order_updates_apply_once_and_require_matching_states_and_versions() {
+    let app = TestApp::new().await;
+    let guest = app.client();
+    let admin = app.login("admin@example.test").await;
+    let products = app.get(&guest, "/api/products").await;
+    let mut selected = Vec::new();
+    for _ in 0..2 {
+        let input = app
+            .order(&guest, "bulk@example.test", &products[0], 1)
+            .await;
+        let order = app.post(&guest, "/api/orders", &input).await;
+        selected.push(json!({"id": order["id"], "version": order["version"]}));
+    }
+    let endpoint = "/api/admin/orders/bulk-status";
+    let change = |orders: &[Value], from: &str, to: &str| json!({"orders": orders, "from_status": from, "status": to});
+    let first = change(&selected[0..1], "new", "confirmed");
+    app.call(
+        &guest,
+        Method::POST,
+        endpoint,
+        Some(&first),
+        StatusCode::UNAUTHORIZED,
+    )
+    .await;
+    app.post(&admin, endpoint, &first).await;
+    let original = change(&selected, "new", "confirmed");
+    app.call(
+        &admin,
+        Method::POST,
+        endpoint,
+        Some(&original),
+        StatusCode::CONFLICT,
+    )
+    .await;
+    selected[0]["version"] = json!(2);
+    // Even fresh versions may not combine different starting states.
+    app.call(
+        &admin,
+        Method::POST,
+        endpoint,
+        Some(&change(&selected, "new", "confirmed")),
+        StatusCode::CONFLICT,
+    )
+    .await;
+    app.post(
+        &admin,
+        endpoint,
+        &change(&selected[1..], "new", "confirmed"),
+    )
+    .await;
+    selected[1]["version"] = json!(2);
+    let advance = change(&selected, "confirmed", "out_for_delivery");
+    assert_eq!(app.post(&admin, endpoint, &advance).await["updated"], 2);
+    let count = app.count("outbox").await;
+    app.call(
+        &admin,
+        Method::POST,
+        endpoint,
+        Some(&advance),
+        StatusCode::CONFLICT,
+    )
+    .await;
+    for row in &mut selected {
+        row["version"] = json!(3);
+    }
+    let mut finish = change(&selected, "out_for_delivery", "delivered");
+    app.call(
+        &admin,
+        Method::POST,
+        endpoint,
+        Some(&finish),
+        StatusCode::CONFLICT,
+    )
+    .await;
+    assert_eq!(app.count("outbox").await, count);
+    finish["confirm_payments"] = json!(true);
+    assert_eq!(app.post(&admin, endpoint, &finish).await["updated"], 2);
+    assert_eq!(app.count("outbox").await, count + 2);
+    for row in selected {
+        let detail = app
+            .get(
+                &admin,
+                &format!("/api/admin/orders/{}", row["id"].as_str().unwrap()),
+            )
+            .await;
+        assert_eq!(detail["status"], "delivered");
+        assert_eq!(detail["payment_status"], "paid");
+        assert_eq!(detail["history"].as_array().unwrap().len(), 4);
+    }
+    app.close().await;
+}
+
+#[tokio::test]
+#[ignore = "requires real PostgreSQL via TEST_DATABASE_URL"]
+async fn issued_invoice_is_private_and_preserves_original_supplier_recipient_and_prices() {
+    let app = TestApp::new().await;
+    let guest = app.client();
+    let admin = app.login("admin@example.test").await;
+    let product = &app.get(&guest, "/api/products").await[0];
+    let input = app.order(&guest, "invoice@example.test", product, 1).await;
+    let order = app.post(&guest, "/api/orders", &input).await;
+    let endpoint = format!(
+        "/api/admin/orders/{}/invoice",
+        order["id"].as_str().unwrap()
+    );
+    let route = "/api/admin/invoice-supplier";
+    let mut supplier = app.get(&admin, route).await;
+    supplier["name"] = json!("Testovací dodavatel");
+    supplier["address"] = json!("Praha 1");
+    supplier["company_id"] = json!("12345678");
+    supplier["tax_id"] = json!("CZ12345678");
+    supplier["vat_payer"] = json!(true);
+    let mut supplier = app
+        .call(&admin, Method::PUT, route, Some(&supplier), StatusCode::OK)
+        .await;
+    let mut issue = json!({"supplier_version":supplier["version"], "customer_name":"Eva", "customer_address":"Praha", "customer_company_id":"", "customer_tax_id":"", "supply_date":order["delivery_date"], "due_date":order["delivery_date"], "vat_rates":{}});
+    assert!(app.get(&admin, &endpoint).await.is_null());
+    app.call(
+        &admin,
+        Method::POST,
+        &endpoint,
+        Some(&issue),
+        StatusCode::BAD_REQUEST,
+    )
+    .await;
+    issue["vat_rates"][product["id"].to_string()] = json!(1200);
+    if order["delivery_fee_cents"].as_i64().unwrap() > 0 {
+        issue["vat_rates"]["delivery"] = json!(1200);
+    }
+    app.call(
+        &guest,
+        Method::POST,
+        &endpoint,
+        Some(&issue),
+        StatusCode::UNAUTHORIZED,
+    )
+    .await;
+    let (first, second) = tokio::join!(
+        app.post(&admin, &endpoint, &issue),
+        app.post(&admin, &endpoint, &issue)
+    );
+    assert_eq!(first, second, "concurrent requests must issue one invoice");
+    assert_eq!(first["total_cents"], order["total_cents"]);
+    assert_eq!(
+        first["lines"][0]["unit_price_cents"],
+        product["price_cents"]
+    );
+    assert!(first["number"].as_str().unwrap().starts_with("FA-"));
+    supplier["name"] = json!("Změněné údaje");
+    app.call(&admin, Method::PUT, route, Some(&supplier), StatusCode::OK)
+        .await;
+    assert_eq!(app.get(&admin, &endpoint).await, first);
+    app.call(
+        &guest,
+        Method::GET,
+        &endpoint,
+        None,
+        StatusCode::UNAUTHORIZED,
+    )
+    .await;
     app.close().await;
 }

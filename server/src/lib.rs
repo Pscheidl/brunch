@@ -1,3 +1,4 @@
+mod address;
 pub mod auth;
 pub mod commerce;
 pub mod config;
@@ -82,6 +83,7 @@ pub fn app(state: AppState) -> Router {
     let dist = state.config.dist_dir.clone();
     Router::new()
         .route("/api/health", get(health))
+        .merge(address::routes())
         .merge(auth::routes())
         .merge(commerce::routes())
         .merge(mail::routes())
@@ -129,10 +131,16 @@ async fn security(State(state): State<AppState>, request: Request, next: Next) -
         {
             return ApiError::forbidden("Požadavek pochází z jiné stránky.").into_response();
         }
-        if !headers
-            .get(header::CONTENT_TYPE)
-            .and_then(|x| x.to_str().ok())
-            .is_some_and(|x| x.split(';').next() == Some("application/json"))
+        let image_upload = request.method() == Method::POST
+            && request.uri().path() == "/api/admin/images"
+            && headers
+                .get(header::CONTENT_TYPE)
+                .is_some_and(|value| value == "application/octet-stream");
+        if !image_upload
+            && !headers
+                .get(header::CONTENT_TYPE)
+                .and_then(|x| x.to_str().ok())
+                .is_some_and(|x| x.split(';').next() == Some("application/json"))
         {
             return ApiError::bad_request("Požadavek musí obsahovat JSON.").into_response();
         }

@@ -17,7 +17,24 @@ pub struct Product {
     pub image: String,
     pub active: bool,
     pub stock: Option<i32>,
+    #[serde(default)]
+    pub minimum_quantity: u16,
     pub version: i64,
+}
+
+impl Product {
+    pub fn minimum(&self) -> u16 {
+        self.minimum_quantity.max(1)
+    }
+
+    pub fn maximum(&self) -> u16 {
+        self.stock.unwrap_or(99).clamp(0, 99) as u16
+    }
+
+    pub fn orderable_quantity(&self, requested: u16) -> Option<u16> {
+        let (min, max) = (self.minimum(), self.maximum());
+        (self.active && min <= max).then(|| requested.clamp(min, max))
+    }
 }
 
 #[derive(Clone, Debug, Default, Deserialize)]
@@ -33,6 +50,8 @@ pub struct Settings {
 pub struct DeliveryOptions {
     pub dates: Vec<DeliveryDate>,
     pub slots: Vec<String>,
+    #[serde(default)]
+    pub postal_slots: std::collections::BTreeMap<String, Vec<String>>,
 }
 #[derive(Clone, Debug, Deserialize)]
 pub struct DeliveryDate {
@@ -181,9 +200,13 @@ pub fn parse_cart(value: &str) -> Cart {
 pub fn reconcile(cart: &mut Cart, products: &[Product]) -> bool {
     let previous = cart.clone();
     cart.retain(|id, count| {
-        if let Some(p) = products.iter().find(|p| p.id == *id && p.active) {
-            *count = (*count).min(p.stock.unwrap_or(99).clamp(0, 99) as u16);
-            *count > 0
+        if let Some(quantity) = products
+            .iter()
+            .find(|p| p.id == *id)
+            .and_then(|p| p.orderable_quantity(*count))
+        {
+            *count = quantity;
+            true
         } else {
             false
         }
@@ -202,7 +225,6 @@ pub fn status_label(value: &str) -> &'static str {
         "awaiting_payment" => "Čeká na zaplacení",
         "new" => "Přijato",
         "confirmed" => "Potvrzeno",
-        "preparing" => "Připravujeme",
         "out_for_delivery" => "Na cestě",
         "delivered" => "Doručeno",
         "cancelled" => "Zrušeno",
@@ -229,6 +251,7 @@ mod tests {
             image: String::new(),
             active: true,
             stock,
+            minimum_quantity: 0,
             version: 1,
         }
     }
@@ -280,6 +303,23 @@ mod tests {
         assert!(!delivery_available("12000", &settings));
         assert!(!delivery_available("11x00", &settings));
     }
+    #[test]
+    fn minimum_applies_to_first_add_reorder_and_restored_carts() {
+        let mut snack = product(18, 100, Some(8));
+        assert_eq!(snack.orderable_quantity(1), Some(1));
+        snack.minimum_quantity = 5;
+        assert_eq!(snack.orderable_quantity(1), Some(5));
+        assert_eq!(snack.orderable_quantity(6), Some(6));
+        assert_eq!(snack.orderable_quantity(10), Some(8));
+        let mut cart = Cart::from([(18, 2)]);
+        assert!(reconcile(&mut cart, std::slice::from_ref(&snack)));
+        assert_eq!(cart[&18], 5);
+        snack.stock = Some(4);
+        assert_eq!(snack.orderable_quantity(1), None);
+        assert!(reconcile(&mut cart, &[snack]));
+        assert!(cart.is_empty());
+    }
+
     #[test]
     fn persisted_cart_recovers_safely_and_reconciles_stock() {
         assert!(parse_cart("broken").is_empty());

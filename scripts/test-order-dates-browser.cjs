@@ -10,6 +10,7 @@ const results = []
 const errors = []
 const makeOrder = (index, overrides = {}) => ({
   id: `00000000-0000-4000-8000-${String(index).padStart(12, '0')}`,
+  version: 1,
   number: `BR-MATCH-${String(index).padStart(3, '0')}`,
   created_at: '2026-10-24T08:00:00Z',
   delivery_date: '2026-11-02', delivery_slot: '09:00–10:00',
@@ -63,6 +64,11 @@ async function setup(browser, base, options = {}) {
     const json = (body, status = 200) => route.fulfill({ status, contentType: 'application/json', body: JSON.stringify(body) })
     if (url.pathname === '/api/auth/me') return json({ user: { id: 'admin', email: 'admin@example.test', is_admin: true } })
     if (url.pathname === '/api/admin/mail') return json([])
+    if (url.pathname === '/api/admin/mail/broadcast') return json({ recipient_count: 0 })
+    if (url.pathname === '/api/admin/orders/bulk-status') {
+      api.bulk = route.request().postDataJSON()
+      return json({ updated: api.bulk.orders.length })
+    }
     if (url.pathname === '/api/admin/orders') {
       const query = Object.fromEntries(url.searchParams)
       api.requests.push(query)
@@ -146,8 +152,27 @@ async function main() {
       assert.equal(await page.getByLabel('Vyhledat objednávku', { exact: true }).inputValue(), 'MATCH')
       await listAction(test, () => page.getByLabel('Den doručení', { exact: true }).fill('2026-11-03'), { ...expected, delivery_date: '2026-11-03' })
       assert.equal(await page.locator('tbody tr').count(), 1)
-      await page.getByRole('cell', { name: 'BR-MATCH-056', exact: false }).waitFor()
+      await page.getByText('BR-MATCH-056', { exact: true }).waitFor()
       await page.screenshot({ path: path.join(output, 'filtered-orders-desktop.png'), fullPage: true })
+    })
+
+    await run(browser, base, 'Bulk updates select one current state and use the displayed versions', async test => {
+      const { page, api } = test
+      await page.getByLabel('Vyhledat objednávku', { exact: true }).fill('MATCH-05')
+      await page.getByRole('button', { name: 'Vyhledat', exact: true }).click()
+      const checkbox = i => page.getByRole('checkbox', { name: `Vybrat objednávku BR-MATCH-${i}`, exact: true })
+      await checkbox('050').check()
+      assert.ok(await checkbox('057').isDisabled(), 'another starting status cannot be selected')
+      await checkbox('051').check()
+      await page.getByLabel('Nový stav').selectOption('confirmed')
+      page.once('dialog', prompt => prompt.accept())
+      const update = page.waitForResponse(response => response.url().endsWith('/api/admin/orders/bulk-status'))
+      await page.getByRole('button', { name: 'Změnit stav vybraných' }).click()
+      await update
+      assert.deepEqual(api.bulk, {
+        orders: [orders[49], orders[50]].map(({ id, version }) => ({ id, version })),
+        from_status: 'new', status: 'confirmed', confirm_payments: false
+      })
     })
 
     await run(browser, base, 'Empty delivery day and clearing shortcuts preserve other filters and reset pagination', async test => {

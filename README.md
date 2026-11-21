@@ -6,8 +6,8 @@ Obchod s rozvozem svačin. Frontend používá Rust, Leptos CSR a Trunk. Backend
 
 - Dynamický katalog, kategorie, rostlinný filtr, složení a alergeny, dostupné množství a košík zachovaný po obnovení stránky.
 - Nabídka zboží a přidávání do košíku jsou dostupné i bez PSČ. Povolené PSČ je nutné až pro dokončení objednávky.
-- Nákup bez registrace. Povinné jsou e-mail, ulice, město a PSČ. Jméno, telefon, firma a pokyny pro kurýra jsou volitelné.
-- Výběr požadovaného dne a časového okna. Nabízejí se nejbližší tři pracovní dny podle pražského času, bez českých státních svátků.
+- Nákup bez registrace. Povinné jsou jméno příjemce, telefon, e-mail a doručovací adresa. Návrhy adres z RÚIAN doplní ulici, město a PSČ. Všechna pole lze vyplnit i ručně. Firma a pokyny pro kurýra jsou volitelné.
+- Kalendář umožňuje vybrat kterýkoli pracovní den od nejbližšího následujícího pracovního dne podle pražského času. Víkendy a české svátky jsou uzavřené. V administraci lze nastavit výchozí časová okna rozvozu a přepsat je u jednotlivých PSČ.
 - Platba kartou přes terminál při doručení, hotově při doručení nebo online přes Teya Hosted Checkout. Online platba se nabízí až po bezpečném nastavení brány podle `docs/teya-payments.md`.
 - Server vždy spočítá cenu z databáze. Změnu ceny nebo dopravy mezi výběrem a odesláním musí zákazník znovu potvrdit.
 - Objednávka, její položky, odečet skladu a e-mailová fronta se uloží jednou transakcí. Opakovaný požadavek se stejným klíčem nevytvoří další objednávku.
@@ -21,19 +21,19 @@ Na `/admin/` se správce přihlásí e-mailem a heslem. Účty a oprávnění js
 
 Sekce **Administrátoři** umožňuje přidat správce podle e-mailu a hesla, nastavit nové heslo a odebrat oprávnění. Posledního správce nelze odebrat ani při souběžných požadavcích. Změna hesla nebo odebrání oprávnění okamžitě ukončí jeho relace. Zákaznický účet a objednávky se nemažou. Novému správci předejte přístupové údaje bezpečně, aplikace hesla neposílá e-mailem.
 
-- Zboží: přidání a úpravy, kategorie, složení, alergeny, nahrávání fotografií JPEG/PNG/WebP, dostupnost, archivace a skladové množství. Prázdný sklad znamená neomezenou dostupnost. Fotografie mohou mít nejvýše 2 MB a 4096 pixelů na straně. Server ověří skutečný formát a odstraní vložená metadata.
-- Ceny: časová historie každé změny a identifikace správce. Starší objednávky si uchovají původní název, cenu a dopravu.
-- Objednávky: hledání a filtrování, detail kontaktu a doručení, poznámka, položky, změny stavu, evidence přijaté platby a historie změn.
-- Doprava: cena, volitelná hranice pro dopravu zdarma a e-mail příjemce objednávek.
-- Oblasti rozvozu: přidávání a úpravy PSČ s volitelným názvem oblasti, vyhledávání, vypnutí a opětovné zapnutí. Rozvoz je povolen pouze na aktivní PSČ. Všechny bílé znaky se při zadávání ignorují, například `110 00` a `11000` jsou stejné PSČ.
-- Zákazníci: ověřené účty a počty jejich objednávek.
-- E-maily: přehled fronty, výsledků odeslání a opakování selhaných objednávkových zpráv.
+- **Zboží a ceny** umožňuje správu nabídky, skladu, složení, alergenů i archivaci. Minimální odběr je 0 až 99 kusů. Při hodnotě 0 přidá zákazník první kus, při vyšším minimu rovnou nastavené množství. Prázdná hodnota skladu znamená neomezenou dostupnost.
+- K produktu lze nahrát JPEG, PNG nebo WebP do 40 MiB. Server upraví orientaci a zmenší snímek na nejvýše 1 440 px na delší straně. Neprůhledné fotografie uloží jako JPEG v kvalitě 88, průhledné jako PNG. Změny cen mají historii. Starší objednávky si uchovají původní název, cenu a dopravu.
+- V sekci **Kategorie** lze založit nebo přejmenovat kategorii i odstranit kategorii se zbožím. Přejmenování se promítne do přiřazených položek. Po odstranění zůstanou všechny položky v katalogu bez kategorie.
+- V sekci **Objednávky** lze vyhledávat a filtrovat, zobrazit kontakt a doručení, evidovat úhradu a měnit stav. Zaškrtnutím více objednávek ve stejném stavu je přesunete společně. Při hromadném dokončení dobírek potvrďte převzetí plateb. Pokud některou z vybraných objednávek mezitím někdo změnil, obnovte výběr.
+- Před vystavením první faktury vyplňte sekci **Fakturační údaje**. V detailu objednávky doplňte odběratele, datum plnění a splatnost. Plátce DPH zadá sazbu u každé položky a účtované dopravy. Vystavenou fakturu s vlastním číslem můžete kdykoli znovu otevřít, vytisknout nebo uložit jako PDF přes tiskový dialog.
+- V sekci **Doprava a nastavení** nastavíte cenu dopravy, hranici dopravy zdarma, příjemce objednávek a výchozí časová okna. V **Oblastech rozvozu** lze obsluhovaná PSČ přidávat, měnit a vypínat. U jednotlivého PSČ můžete výchozí okna nahradit vlastními. Mezery v PSČ se ignorují.
+- **Zákazníci** zobrazí ověřené účty a počty jejich objednávek. V sekci **E-maily** uvidíte frontu a stav odeslání. Tlačítko **Napsat hromadný e-mail** zobrazí počet různých adres z objednávek včetně nákupů bez registrace. Rozeslání potvrďte po vyplnění předmětu a textu. Každému příjemci přijde samostatná zpráva.
 
 Pro ranní kontrolu otevřete **Objednávky** a zvolte **Dnes**, případně **Zítra** nebo konkrétní **Den doručení**. Filtr vybírá požadovaný den doručení bez ohledu na datum vytvoření objednávky. Lze ho kombinovat se stavem a hledáním, platí i při stránkování. **Všechny dny** zruší pouze omezení na den. Rychlé volby se řídí časovým pásmem Europe/Prague. Pro kontrolu objednávek určených k přípravě sledujte jejich stav, zejména nevyřizujte objednávky čekající na online platbu, zrušené nebo vypršelé.
 
 Oznámení o nové objednávce chodí na adresu **Doprava a nastavení → E-mail pro příjem objednávek**. U platby při doručení vznikne hned po přijetí objednávky, u online platby až po ověřené úhradě. Zákazník dostává vlastní potvrzení, před online úhradou nejprve zprávu o čekání na platbu. E-maily obsahují den a časové okno doručení, položky, množství, ceny, způsob platby, adresu a kontakty. Objednávky zůstávají dostupné v administraci i při potížích s doručením zprávy.
 
-Platba při doručení přejde rovnou do stavu „Přijata“. Online objednávka nejprve čeká na zaplacení a přijme se až po ověření úhrady u Teya. Dále stavy postupují `přijata → potvrzena → příprava → na cestě → doručena`. Před doručením lze nezaplacenou objednávku zrušit, čímž se rezervované kusy jednou vrátí. Platbu při doručení lze zaznamenat na cestě nebo při doručení. Online platbu ověřuje server, ručně ji označit za přijatou nelze. Nezaplacenou online objednávku lze stornovat až po ověření konečného neúspěchu nebo expirace relace u Teya. Doručená objednávka musí být zaplacená. Zrušení zaplacené objednávky vyžaduje budoucí samostatný proces vrácení peněz.
+Platba při doručení přejde rovnou do stavu „Přijata“. Online objednávka nejprve čeká na zaplacení a přijme se až po ověření úhrady u Teya. Dále stavy postupují `přijata → potvrzena → na cestě → doručena`. Před doručením lze nezaplacenou objednávku zrušit, čímž se rezervované kusy jednou vrátí. Platbu při doručení lze zaznamenat na cestě nebo při doručení. Online platbu ověřuje server, ručně ji označit za přijatou nelze. Nezaplacenou online objednávku lze stornovat až po ověření konečného neúspěchu nebo expirace relace u Teya. Doručená objednávka musí být zaplacená. Zrušení zaplacené objednávky vyžaduje budoucí samostatný proces vrácení peněz.
 
 ## Místní spuštění
 
@@ -92,7 +92,7 @@ Databázové a SMTP integrační testy jsou označeny `ignored`, protože bez Po
 
 `PUBLIC_URL` musí odpovídat adrese webu. Mimo localhost je vyžadováno HTTPS. Relace používá HttpOnly cookie, SameSite=Lax a při HTTPS také Secure. Zápisové API ověřuje původ požadavku a vlastní hlavičku. Administrátorská oprávnění se kontrolují na serveru pro každý endpoint, ne pouze zobrazením menu.
 
-Pro doručování mimo počítač nastavte skutečné `SMTP_HOST`, `SMTP_PORT`, `SMTP_FROM`, `SMTP_USERNAME`, `SMTP_PASSWORD`, `SMTP_TLS=true` a `ORDER_EMAIL`. SMTP používá povinný STARTTLS. Tajné hodnoty patří do prostředí nebo chráněných souborů, nikdy do Git repozitáře. Administrátorské účty se v konfiguraci nenastavují. Služba potřebuje zálohovaný PostgreSQL, HTTPS reverse proxy a provozní dohled. API dostupnost ověřuje `/api/health`.
+Pro nasazení pomocí Docker Compose nastavte v `/etc/brunch/brunch.env` server `SMTP_HOST`, port `SMTP_PORT` (výchozí 587) a odesílatele `SMTP_FROM`. Pokud poskytovatel vyžaduje přihlášení, nastavte `SMTP_USERNAME` a buď `SMTP_PASSWORD`, nebo cestu `SMTP_PASSWORD_FILE`. Produkční spojení používá STARTTLS. `ORDER_EMAIL` určuje počátečního příjemce objednávek. Tajné hodnoty patří do prostředí nebo chráněných souborů, nikdy do Git repozitáře. Administrátorské účty se v konfiguraci nenastavují. Služba potřebuje zálohovaný PostgreSQL, HTTPS reverse proxy a provozní dohled. API dostupnost ověřuje `/api/health`.
 
 Fronta opakuje selhané odeslání s prodlužujícím se odstupem, po osmi pokusech zůstane zpráva jako selhaná v administraci. E-mail se považuje za odeslaný až po přijetí SMTP serverem, nikoli za prokazatelně doručený do schránky. Při pádu přesně mezi SMTP přijetím a uložením výsledku může přijít duplikát. Opakované odeslání má stejné Message-ID. Objednávka se při potížích s e-mailem neztratí.
 
@@ -100,7 +100,7 @@ Fronta opakuje selhané odeslání s prodlužujícím se odstupem, po osmi pokus
 
 ## Nasazení na Zoner Cloud
 
-Pro samostatný VPS je připravené produkční nasazení přes Docker Compose s PostgreSQL a Caddy pro automatické HTTPS. Hotový aplikační obraz se sestavuje mimo VPS pomocí `./scripts/package-release.sh`. Doména, SMTP, správce, příjemce objednávek a volitelné Teya platby se nastavují v oddělené chráněné konfiguraci. Staging a produkce automaticky nezakládají ukázkové zboží. Přípravu serveru, všechny potřebné údaje, kontroly, zálohy, zkoušku obnovy a aktualizaci popisuje [docs/zoner-cloud.md](docs/zoner-cloud.md). GitHub Pages neumí spustit tento backend ani PostgreSQL.
+Pro samostatný VPS je připravené produkční nasazení přes Docker Compose s PostgreSQL a Caddy pro automatické HTTPS. Hotový aplikační obraz se sestavuje mimo VPS pomocí `./scripts/package-release.sh`. Doména, SMTP a volitelné Teya platby se nastavují v chráněné konfiguraci na VPS. Účty správců a provozní nastavení obchodu jsou v databázi. Staging a produkce automaticky nezakládají ukázkové zboží. Přípravu serveru, všechny potřebné údaje, kontroly, zálohy, zkoušku obnovy a aktualizaci popisuje [docs/zoner-cloud.md](docs/zoner-cloud.md). GitHub Pages neumí spustit tento backend ani PostgreSQL.
 
 ## Teya a obnova plateb
 

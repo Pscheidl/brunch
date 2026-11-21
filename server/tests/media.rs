@@ -147,7 +147,14 @@ async fn uploads_real_formats_strips_trailing_data_and_serves_immutable_public_i
         "exercise route-specific body limit"
     );
     source.extend_from_slice(b"PRIVATE-TRAILING-METADATA");
-    let response = fixture.upload(&admin, &source).await;
+    source.resize(40 * 1024 * 1024, 0);
+    let response = admin
+        .post(format!("{}/api/admin/images", fixture.url))
+        .header("content-type", "application/octet-stream")
+        .body(source.clone())
+        .send()
+        .await
+        .unwrap();
     let status = response.status();
     let body = response.text().await.unwrap();
     assert_eq!(status, StatusCode::OK, "{body}");
@@ -270,9 +277,7 @@ async fn image_upload_rejects_unauthorized_svg_invalid_data_size_and_dimensions(
         b"GIF89a0123456789".to_vec(),
         b"\x89PNG\r\n\x1a\ncorrupted".to_vec(),
         Vec::new(),
-        vec![0; 2 * 1024 * 1024 + 1],
-        png(4097, 1, false),
-        png(4001, 4000, false),
+        png(16_385, 1, false),
     ];
     for bytes in invalid {
         let response = fixture.upload(&admin, &bytes).await;
@@ -288,7 +293,13 @@ async fn image_upload_rejects_unauthorized_svg_invalid_data_size_and_dimensions(
         .await
         .unwrap();
     assert_eq!(invalid_base64.status(), StatusCode::BAD_REQUEST);
-    let oversized = fixture.upload(&admin, &vec![0; 3 * 1024 * 1024]).await;
+    let oversized = admin
+        .post(format!("{}/api/admin/images", fixture.url))
+        .header("content-type", "application/octet-stream")
+        .body(vec![0; 40 * 1024 * 1024 + 1])
+        .send()
+        .await
+        .unwrap();
     assert_eq!(oversized.status(), StatusCode::PAYLOAD_TOO_LARGE);
     let unknown = public
         .get(format!("{}/api/images/{}", fixture.url, Uuid::new_v4()))

@@ -6,7 +6,39 @@
 .api-message.error { color:#8b362d; background:#fff0ed; border-color:#edc4bc; }
 .api-message .button { margin-top:12px; }
 .shop-status { padding:24px 0; color:var(--muted); font-size:13px; }
-.custom-product-image { display:block; background-size:cover; background-position:center; aspect-ratio:1; }
+/* Keep the whole product visible, including tall bottles and wide platters. */
+.photo-frame {
+  display: grid;
+  place-items: center;
+  grid-template: minmax(0, 1fr) / minmax(0, 1fr);
+  overflow: hidden;
+  background: #f7f5ee;
+}
+.photo-frame .catalog-photo {
+  width: 100%;
+  height: 100%;
+  min-width: 0;
+  min-height: 0;
+  object-fit: scale-down;
+}
+.product-photo.photo-frame {
+  aspect-ratio: 1.6;
+  max-height: 220px;
+  padding: clamp(8px, 1.4vw, 18px);
+  border: 1px solid #eae7dd;
+}
+.detail-photo.photo-frame {
+  width: 100%;
+  max-width: none;
+  height: clamp(180px, 32vh, 270px);
+  margin-bottom: 20px;
+  padding: 18px 30px;
+}
+.cart-item-photo.photo-frame { aspect-ratio: 1; padding: 4px; border-radius: 8px; }
+.photo-frame > .snack-image { width: auto; height: 100%; max-width: 100%; border-radius: 5px; }
+.photo-frame > .product-placeholder { width: 100%; height: 100%; aspect-ratio: auto; }
+.product-photo .product-tag:empty { display: none; }
+.product-meta { flex-wrap: wrap; }
 .product-placeholder { display:block; aspect-ratio:1; background:var(--fresh-gradient); }
 .product-placeholder::before { content:'Brunch Era'; display:grid; place-items:center; height:100%; color:var(--accent); opacity:.5; font-size:clamp(21px,3vw,30px); letter-spacing:-1px; font-weight:650; }
 .product-photo { position:relative; }

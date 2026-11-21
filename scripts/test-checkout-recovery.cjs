@@ -32,6 +32,8 @@ async function reviewOrder(page, email) {
   await page.locator('.header-cart').click()
   await page.getByRole('button', { name: 'Pokračovat k doručení', exact: true }).click()
   await page.locator('[name=email]').fill(email)
+  await page.locator('[name=name]').fill('Anna Testerová')
+  await page.locator('[name=tel]').fill('+420 777 123 456')
   await page.locator('[name=street-address]').fill('Testovací 25')
   await page.locator('[name=city]').fill('Praha')
   await page.locator('[name=postal-code]').fill('110 00')

@@ -13,7 +13,7 @@ Při selhání testu může zůstat izolované schéma `brunch_test_<uuid>` pro 
 
 | Oblast | Co ověřuje HTTP test |
 | --- | --- |
-| Nákup bez účtu | Stačí e-mail a adresa, poznámka se uloží, účet se nevytváří, částky počítá server |
+| Nákup bez účtu | Povinné jméno, telefon, e-mail a adresa, volitelný výběr z RÚIAN i ruční zadání, poznámka se uloží, účet se nevytváří, částky počítá server |
 | Opakovaný požadavek | Stejný klíč a obsah vrátí stejnou objednávku, jiný obsah skončí konfliktem, e-maily se nezdvojí |
 | Souběh | Ze dvou požadavků na poslední kus uspěje jeden, dva souběžné požadavky se stejným klíčem vytvoří jednu objednávku |
 | Cena a historie | Změna ceny má audit, původní objednávka uchová název a cenu, zastaralý součet ani zastaralá verze se nepřepíší |
@@ -44,7 +44,7 @@ Nejprve v administraci povolit testovací PSČ `110 00`. V poli i při hledání
 2. Zkontrolovat obě zprávy v místním poštovním serveru. Vypnout SMTP a ověřit, že objednávka zůstane přijatá a e-mail čeká na opakované odeslání.
 3. Vyžádat přihlašovací odkaz, otevřít ho, zkontrolovat účet, odhlásit se a zkusit stejný odkaz podruhé.
 4. Přihlásit správce a projít všechny záložky v administraci. Založit produkt včetně fotografie, složení a alergenů, změnit cenu, zobrazit historii, vyprodat a archivovat produkt.
-5. V administraci vyhledat objednávku, zkontrolovat adresu a pokyny, otevřít mapu a vytisknout rozvozový list. Postupně potvrdit přípravu, rozvoz a doručení. Označit převzetí platby. U jiné nezaplacené objednávky ověřit storno.
+5. V administraci vyhledat objednávku, zkontrolovat adresu a pokyny, otevřít mapu a vystavit a vytisknout fakturu. Zkontrolovat dodavatele, odběratele, položky a dopravu. Hromadně potvrdit dvě přijaté objednávky, následně ověřit rozvoz a doručení. Označit převzetí platby. U jiné nezaplacené objednávky ověřit storno.
 6. Otevřít stejný produkt nebo objednávku ve dvou oknech. Po uložení prvního musí druhé okno zobrazit konflikt, nikoli přepsat novější změny.
 7. Změnit dopravu a limit zdarma, ověřit součet nové objednávky. Dřívější objednávka musí zachovat původní částky.
 8. Vyzkoušet ovládání klávesnicí, zavírání dialogu klávesou Escape, chybové a prázdné stavy. Zkontrolovat mobilní šířku 390 px i desktop. Tabulky mohou mít vlastní vodorovný posuv.
@@ -62,7 +62,7 @@ TEST_ADMIN_PASSWORD="$TEST_ADMIN_PASSWORD" \
 node scripts/test-admin-browser.cjs
 ```
 
-Před testem načtěte heslo místního testovacího správce do `TEST_ADMIN_PASSWORD`. Jde pouze o vstup testovacího nástroje, aplikace administrátory z prostředí nenačítá. Prostředí musí mít dostupné balíčky Playwright a prohlížeč Chromium. Snímky a jednostránkový rozvozový list se ukládají do `output/admin-browser/`. Při chybě vznikne také `failure.png`.
+Před testem načtěte heslo místního testovacího správce do `TEST_ADMIN_PASSWORD`. Jde pouze o vstup testovacího nástroje, aplikace administrátory z prostředí nenačítá. Prostředí musí mít dostupné balíčky Playwright a prohlížeč Chromium. Snímky a vytištěná faktura se ukládají do `output/admin-browser/`. Při chybě vznikne také `failure.png`.
 
 Ověřeno 21. 10. 2026: tento scénář úspěšně prošel proti místnímu serveru, PostgreSQL a Mailpitu. V prohlížeči nebyla zachycena žádná neošetřená chyba. Zkontrolovány byly také snímky desktopu, mobilní šířky 390 px a jednostránkový tisk A4.
 

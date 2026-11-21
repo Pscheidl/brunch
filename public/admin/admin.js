@@ -8,11 +8,11 @@ const notice = document.querySelector('#notice')
 const state = { user: null, page: 'orders', generation: 0, orderPage: 1, customerPage: 1, orderStatus: '', orderQuery: '', orderDeliveryDate: '', deliveryAreaQuery: '' }
 const money = value => new Intl.NumberFormat('cs-CZ', { style: 'currency', currency: 'CZK' }).format(value / 100)
 const dateTime = value => value ? new Intl.DateTimeFormat('cs-CZ', { dateStyle: 'medium', timeStyle: 'short', timeZone: 'Europe/Prague' }).format(new Date(value)) : 'Dosud neodesláno'
-const statuses = { awaiting_payment: 'Čeká na zaplacení', new: 'Přijatá', confirmed: 'Potvrzená', preparing: 'Připravuje se', out_for_delivery: 'Na cestě', delivered: 'Doručená', cancelled: 'Zrušená', expired: 'Vypršela' }
+const statuses = { awaiting_payment: 'Čeká na zaplacení', new: 'Přijatá', confirmed: 'Potvrzená', out_for_delivery: 'Na cestě', delivered: 'Doručená', cancelled: 'Zrušená', expired: 'Vypršela' }
 const payments = { unpaid: 'Nezaplaceno', paid: 'Zaplaceno' }
 const onlinePaymentStates = { pending: 'Čeká na přípravu nebo ověření', ready: 'Platební brána je připravena, platba čeká', paid: 'Platba ověřena', failed: 'Platba neproběhla', expired: 'Platnost platby skončila', review: 'Vyžaduje kontrolu obsluhy' }
 const mailStates = { pending: 'Čeká na odeslání', sent: 'Odesláno', failed: 'Odeslání selhalo' }
-const routes = [['orders', 'Objednávky'], ['products', 'Zboží a ceny'], ['customers', 'Zákazníci'], ['delivery-areas', 'Oblasti rozvozu'], ['settings', 'Doprava a nastavení'], ['administrators', 'Administrátoři'], ['mail', 'E-maily']]
+const routes = [['orders', 'Objednávky'], ['products', 'Zboží a ceny'], ['categories', 'Kategorie'], ['customers', 'Zákazníci'], ['delivery-areas', 'Oblasti rozvozu'], ['settings', 'Doprava a nastavení'], ['invoice-settings', 'Fakturační údaje'], ['administrators', 'Administrátoři'], ['mail', 'E-maily']]
 const normalizePostalCode = value => String(value ?? '').replace(/[\s\u0085]/g, '')
 const formatPostalCode = value => normalizePostalCode(value).replace(/^([0-9]{3})([0-9]{2})$/, '$1 $2')
 
@@ -180,7 +180,7 @@ async function renderPage() {
   }
   content.replaceChildren(el('p', { class: 'loading', role: 'status' }, 'Načítám data…'))
   try {
-    const page = await ({ orders: ordersPage, products: productsPage, customers: customersPage, 'delivery-areas': deliveryAreasPage, settings: settingsPage, administrators: administratorsPage, mail: mailPage })[state.page]()
+    const page = await ({ orders: ordersPage, products: productsPage, categories: categoriesPage, customers: customersPage, 'delivery-areas': deliveryAreasPage, settings: settingsPage, 'invoice-settings': invoiceSettingsPage, administrators: administratorsPage, mail: mailPage })[state.page]()
     if (generation === state.generation) content.replaceChildren(...page)
   } catch (error) {
     if (generation !== state.generation) return
@@ -216,9 +216,67 @@ async function ordersPage() {
     return shortcut
   }))
   filter.prepend(el('div', { class: 'order-delivery-filter' }, deliveryDate, shortcuts, el('p', { class: 'hint', id: 'order-delivery-date-hint' }, 'Vybírá den doručení objednávky. Dnes a zítra se řídí českým časem.')))
-  const rows = data.orders.map(order => el('tr', {}, el('td', {}, el('strong', {}, order.number), el('small', {}, dateTime(order.created_at))), el('td', {}, order.name || order.email, order.name ? el('small', {}, order.email) : null), el('td', {}, order.delivery_date, el('small', {}, order.delivery_slot), el('small', {}, order.city)), el('td', {}, badge(statuses[order.status] || order.status, order.status), el('small', {}, payments[order.payment_status] || order.payment_status)), el('td', { class: 'number' }, money(order.total_cents)), el('td', {}, button('Detail', () => orderDialog(order.id), 'small'))))
-  return [header('Objednávky', 'Od potvrzení až po předání zákazníkovi.', button('Obnovit', renderPage)), filter, rows.length ? table(['Objednávka', 'Zákazník', 'Den doručení', 'Stav', 'Celkem', 'Akce'], rows) : empty('Žádné objednávky', state.orderStatus || state.orderQuery || state.orderDeliveryDate ? 'Zkuste změnit hledání nebo filtr.' : 'Nové objednávky se zobrazí na tomto místě.'), pager(data.page, data.total, page => { state.orderPage = page; renderPage() })]
+  const bulk = orderSelection(data.orders)
+  const rows = data.orders.map(order => el('tr', {}, el('td', {}, bulk.checkboxes.get(order.id)), el('td', {}, el('strong', {}, order.number), el('small', {}, dateTime(order.created_at))), el('td', {}, order.name || order.email, order.name ? el('small', {}, order.email) : null), el('td', {}, order.delivery_date, el('small', {}, order.delivery_slot), el('small', {}, order.city)), el('td', {}, badge(statuses[order.status] || order.status, order.status), el('small', {}, payments[order.payment_status] || order.payment_status)), el('td', { class: 'number' }, money(order.total_cents)), el('td', {}, button('Detail', () => orderDialog(order.id), 'small'))))
+  return [header('Objednávky', 'Od potvrzení až po předání zákazníkovi.', button('Obnovit', renderPage)), filter, bulk.actions, rows.length ? table(['Výběr', 'Objednávka', 'Zákazník', 'Den doručení', 'Stav', 'Celkem', 'Akce'], rows) : empty('Žádné objednávky', state.orderStatus || state.orderQuery || state.orderDeliveryDate ? 'Zkuste změnit hledání nebo filtr.' : 'Nové objednávky se zobrazí na tomto místě.'), pager(data.page, data.total, page => { state.orderPage = page; renderPage() })]
 }
+function orderSelection(orders) {
+  const selected = new Map()
+  const checkboxes = new Map()
+  const actions = el('form', { class: 'filters bulk-orders', hidden: true, onsubmit: event => saveForm(event, apply) })
+  const next = { new: 'confirmed', confirmed: 'out_for_delivery', out_for_delivery: 'delivered' }
+  const offers = order => {
+    const choices = next[order.status] ? [next[order.status]] : []
+    if (order.payment_status === 'unpaid' && (order.status in next || order.online_cancellable && order.status === 'awaiting_payment')) choices.push('cancelled')
+    return choices
+  }
+  function refresh() {
+    const group = [...selected.values()]
+    const first = group[0]
+    for (const order of orders) {
+      const box = checkboxes.get(order.id)
+      box.disabled = !offers(order).length || Boolean(first && order.status !== first.status)
+      box.checked = selected.has(order.id)
+    }
+    actions.hidden = !first
+    if (!first) return
+    const choices = offers(first).filter(status => group.every(order => offers(order).includes(status)))
+    const selectAll = button('Vybrat všechny ve stejném stavu na stránce', () => {
+      for (const order of orders) if (order.status === first.status && offers(order).length) selected.set(order.id, order)
+      refresh()
+    }, 'small')
+    actions.replaceChildren(el('span', { role: 'status' }, `Vybráno: ${group.length} · ${statuses[first.status]}`),
+      selectAll, button('Zrušit výběr', () => { selected.clear(); refresh() }, 'small'),
+      selectField('Nový stav', 'status', choices.map(status => [status, statuses[status]]), choices[0]),
+      el('button', { class: 'button primary', type: 'submit', disabled: choices.length === 0 }, 'Změnit stav vybraných'))
+  }
+  async function apply(data) {
+    const group = [...selected.values()]
+    const status = data.get('status')
+    const collect = status === 'delivered' ? group.filter(o => o.payment_status === 'unpaid' && o.payment_method !== 'card') : []
+    const payment = collect.length ? ` Současně potvrzujete převzetí ${money(collect.reduce((sum, o) => sum + o.total_cents, 0))} za ${collect.length} objednávek.` : ''
+    const stock = status === 'cancelled' ? ' Rezervované kusy se vrátí na sklad.' : ''
+    if (!confirm(`Změnit stav ${group.length} objednávek na „${statuses[status]}“?${payment}${stock}`)) return
+    const result = await api('/api/admin/orders/bulk-status', { method: 'POST', body: JSON.stringify({
+      orders: group.map(({ id, version }) => ({ id, version })), from_status: group[0].status,
+      status, confirm_payments: collect.length > 0
+    }) })
+    notify(`Počet aktualizovaných objednávek: ${result.updated}.`)
+    await renderPage()
+  }
+  for (const order of orders) {
+    checkboxes.set(order.id, el('input', { type: 'checkbox', 'aria-label': `Vybrat objednávku ${order.number}`,
+      onchange: event => {
+        if (event.target.checked) selected.set(order.id, order)
+        else selected.delete(order.id)
+        refresh()
+      }
+    }))
+  }
+  refresh()
+  return { actions, checkboxes }
+}
+
 async function orderDialog(id) {
   const body = openDialog('Detail objednávky')
   body.append(el('p', { class: 'loading' }, 'Načítám objednávku…'))
@@ -231,11 +289,11 @@ async function orderDialog(id) {
     contact.append(el('br'), el('a', { href: `mailto:${encodeURIComponent(order.email)}` }, order.email))
     if (order.phone) contact.append(el('br'), /^\+?[0-9 ()-]{5,40}$/.test(order.phone) ? el('a', { href: `tel:${order.phone.replace(/[^\d+]/g, '')}` }, order.phone) : order.phone)
     const mapUrl = `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(`${order.street}, ${order.postal_code} ${order.city}, Česko`)}`
-    body.replaceChildren(el('div', { class: 'summary-grid' }, el('section', {}, el('h3', {}, 'Zákazník'), contact), el('section', {}, el('h3', {}, 'Doručení'), el('p', {}, `${order.street}\n${order.postal_code} ${order.city}\n${order.delivery_date} · ${order.delivery_slot}`))), el('div', { class: 'actions no-print' }, el('a', { class: 'button small', href: mapUrl, target: '_blank', rel: 'noopener noreferrer' }, 'Otevřít adresu v mapě ↗'), button('Vytisknout rozvozový list', () => window.print(), 'small')))
+    body.replaceChildren(el('div', { class: 'summary-grid' }, el('section', {}, el('h3', {}, 'Zákazník'), contact), el('section', {}, el('h3', {}, 'Doručení'), el('p', {}, `${order.street}\n${order.postal_code} ${order.city}\n${order.delivery_date} · ${order.delivery_slot}`))), el('div', { class: 'actions no-print' }, el('a', { class: 'button small', href: mapUrl, target: '_blank', rel: 'noopener noreferrer' }, 'Otevřít adresu v mapě ↗'), button('Faktura', () => invoiceDialog(order), 'small')))
     if (order.notes) body.append(el('div', { class: 'note' }, el('strong', {}, 'Pokyny pro doručení\n'), order.notes))
     body.append(el('h3', {}, 'Položky objednávky'), table(['Zboží', 'Množství', 'Cena za kus', 'Celkem'], order.items.map(item => el('tr', {}, el('td', {}, item.name), el('td', {}, `${item.quantity} ks`), el('td', { class: 'number' }, money(item.unit_price_cents)), el('td', { class: 'number' }, money(item.total_cents)))), true), el('div', { class: 'totals' }, el('div', {}, el('span', {}, 'Zboží'), money(order.subtotal_cents)), el('div', {}, el('span', {}, 'Doprava'), money(order.delivery_fee_cents)), el('div', {}, el('span', {}, 'Celkem'), money(order.total_cents))))
     body.append(el('p', { class: 'hint' }, `${order.payment_method === 'card' ? 'Online platba kartou přes Teya' : `Platba ${order.payment_method === 'card_on_delivery' ? 'kartou' : 'hotově'} při doručení`}. ${payments[order.payment_status]}. Stav: ${statuses[order.status]}. Vytvořeno ${dateTime(order.created_at)}.`))
-    const sequence = ['new', 'confirmed', 'preparing', 'out_for_delivery', 'delivered']
+    const sequence = ['new', 'confirmed', 'out_for_delivery', 'delivered']
     const terminal = ['delivered', 'cancelled', 'expired'].includes(order.status)
     const online = order.payment_method === 'card'
     const awaitingPayment = online && order.payment_status !== 'paid'
@@ -285,22 +343,23 @@ async function orderDialog(id) {
     }
     body.append(form)
     if (online) body.append(button('Obnovit stav platby', () => orderDialog(id)))
-    if (order.history?.length) body.append(el('h3', {}, 'Historie změn'), el('ol', { class: 'history' }, order.history.map(item => el('li', {}, `${statuses[item.status] || item.status} · ${payments[item.payment_status] || item.payment_status}`, el('small', {}, `${dateTime(item.created_at)}${item.changed_by ? ` · ${item.changed_by}` : ''}`)))))
+    if (order.history?.length) body.append(el('h3', {}, 'Historie změn'), el('ol', { class: 'history' }, order.history.map(item => el('li', {}, `${statuses[item.status] || (item.status === 'preparing' ? 'Připravuje se (dřívější stav)' : item.status)} · ${payments[item.payment_status] || item.payment_status}`, el('small', {}, `${dateTime(item.created_at)}${item.changed_by ? ` · ${item.changed_by}` : ''}`)))))
   } catch (error) { body.replaceChildren(errorBox(error), button('Načíst znovu', () => orderDialog(id))) }
 }
 
 async function productsPage() {
-  const products = await api('/api/admin/products')
-  const rows = products.map(product => el('tr', {}, el('td', {}, el('strong', {}, product.name), el('small', {}, `${product.category} · ${product.weight || 'Bez uvedené hmotnosti'}`)), el('td', { class: 'number' }, money(product.price_cents)), el('td', {}, product.stock === null ? 'Bez omezení' : `${product.stock} ks`), el('td', {}, badge(product.active ? 'V prodeji' : 'Archivováno', product.active ? '' : 'archived')), el('td', {}, el('div', { class: 'cell-actions' }, button('Upravit', () => productDialog(product), 'small'), button('Ceny', () => priceDialog(product), 'small')))))
-  return [header('Zboží a ceny', 'Sortiment, dostupnost a přehled každé změny ceny.', button('+ Přidat zboží', () => productDialog(), 'primary')), button('Obnovit', renderPage, 'small'), el('div', { style: 'height:16px' }), rows.length ? table(['Zboží', 'Cena', 'Sklad', 'Dostupnost', 'Akce'], rows) : empty('Zatím žádné zboží', 'Přidejte první produkt do nabídky.'), el('p', { class: 'section-note' }, 'Archivované zboží se nezobrazuje v obchodě. Objednávky uchovávají původní názvy a ceny.')]
+  const [products, categories] = await Promise.all([api('/api/admin/products'), api('/api/admin/categories')])
+  const rows = products.map(product => el('tr', {}, el('td', {}, el('strong', {}, product.name), el('small', {}, `${product.category || 'Bez kategorie'} · ${product.weight || 'Bez uvedené hmotnosti'}`)), el('td', { class: 'number' }, money(product.price_cents)), el('td', {}, product.stock === null ? 'Bez omezení' : `${product.stock} ks`, product.minimum_quantity ? el('small', {}, `Min. odběr ${product.minimum_quantity} ks`) : null), el('td', {}, badge(product.active ? 'V prodeji' : 'Archivováno', product.active ? '' : 'archived')), el('td', {}, el('div', { class: 'cell-actions' }, button('Upravit', () => productDialog(product, categories), 'small'), button('Ceny', () => priceDialog(product), 'small')))))
+  return [header('Zboží a ceny', 'Sortiment, dostupnost a přehled každé změny ceny.', button('+ Přidat zboží', () => productDialog(null, categories), 'primary')), button('Obnovit', renderPage, 'small'), el('div', { style: 'height:16px' }), rows.length ? table(['Zboží', 'Cena', 'Sklad', 'Dostupnost', 'Akce'], rows) : empty('Zatím žádné zboží', 'Přidejte první produkt do nabídky.'), el('p', { class: 'section-note' }, 'Archivované zboží se nezobrazuje v obchodě. Objednávky uchovávají původní názvy a ceny.')]
 }
-function productDialog(product = null) {
+function productDialog(product, categories) {
   const body = openDialog(product ? 'Upravit zboží' : 'Přidat zboží')
-  const data = product || { name: '', description: '', category: 'Slané', tag: '', weight: '', price_cents: 0, vegan: false, ingredients: '', allergens: '', image: '', active: true, stock: null }
+  const data = product || { name: '', description: '', category: '', minimum_quantity: 0, tag: '', weight: '', price_cents: 0, vegan: false, ingredients: '', allergens: '', image: '', active: true, stock: null }
   const form = el('form', { onsubmit: event => saveForm(event, async values => {
     const payload = Object.fromEntries(['name', 'description', 'category', 'tag', 'weight', 'ingredients', 'allergens', 'image'].map(key => [key, String(values.get(key)).trim()]))
     payload.price_cents = cents(values.get('price'))
     payload.stock = String(values.get('stock')).trim() === '' ? null : Number(values.get('stock'))
+    payload.minimum_quantity = Number(values.get('minimum_quantity') || 0)
     payload.vegan = values.has('vegan')
     payload.active = values.has('active')
     if (product) payload.version = product.version
@@ -308,7 +367,7 @@ function productDialog(product = null) {
     dialog.close()
     notify(product ? 'Zboží bylo upraveno.' : 'Nové zboží bylo přidáno.')
     renderPage()
-  }) }, el('div', { class: 'form-grid' }, field('Název', 'name', data.name, { required: true, maxlength: 150, full: true }), field('Popis', 'description', data.description, { kind: 'textarea', maxlength: 2000, full: true }), field('Kategorie', 'category', data.category, { required: true, maxlength: 80, list: 'categories' }), field('Štítek', 'tag', data.tag, { maxlength: 80, placeholder: 'Např. Z naší pece' }), field('Cena v Kč', 'price', (data.price_cents / 100).toFixed(2), { required: true, inputmode: 'decimal', placeholder: '119,00' }), field('Hmotnost / objem', 'weight', data.weight, { maxlength: 80, placeholder: 'Např. 180 g' }), field('Počet dostupných kusů', 'stock', data.stock, { type: 'number', min: 0, max: 1000000, step: 1, hint: 'Prázdné pole znamená neomezené množství. Nula znamená vyprodáno.' }), field('Obrázek', 'image', data.image, { maxlength: 500, placeholder: '/images/produkt.webp', hint: 'Cesta k obrázku na tomto webu. Pro výchozí vzhled ponechte prázdné.' }), field('Složení', 'ingredients', data.ingredients, { kind: 'textarea', maxlength: 2000, full: true }), field('Alergeny', 'allergens', data.allergens, { kind: 'textarea', maxlength: 1000, full: true }), field('Vegan', 'vegan', data.vegan, { type: 'checkbox' }), field('Zobrazovat v nabídce', 'active', data.active, { type: 'checkbox' })), el('datalist', { id: 'categories' }, ['Slané', 'Sladké', 'Bowls', 'Nápoje'].map(category => el('option', { value: category }))), el('p', { class: 'hint' }, 'Odškrtnutím nabídky zboží archivujete. Historie cen i dřívější objednávky zůstanou zachovány.'), el('div', { class: 'actions' }, button('Zrušit', () => dialog.close()), el('button', { type: 'submit', class: 'button primary' }, 'Uložit zboží')))
+  }) }, el('div', { class: 'form-grid' }, field('Název', 'name', data.name, { required: true, maxlength: 150, full: true }), field('Popis', 'description', data.description, { kind: 'textarea', maxlength: 2000, full: true }), field('Kategorie', 'category', data.category, { maxlength: 80, list: 'categories', placeholder: 'Bez kategorie', hint: 'Vyberte kategorii ze seznamu nebo napište nový název.' }), field('Štítek', 'tag', data.tag, { maxlength: 80, placeholder: 'Např. Z naší pece' }), field('Cena v Kč', 'price', (data.price_cents / 100).toFixed(2), { required: true, inputmode: 'decimal', placeholder: '119,00' }), field('Hmotnost / objem', 'weight', data.weight, { maxlength: 80, placeholder: 'Např. 180 g' }), field('Minimální odběr v kusech', 'minimum_quantity', data.minimum_quantity ?? 0, { type: 'number', min: 0, max: 99, step: 1, hint: 'Nula znamená bez minima. Při prvním přidání do košíku se nastaví zadaný počet.' }), field('Počet dostupných kusů', 'stock', data.stock, { type: 'number', min: 0, max: 1000000, step: 1, hint: 'Prázdné pole znamená neomezené množství. Nula znamená vyprodáno.' }), field('Obrázek', 'image', data.image, { maxlength: 500, placeholder: '/images/produkt.webp', hint: 'Cesta k obrázku na tomto webu. Pro výchozí vzhled ponechte prázdné.' }), field('Složení', 'ingredients', data.ingredients, { kind: 'textarea', maxlength: 2000, full: true }), field('Alergeny', 'allergens', data.allergens, { kind: 'textarea', maxlength: 1000, full: true }), field('Vegan', 'vegan', data.vegan, { type: 'checkbox' }), field('Zobrazovat v nabídce', 'active', data.active, { type: 'checkbox' })), el('datalist', { id: 'categories' }, categories.map(category => el('option', { value: category.name }))), el('p', { class: 'hint' }, 'Odškrtnutím nabídky zboží archivujete. Historie cen i dřívější objednávky zůstanou zachovány.'), el('div', { class: 'actions' }, button('Zrušit', () => dialog.close()), el('button', { type: 'submit', class: 'button primary' }, 'Uložit zboží')))
   const imageField = form.querySelector('[name=image]')
   const preview = el('div', { class: 'image-preview' })
   const showPreview = () => {
@@ -318,13 +377,13 @@ function productDialog(product = null) {
   }
   imageField.addEventListener('change', showPreview)
   showPreview()
-  const uploadStatus = el('p', { class: 'hint', role: 'status' }, 'JPG, PNG nebo WebP, maximálně 2 MB a 4096 px na stranu.')
+  const uploadStatus = el('p', { class: 'hint', role: 'status' }, 'JPG, PNG nebo WebP do 40 MB. Delší stranu automaticky zmenšíme na nejvýše 1 440 px.')
   const upload = el('input', { type: 'file', accept: 'image/jpeg,image/png,image/webp', 'aria-label': 'Nahrát fotografii' })
   upload.addEventListener('change', async () => {
     const file = upload.files[0]
     if (!file) return
-    if (file.size > 2 * 1024 * 1024) {
-      uploadStatus.textContent = 'Fotografie je příliš velká. Vyberte soubor do 2 MB.'
+    if (file.size > 40 * 1024 * 1024) {
+      uploadStatus.textContent = 'Fotografie je příliš velká. Vyberte soubor do 40 MB.'
       uploadStatus.className = 'error'
       upload.value = ''
       return
@@ -335,13 +394,7 @@ function productDialog(product = null) {
     uploadStatus.className = 'hint'
     uploadStatus.textContent = 'Nahrávám fotografii…'
     try {
-      const encoded = await new Promise((resolve, reject) => {
-        const reader = new FileReader()
-        reader.onload = () => resolve(String(reader.result).split(',')[1])
-        reader.onerror = () => reject(new Error('Fotografii nelze přečíst. Zkuste soubor vybrat znovu.'))
-        reader.readAsDataURL(file)
-      })
-      const result = await api('/api/admin/images', { method: 'POST', body: JSON.stringify({ filename: file.name, content_base64: encoded }) })
+      const result = await api('/api/admin/images', { method: 'POST', headers: { 'Content-Type': 'application/octet-stream' }, body: file })
       imageField.value = result.url
       showPreview()
       uploadStatus.textContent = 'Fotografie je nahraná. Pro přiřazení produktu uložte zboží.'
@@ -357,6 +410,45 @@ function productDialog(product = null) {
   imageField.closest('label').after(el('div', { class: 'field full' }, el('label', {}, el('span', {}, 'Nahrát fotografii'), upload), uploadStatus, preview))
   body.append(form)
 }
+async function categoriesPage() {
+  const categories = await api('/api/admin/categories')
+  const rows = categories.map(category => el('tr', {},
+    el('td', {}, el('strong', {}, category.name)),
+    el('td', {}, category.product_count),
+    el('td', {}, el('div', { class: 'cell-actions' },
+      button('Přejmenovat', () => categoryDialog(category), 'small'),
+      button('Odstranit', async event => {
+        if (!confirm(`Odstranit kategorii „${category.name}“? Přiřazené zboží zůstane v katalogu bez kategorie.`)) return
+        const remove = event.currentTarget
+        remove.disabled = true
+        try {
+          await api(`/api/admin/categories/${category.id}`, { method: 'DELETE', body: JSON.stringify({ version: category.version }) })
+          notify('Kategorie byla odstraněna.')
+          renderPage()
+        } catch (error) { notify(error.message, true); remove.disabled = false }
+      }, 'small danger')))))
+  return [
+    header('Kategorie', 'Kategorie se zákazníkům zobrazují jako filtry nabídky.', button('+ Přidat kategorii', () => categoryDialog(), 'primary')),
+    el('div', { class: 'filters' }, button('Obnovit', renderPage, 'small')),
+    rows.length ? table(['Název kategorie', 'Počet položek', 'Akce'], rows) : empty('Zatím žádné kategorie', 'Přidejte kategorii a přiřaďte ji zboží.')
+  ]
+}
+function categoryDialog(category = null) {
+  const body = openDialog(category ? 'Přejmenovat kategorii' : 'Přidat kategorii')
+  const form = el('form', { onsubmit: event => saveForm(event, async values => {
+    const payload = { name: String(values.get('name')).trim() }
+    if (category) payload.version = category.version
+    await api(category ? `/api/admin/categories/${category.id}` : '/api/admin/categories', {
+      method: category ? 'PUT' : 'POST', body: JSON.stringify(payload)
+    })
+    dialog.close()
+    notify(category ? 'Kategorie byla přejmenována.' : 'Kategorie byla přidána.')
+    renderPage()
+  }) }, field('Název kategorie', 'name', category?.name || '', { required: true, maxlength: 80 }),
+    el('div', { class: 'actions' }, button('Zrušit', () => dialog.close()),
+      el('button', { type: 'submit', class: 'button primary' }, 'Uložit kategorii')))
+  body.append(form)
+}
 async function priceDialog(product) {
   const body = openDialog(`Historie cen: ${product.name}`)
   body.append(el('p', { class: 'loading' }, 'Načítám historii cen…'))
@@ -365,6 +457,17 @@ async function priceDialog(product) {
     if (!body.isConnected) return
     body.replaceChildren(history.length ? table(['Od kdy', 'Cena', 'Změnil'], history.map(item => el('tr', {}, el('td', {}, dateTime(item.created_at)), el('td', { class: 'number' }, money(item.price_cents)), el('td', {}, item.changed_by || 'Počáteční cena')))) : empty('Bez změn ceny', 'Historie ceny ještě není dostupná.'))
   } catch (error) { body.replaceChildren(errorBox(error)) }
+}
+
+function deliverySlotsField(slots, inherit = false) {
+  return field(inherit ? 'Vlastní rozvozová okna pro toto PSČ' : 'Výchozí rozvozová okna', 'delivery_slots', (slots || []).join('\n'), {
+    kind: 'textarea', rows: 3, required: !inherit, placeholder: '07:00–09:00\n09:00–11:00',
+    hint: `Každé časové okno zadejte na samostatný řádek, například 07:00–09:00.${inherit ? ' Prázdné pole použije výchozí okna obchodu.' : ''}`
+  })
+}
+function readDeliverySlots(data) {
+  const slots = String(data.get('delivery_slots') || '').split(/\r?\n/).map(line => line.trim()).filter(Boolean)
+  return slots.length ? slots : null
 }
 
 async function deliveryAreasPage() {
@@ -378,7 +481,7 @@ async function deliveryAreasPage() {
       results.replaceChildren(areas.length ? empty('Žádná odpovídající oblast', 'Zkuste jiné PSČ nebo název oblasti.') : empty('Zatím žádná oblast rozvozu', 'Přidejte první povolené PSČ a nechte rozvoz zapnutý. Bez aktivních oblastí nelze přijímat objednávky.'))
       return
     }
-    const rows = matching.map(area => el('tr', {}, el('td', { class: 'postal-code' }, el('strong', {}, formatPostalCode(area.postal_code))), el('td', {}, area.label || 'Bez názvu'), el('td', {}, badge(area.active ? 'Rozvážíme' : 'Pozastaveno', area.active ? '' : 'archived')), el('td', {}, el('div', { class: 'cell-actions' }, button('Upravit', () => deliveryAreaDialog(area), 'small'), button(area.active ? 'Pozastavit' : 'Zapnout', async event => {
+    const rows = matching.map(area => el('tr', {}, el('td', { class: 'postal-code' }, el('strong', {}, formatPostalCode(area.postal_code))), el('td', {}, area.label || 'Bez názvu'), el('td', {}, area.delivery_slots?.join(', ') || 'Výchozí okna'), el('td', {}, badge(area.active ? 'Rozvážíme' : 'Pozastaveno', area.active ? '' : 'archived')), el('td', {}, el('div', { class: 'cell-actions' }, button('Upravit', () => deliveryAreaDialog(area), 'small'), button(area.active ? 'Pozastavit' : 'Zapnout', async event => {
       const toggle = event.currentTarget
       toggle.disabled = true
       try {
@@ -387,7 +490,7 @@ async function deliveryAreasPage() {
         renderPage()
       } catch (error) { notify(error.message, true); toggle.disabled = false }
     }, 'small')))))
-    results.replaceChildren(table(['PSČ', 'Název oblasti', 'Rozvoz', 'Akce'], rows), el('p', { class: 'section-note' }, `Zobrazeno ${matching.length} z ${areas.length} oblastí.`))
+    results.replaceChildren(table(['PSČ', 'Název oblasti', 'Časová okna', 'Rozvoz', 'Akce'], rows), el('p', { class: 'section-note' }, `Zobrazeno ${matching.length} z ${areas.length} oblastí.`))
   }
   search.querySelector('input').addEventListener('input', event => {
     state.deliveryAreaQuery = event.currentTarget.value
@@ -403,13 +506,13 @@ function deliveryAreaDialog(area = null) {
   const form = el('form', { onsubmit: event => saveForm(event, async values => {
     const postalCode = normalizePostalCode(values.get('postal_code'))
     if (!/^[0-9]{5}$/.test(postalCode)) throw new Error('PSČ musí obsahovat právě pět číslic. Mezery můžete vynechat.')
-    const payload = { postal_code: postalCode, label: String(values.get('label') || '').trim(), active: values.has('active') }
+    const payload = { postal_code: postalCode, label: String(values.get('label') || '').trim(), delivery_slots: readDeliverySlots(values), active: values.has('active') }
     if (area) payload.version = area.version
     await api(area ? `/api/admin/delivery-areas/${area.id}` : '/api/admin/delivery-areas', { method: area ? 'PUT' : 'POST', body: JSON.stringify(payload) })
     dialog.close()
     notify(area ? 'Oblast rozvozu byla upravena.' : 'Oblast rozvozu byla přidána.')
     renderPage()
-  }) }, field('PSČ', 'postal_code', area?.postal_code || '', { required: true, inputmode: 'numeric', autocomplete: 'off', pattern: '[0-9]{5}', placeholder: '11000', hint: 'Pět číslic, například 110 00. Při psaní a vložení mezery odstraníme.' }), field('Název oblasti', 'label', area?.label || '', { maxlength: 100, placeholder: 'Např. Praha 1', hint: 'Nepovinné označení pro snadnou orientaci.' }), field('Povolit rozvoz do tohoto PSČ', 'active', area ? area.active : true, { type: 'checkbox' }), el('p', { class: 'hint' }, 'Zákazník může objednat pouze na aktivní PSČ. Oblast můžete kdykoli pozastavit a později znovu zapnout.'), el('div', { class: 'actions' }, button('Zrušit', () => dialog.close()), el('button', { class: 'button primary', type: 'submit' }, 'Uložit oblast')))
+  }) }, field('PSČ', 'postal_code', area?.postal_code || '', { required: true, inputmode: 'numeric', autocomplete: 'off', pattern: '[0-9]{5}', placeholder: '11000', hint: 'Pět číslic, například 110 00. Při psaní a vložení mezery odstraníme.' }), field('Název oblasti', 'label', area?.label || '', { maxlength: 100, placeholder: 'Např. Praha 1', hint: 'Nepovinné označení pro snadnou orientaci.' }), deliverySlotsField(area?.delivery_slots, true), field('Povolit rozvoz do tohoto PSČ', 'active', area ? area.active : true, { type: 'checkbox' }), el('p', { class: 'hint' }, 'Zákazník může objednat pouze na aktivní PSČ. Oblast můžete kdykoli pozastavit a později znovu zapnout.'), el('div', { class: 'actions' }, button('Zrušit', () => dialog.close()), el('button', { class: 'button primary', type: 'submit' }, 'Uložit oblast')))
   const postal = form.querySelector('[name=postal_code]')
   const normalizeInput = () => {
     const start = postal.selectionStart ?? postal.value.length
@@ -435,10 +538,10 @@ function deliveryAreaDialog(area = null) {
 async function settingsPage() {
   const settings = await api('/api/admin/settings')
   const form = el('form', { class: 'panel settings-panel', onsubmit: event => saveForm(event, async data => {
-    await api('/api/admin/settings', { method: 'PUT', body: JSON.stringify({ delivery_fee_cents: cents(data.get('delivery_fee')), free_delivery_from_cents: cents(data.get('free_delivery_from'), true), order_email: String(data.get('order_email')).trim(), version: settings.version }) })
+    await api('/api/admin/settings', { method: 'PUT', body: JSON.stringify({ delivery_fee_cents: cents(data.get('delivery_fee')), free_delivery_from_cents: cents(data.get('free_delivery_from'), true), order_email: String(data.get('order_email')).trim(), delivery_slots: readDeliverySlots(data) || [], version: settings.version }) })
     notify('Nastavení bylo uloženo.')
     renderPage()
-  }) }, el('p', { class: 'hint' }, 'Změny se použijí pro nové objednávky. Již přijaté objednávky uchovají původní dopravu a celkovou cenu.'), field('Cena dopravy v Kč', 'delivery_fee', (settings.delivery_fee_cents / 100).toFixed(2), { required: true, inputmode: 'decimal' }), field('Doprava zdarma od částky v Kč', 'free_delivery_from', settings.free_delivery_from_cents === null ? '' : (settings.free_delivery_from_cents / 100).toFixed(2), { inputmode: 'decimal', hint: 'Prázdné pole vypne dopravu zdarma. Limit se vztahuje na cenu zboží.' }), field('E-mail pro příjem objednávek', 'order_email', settings.order_email, { type: 'email', required: true, maxlength: 254, autocomplete: 'off', hint: 'Sem dorazí nové objednávky. Potvrzení dostane i zákazník.' }), el('div', { class: 'actions' }, el('button', { type: 'submit', class: 'button primary' }, 'Uložit nastavení')))
+  }) }, el('p', { class: 'hint' }, 'Změny se použijí pro nové objednávky. Již přijaté objednávky uchovají původní dopravu a celkovou cenu.'), deliverySlotsField(settings.delivery_slots), field('Cena dopravy v Kč', 'delivery_fee', (settings.delivery_fee_cents / 100).toFixed(2), { required: true, inputmode: 'decimal' }), field('Doprava zdarma od částky v Kč', 'free_delivery_from', settings.free_delivery_from_cents === null ? '' : (settings.free_delivery_from_cents / 100).toFixed(2), { inputmode: 'decimal', hint: 'Prázdné pole vypne dopravu zdarma. Limit se vztahuje na cenu zboží.' }), field('E-mail pro příjem objednávek', 'order_email', settings.order_email, { type: 'email', required: true, maxlength: 254, autocomplete: 'off', hint: 'Sem dorazí nové objednávky. Potvrzení dostane i zákazník.' }), el('div', { class: 'actions' }, el('button', { type: 'submit', class: 'button primary' }, 'Uložit nastavení')))
   return [header('Doprava a nastavení', 'Cena dopravy a doručování objednávek do vaší schránky.', button('Obnovit', renderPage)), form]
 }
 async function customersPage() {
@@ -512,9 +615,43 @@ function removeAdministratorDialog(administrator) {
   body.append(form)
   form.querySelector('button[type=button]').focus()
 }
+function composeBroadcast(recipientCount) {
+  const body = openDialog('Hromadný e-mail zákazníkům')
+  const storageKey = `brunch.mail.pending.${state.user.id}`
+  let pendingRequest = null
+  const form = el('form', { class: 'form-grid', onsubmit: event => saveForm(event, async data => {
+    const subject = String(data.get('subject')).trim()
+    const message = String(data.get('body')).trim()
+    if (!subject || !message) throw new Error('Vyplňte předmět i text zprávy.')
+    // Retain only a digest and request ID, so retrying after a lost response or reload is safe.
+    const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(JSON.stringify([subject, message])))
+    const fingerprint = Array.from(new Uint8Array(digest), byte => byte.toString(16).padStart(2, '0')).join('')
+    let key = pendingRequest?.fingerprint === fingerprint ? pendingRequest.key : crypto.randomUUID()
+    try {
+      const pending = JSON.parse(sessionStorage.getItem(storageKey))
+      if (pending?.fingerprint === fingerprint) key = pending.key
+      sessionStorage.setItem(storageKey, JSON.stringify({ fingerprint, key }))
+    } catch { /* Private browsing can disable session storage. The open form retains its key. */ }
+    pendingRequest = { fingerprint, key }
+    const result = await api('/api/admin/mail/broadcast', { method: 'POST', body: JSON.stringify({ idempotency_key: key, subject, body: message }) })
+    try { sessionStorage.removeItem(storageKey) } catch { /* Storage may be unavailable. */ }
+    dialog.close()
+    notify(`Zpráva byla zařazena k odeslání. Počet příjemců: ${result.recipient_count}.`)
+    renderPage()
+  }, 'Zařazuji zprávy…') },
+  el('p', { class: 'full section-note' }, `Počet příjemců podle dosavadních objednávek: ${recipientCount}. Každý dostane samostatný e-mail.`),
+  field('Předmět', 'subject', '', { full: true, required: true, maxlength: 200 }),
+  field('Text e-mailu', 'body', '', { kind: 'textarea', full: true, required: true, rows: 8, maxlength: 12000 }),
+  el('div', { class: 'actions full' }, button('Zrušit', () => dialog.close()), el('button', { class: 'button primary', type: 'submit' }, 'Odeslat všem zákazníkům')))
+  body.append(form)
+  form.elements.subject.focus()
+}
+
 async function mailPage() {
-  const messages = await api('/api/admin/mail')
-  const rows = messages.map(message => el('tr', {}, el('td', { class: 'mail-subject' }, el('strong', {}, message.subject), el('small', {}, message.to_email)), el('td', {}, badge(mailStates[message.status] || message.status, message.status), el('small', {}, `Pokusy: ${message.attempts}`)), el('td', {}, dateTime(message.created_at), message.sent_at ? el('small', {}, `Odesláno ${dateTime(message.sent_at)}`) : null), el('td', {}, message.last_error ? el('small', { class: 'mail-error' }, message.last_error) : 'Bez chyby'), el('td', {}, message.status === 'failed' && !['Přihlášení do Brunch', 'Přihlášení do Brunch Era'].includes(message.subject) ? button('Zkusit znovu', async event => {
+  const [messages, audience] = await Promise.all([api('/api/admin/mail'), api('/api/admin/mail/broadcast')])
+  const compose = button('Napsat hromadný e-mail', () => composeBroadcast(audience.recipient_count), 'primary')
+  compose.disabled = audience.recipient_count === 0
+  const rows = messages.map(message => el('tr', {}, el('td', { class: 'mail-subject' }, el('strong', {}, message.subject), el('small', {}, message.to_email)), el('td', {}, badge(mailStates[message.status] || message.status, message.status), el('small', {}, `Pokusy: ${message.attempts}`)), el('td', {}, dateTime(message.created_at), message.sent_at ? el('small', {}, `Odesláno ${dateTime(message.sent_at)}`) : null), el('td', {}, message.last_error ? el('small', { class: 'mail-error' }, message.last_error) : 'Bez chyby'), el('td', {}, message.can_retry ? button('Zkusit znovu', async event => {
     const retryButton = event.currentTarget
     retryButton.disabled = true
     try {
@@ -523,7 +660,8 @@ async function mailPage() {
       renderPage()
     } catch (error) { notify(error.message, true); retryButton.disabled = false }
   }, 'small') : message.status === 'failed' ? el('small', {}, 'Vyžádejte nový přihlašovací odkaz.') : null)))
-  return [header('E-maily', 'Posledních 100 zpráv, jejich doručení a případné chyby.', button('Obnovit', renderPage)), rows.length ? table(['Zpráva / příjemce', 'Stav', 'Čas', 'Poslední chyba', 'Akce'], rows) : empty('Žádné zprávy', 'Zde se zobrazí přihlášení, potvrzení objednávek a zprávy provozovateli.'), el('p', { class: 'section-note' }, 'Stav Odesláno potvrzuje převzetí poštovním serverem. Nezaručuje doručení do doručené pošty příjemce.')]
+  const tools = el('div', { class: 'actions' }, compose, button('Obnovit', renderPage))
+  return [header('E-maily', `Příjemci hromadného e-mailu: ${audience.recipient_count}. Přehled zobrazuje posledních 100 zpráv.`, tools), rows.length ? table(['Zpráva / příjemce', 'Stav', 'Čas', 'Poslední chyba', 'Akce'], rows) : empty('Žádné zprávy', 'Zde se zobrazí přihlášení, potvrzení objednávek a zprávy zákazníkům i provozovateli.'), el('p', { class: 'section-note' }, 'Stav Odesláno potvrzuje převzetí poštovním serverem. Nezaručuje doručení do doručené pošty příjemce.')]
 }
 
 dialog.addEventListener('close', () => { for (const input of dialog.querySelectorAll('input[type=password]')) input.value = '' })

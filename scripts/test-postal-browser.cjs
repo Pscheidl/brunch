@@ -57,6 +57,8 @@ async function main() {
   }
   const fillCheckout = async postal => {
     await shop.locator('[name=email]').fill(email)
+    await shop.locator('[name=name]').fill('Anna Testerová')
+    await shop.locator('[name=tel]').fill('+420 777 123 456')
     await shop.locator('[name=street-address]').fill('Testovací 12')
     await shop.locator('[name=city]').fill('Test rozvozu')
     await shop.locator('[name=postal-code]').fill(postal)

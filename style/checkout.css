@@ -45,6 +45,10 @@
 .checkout-fieldset .address-row { grid-template-columns: minmax(0, 1fr) 120px; }
 .checkout-fieldset .checkout-time { margin-top: 17px; }
 .checkout-fieldset .field-hint { margin-block: -4px 12px; line-height: 1.7; }
+.street-lookup .form-field { margin-bottom: 8px; }
+.street-lookup [role="listbox"] { margin: 0 0 12px; padding: 3px; list-style: none; border: 1px solid var(--line); border-radius: 10px; background: var(--surface); }
+.street-lookup [role="option"] { padding: 10px 12px; border-radius: 7px; color: var(--ink); font-size: 13px; line-height: 1.5; cursor: pointer; }
+.street-lookup [role="option"]:hover, .street-lookup [aria-selected="true"] { color: var(--accent-hover); background: var(--tint); }
 .checkout-next-total { display: flex; align-items: baseline; justify-content: space-between; gap: 18px; margin: 0 0 16px; font-size: 12px; color: var(--muted); }
 .checkout-next-total strong { flex-shrink: 0; color: var(--ink); font-family: 'Geist Mono', monospace; font-size: 18px; font-weight: 550; }
 .checkout-dialog .checkout-back { display: flex; align-items: center; justify-content: center; gap: 7px; width: fit-content; min-height: 44px; margin: 7px auto 0; font-size: 11px; }

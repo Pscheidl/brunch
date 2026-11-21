@@ -10,7 +10,7 @@ use lettre::{
     AsyncSmtpTransport, AsyncTransport, Message, Tokio1Executor, message::SinglePart,
     transport::smtp::authentication::Credentials,
 };
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::json;
 use sqlx::{FromRow, PgConnection};
 use std::time::Duration;
@@ -68,12 +68,12 @@ pub async fn deliver_batch(
     transport: &AsyncSmtpTransport<Tokio1Executor>,
 ) -> ApiResult<usize> {
     // Expired magic links must never remain queued for a delayed delivery or an admin retry.
-    sqlx::query("UPDATE outbox SET status='failed',body='[Přihlašovací odkaz odstraněn po vypršení]',last_error='Přihlašovací odkaz vypršel. Požádejte o nový.',locked_until=NULL,lease_token=NULL WHERE status='pending' AND subject=ANY($1) AND created_at<=now()-interval '15 minutes' AND (locked_until IS NULL OR locked_until<now())")
+    sqlx::query("UPDATE outbox SET status='failed',body='[Přihlašovací odkaz odstraněn po vypršení]',last_error='Přihlašovací odkaz vypršel. Požádejte o nový.',locked_until=NULL,lease_token=NULL WHERE status='pending' AND broadcast_id IS NULL AND subject=ANY($1) AND created_at<=now()-interval '15 minutes' AND (locked_until IS NULL OR locked_until<now())")
         .bind(LOGIN_SUBJECTS).execute(&state.pool).await?;
     let mut sent = 0;
     for _ in 0..20 {
         let lease_token = Uuid::new_v4();
-        let row=sqlx::query_as::<_,PendingMail>("UPDATE outbox SET locked_until=now()+interval '2 minutes',lease_token=$1,attempts=attempts+1 WHERE id=(SELECT id FROM outbox WHERE status='pending' AND next_attempt_at<=now() AND (locked_until IS NULL OR locked_until<now()) AND (subject<>ALL($2) OR created_at>now()-interval '15 minutes') ORDER BY created_at FOR UPDATE SKIP LOCKED LIMIT 1) RETURNING id,to_email,subject,body,attempts,lease_token")
+        let row=sqlx::query_as::<_,PendingMail>("UPDATE outbox SET locked_until=now()+interval '2 minutes',lease_token=$1,attempts=attempts+1 WHERE id=(SELECT id FROM outbox WHERE status='pending' AND next_attempt_at<=now() AND (locked_until IS NULL OR locked_until<now()) AND (broadcast_id IS NOT NULL OR subject<>ALL($2) OR created_at>now()-interval '15 minutes') ORDER BY (broadcast_id IS NOT NULL),created_at,id FOR UPDATE SKIP LOCKED LIMIT 1) RETURNING id,to_email,subject,body,attempts,lease_token")
             .bind(lease_token).bind(LOGIN_SUBJECTS).fetch_optional(&state.pool).await?;
         let Some(row) = row else { break };
         let result = match (state.config.smtp_from.parse(), row.to_email.parse()) {
@@ -101,13 +101,13 @@ pub async fn deliver_batch(
         };
         match result {
             Ok(()) => {
-                let result = sqlx::query("UPDATE outbox SET status='sent',sent_at=now(),locked_until=NULL,lease_token=NULL,last_error=NULL,body=CASE WHEN subject=ANY($3) THEN '[Přihlašovací odkaz odstraněn po odeslání]' ELSE body END WHERE id=$1 AND lease_token=$2 AND status='pending'")
+                let result = sqlx::query("UPDATE outbox SET status='sent',sent_at=now(),locked_until=NULL,lease_token=NULL,last_error=NULL,body=CASE WHEN broadcast_id IS NULL AND subject=ANY($3) THEN '[Přihlašovací odkaz odstraněn po odeslání]' ELSE body END WHERE id=$1 AND lease_token=$2 AND status='pending'")
                     .bind(row.id).bind(row.lease_token).bind(LOGIN_SUBJECTS).execute(&state.pool).await?;
                 sent += result.rows_affected() as usize;
             }
             Err(error) => {
                 let delay = (30_i64 * 2_i64.pow(row.attempts.min(7) as u32)).min(3600);
-                sqlx::query("UPDATE outbox SET status=CASE WHEN attempts>=8 THEN 'failed' ELSE 'pending' END,last_error=$2,locked_until=NULL,lease_token=NULL,next_attempt_at=now()+make_interval(secs=>$3),body=CASE WHEN attempts>=8 AND subject=ANY($5) THEN '[Přihlašovací odkaz odstraněn po selhání odeslání]' ELSE body END WHERE id=$1 AND lease_token=$4 AND status='pending'")
+                sqlx::query("UPDATE outbox SET status=CASE WHEN attempts>=8 THEN 'failed' ELSE 'pending' END,last_error=$2,locked_until=NULL,lease_token=NULL,next_attempt_at=now()+make_interval(secs=>$3),body=CASE WHEN attempts>=8 AND broadcast_id IS NULL AND subject=ANY($5) THEN '[Přihlašovací odkaz odstraněn po selhání odeslání]' ELSE body END WHERE id=$1 AND lease_token=$4 AND status='pending'")
                     .bind(row.id).bind(error).bind(delay as f64).bind(row.lease_token).bind(LOGIN_SUBJECTS).execute(&state.pool).await?;
             }
         }
@@ -118,6 +118,7 @@ pub fn routes() -> Router<AppState> {
     Router::new()
         .route("/api/admin/mail", get(list))
         .route("/api/admin/mail/{id}/retry", post(retry))
+        .route("/api/admin/mail/broadcast", get(audience).post(broadcast))
 }
 #[derive(Serialize, FromRow)]
 struct MailRow {
@@ -126,24 +127,113 @@ struct MailRow {
     subject: String,
     status: String,
     attempts: i32,
+    can_retry: bool,
     last_error: Option<String>,
     created_at: DateTime<Utc>,
     sent_at: Option<DateTime<Utc>>,
 }
 async fn list(State(state): State<AppState>, headers: HeaderMap) -> ApiResult<Json<Vec<MailRow>>> {
     auth::require_admin(&state, &headers).await?;
-    Ok(Json(sqlx::query_as("SELECT id,to_email,subject,status,attempts,last_error,created_at,sent_at FROM outbox ORDER BY created_at DESC LIMIT 100").fetch_all(&state.pool).await?))
+    Ok(Json(sqlx::query_as("SELECT id,to_email,subject,status,attempts,last_error,created_at,sent_at,status='failed' AND (broadcast_id IS NOT NULL OR subject<>ALL($1)) AS can_retry FROM outbox ORDER BY created_at DESC,id DESC LIMIT 100").bind(LOGIN_SUBJECTS).fetch_all(&state.pool).await?))
 }
+
+#[derive(Serialize)]
+struct Audience {
+    recipient_count: i64,
+}
+
+async fn audience(State(state): State<AppState>, headers: HeaderMap) -> ApiResult<Json<Audience>> {
+    auth::require_admin(&state, &headers).await?;
+    let recipient_count = sqlx::query_scalar("SELECT count(*) FROM order_email_recipients")
+        .fetch_one(&state.pool)
+        .await?;
+    Ok(Json(Audience { recipient_count }))
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct BroadcastInput {
+    idempotency_key: Uuid,
+    subject: String,
+    body: String,
+}
+
+async fn broadcast(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(input): Json<BroadcastInput>,
+) -> ApiResult<Json<Audience>> {
+    let admin = auth::require_admin(&state, &headers).await?;
+    let subject = input.subject.trim();
+    let body = input.body.trim();
+    if subject.is_empty() || subject.chars().count() > 200 || subject.contains(char::is_control) {
+        return Err(ApiError::bad_request(
+            "Zadejte předmět na jednom řádku (nejvýše 200 znaků).",
+        ));
+    }
+    if body.is_empty() || body.chars().count() > 12_000 || body.contains('\0') {
+        return Err(ApiError::bad_request(
+            "Zadejte text zprávy (nejvýše 12 000 znaků).",
+        ));
+    }
+    let mut tx = state.pool.begin().await?;
+    let inserted = sqlx::query(
+        "INSERT INTO mail_broadcasts(id,created_by,subject,body) VALUES ($1,$2,$3,$4) ON CONFLICT (id) DO NOTHING",
+    )
+    .bind(input.idempotency_key)
+    .bind(admin.id)
+    .bind(subject)
+    .bind(body)
+    .execute(&mut *tx)
+    .await?;
+    let recipient_count = if inserted.rows_affected() == 0 {
+        sqlx::query_scalar(
+            "SELECT recipient_count FROM mail_broadcasts WHERE id=$1 AND created_by=$2 AND subject=$3 AND body=$4",
+        )
+        .bind(input.idempotency_key)
+        .bind(admin.id)
+        .bind(subject)
+        .bind(body)
+        .fetch_optional(&mut *tx)
+        .await?
+        .ok_or_else(|| ApiError::conflict("Tento požadavek již patří jiné zprávě."))?
+    } else {
+        let result = sqlx::query(
+            "INSERT INTO outbox(id,to_email,subject,body,broadcast_id)
+             SELECT gen_random_uuid(), email, $1, $2, $3 FROM order_email_recipients",
+        )
+        .bind(subject)
+        .bind(format!("{body}\n\nBrunch Era"))
+        .bind(input.idempotency_key)
+        .execute(&mut *tx)
+        .await?;
+        let count = result.rows_affected() as i64;
+        if count == 0 {
+            return Err(ApiError::bad_request(
+                "Zatím nejsou žádné objednávky s e-mailovou adresou.",
+            ));
+        }
+        sqlx::query("UPDATE mail_broadcasts SET recipient_count=$2 WHERE id=$1")
+            .bind(input.idempotency_key)
+            .bind(count)
+            .execute(&mut *tx)
+            .await?;
+        count
+    };
+    tx.commit().await?;
+    Ok(Json(Audience { recipient_count }))
+}
+
 async fn retry(
     State(state): State<AppState>,
     headers: HeaderMap,
     Path(id): Path<Uuid>,
 ) -> ApiResult<Json<serde_json::Value>> {
     auth::require_admin(&state, &headers).await?;
-    let result=sqlx::query("UPDATE outbox SET status='pending',attempts=0,next_attempt_at=now(),locked_until=NULL,lease_token=NULL,last_error=NULL WHERE id=$1 AND status='failed' AND subject<>ALL($2)").bind(id).bind(LOGIN_SUBJECTS).execute(&state.pool).await?;
+    let result=sqlx::query("UPDATE outbox SET status='pending',attempts=0,next_attempt_at=now(),locked_until=NULL,lease_token=NULL,last_error=NULL WHERE id=$1 AND status='failed' AND (broadcast_id IS NOT NULL OR subject<>ALL($2))").bind(id).bind(LOGIN_SUBJECTS).execute(&state.pool).await?;
     if result.rows_affected() == 0 {
         return Err(ApiError::conflict(
-            "Znovu lze odeslat jen selhanou objednávkovou zprávu. Pro přihlášení požádejte o nový odkaz.",
+            "Znovu lze odeslat jen zprávu, jejíž odeslání selhalo. Pro přihlášení požádejte o nový odkaz.",
         ));
     }
     Ok(Json(json!({"ok":true})))

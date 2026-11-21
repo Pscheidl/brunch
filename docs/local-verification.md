@@ -119,3 +119,16 @@ Databázové testy použily novou dočasnou PostgreSQL 18.6. Samostatná zkoušk
 Testy balení a wrapperu používají náhradní Docker příkaz. Ověřují chování skriptů a chybové situace, nikoli skutečný kontejner. V tomto prostředí není Docker daemon, proto **sestavení Docker obrazu a běh celé Compose sestavy nebyly provedeny**. Připravený workflow `.github/workflows/deployment.yml` je ověří po spuštění CI pomocí `scripts/test-deployment-smoke.sh`. Workflow v této přípravě spuštěn nebyl.
 
 Nevzniklo připojení k VPS ani skutečné SMTP nebo Teya. Veřejné DNS, HTTPS, doručení zpráv, skutečná staging platba a zálohy mimo server se ověří až po dodání údajů. Příprava nemění historické výsledky výše a nenahrazuje tyto provozní zkoušky.
+
+## Úpravy obchodu a administrace 21. 11. 2026
+
+Ověření proběhlo na oddělené místní PostgreSQL 18.6 a v Chromiu. Produkčním zákazníkům se při testech neposílaly zprávy.
+
+- Prošlo 6 frontendových a 103 backendových testů včetně HTTP, SMTP, bezpečnosti, obrázků a plateb.
+- Regresní test migrace z verze 0011 ověřil zachování produktů, obrazových dat, cen, položek objednávek a nastavení. Přechod dřívějšího stavu `preparing` na `confirmed` zachová historii.
+- Prošly 4 prohlížečové scénáře nových zákaznických funkcí a 15 kontrol administrace, bez neošetřených chyb JavaScriptu.
+- Ověřeny byly minimální odběry, pracovní kalendář i vzdálenější měsíce, povinné kontakty, ručně upravitelné návrhy adres, rozvozová okna, správa kategorií, hromadné stavy a vystavení faktury s tiskem do PDF.
+- Hromadná pošta byla otestována na místních datech, včetně opakování neúspěšného požadavku a následné změny jeho obsahu.
+- Prošel Clippy se zákazem varování, release sestavení frontendu a kontrola statických souborů.
+
+Toto je záznam místního ověření, nikoli potvrzení produkčního nasazení.

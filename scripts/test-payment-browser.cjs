@@ -46,9 +46,15 @@ async function setup(browser, base, options = {}) {
     const request = route.request()
     const pathname = new URL(request.url()).pathname
     const json = (value, status = 200) => route.fulfill({ status, contentType: 'application/json', body: JSON.stringify(value) })
+    if (pathname === '/api/address-suggestions') {
+      const text = request.postDataJSON().text
+      return text === 'Pod sídlištěm 9'
+        ? json([{ label: 'Pod sídlištěm 1800/9, Kobylisy, 18200 Praha 8', street: 'Pod sídlištěm 1800/9, Kobylisy', city: 'Praha 8', postal_code: '18200' }])
+        : json({ error: 'Registry temporarily unavailable' }, 503)
+    }
     if (pathname === '/api/products') return json([product])
     if (pathname === '/api/settings') return json({ delivery_fee_cents: 0, free_delivery_from_cents: null, delivery_postal_codes: ['11000'], ...(options.enabled === false ? {} : { online_payment_enabled: true }) })
-    if (pathname === '/api/delivery-options') return json({ dates: [{ value: '2026-10-26', label: 'Pondělí 26. října' }], slots: ['09:00–10:00'] })
+    if (pathname === '/api/delivery-options') return json({ dates: [{ value: '2026-10-26', label: 'Pondělí 26. října' }], slots: ['09:00–10:00'], postal_slots: options.postalSlots || {} })
     if (pathname === '/api/auth/me') return options.admin ? json({ user: { id: 'admin', email: 'admin@example.test', is_admin: true } }) : json({ error: 'Nepřihlášen' }, 401)
     if (pathname === '/api/orders') {
       requests.orders.push(request.postDataJSON())
@@ -74,6 +80,8 @@ async function review(page, base) {
   await page.locator('.header-cart').click()
   await page.getByRole('button', { name: 'Pokračovat k doručení', exact: true }).click()
   await page.locator('[name=email]').fill('test@example.test')
+  await page.locator('[name=name]').fill('Anna Testerová')
+  await page.locator('[name=tel]').fill('+420 777 123 456')
   await page.locator('[name=street-address]').fill(order.street)
   await page.locator('[name=city]').fill(order.city)
   await page.locator('[name=postal-code]').fill('11000')
@@ -97,11 +105,61 @@ async function main() {
   const { server, base } = await staticServer()
   const browser = await chromium.launch({ headless: true, args: ['--no-sandbox'] })
   try {
+    await run(browser, base, 'Calendar and postcode hours stay in sync between shop and checkout', async ({ page }) => {
+      await page.goto(base)
+      await page.locator('.product-card').first().getByRole('button', { name: /Přidat .* do košíku/ }).click()
+      await page.locator('.delivery-selector').first().click()
+      const calendar = page.getByRole('dialog').getByRole('group', { name: 'Kalendář doručení' })
+      assert(await calendar.getByRole('button', { name: 'Předchozí měsíc' }).isDisabled())
+      assert(await calendar.getByRole('button', { name: 'Středa 28. 10. 2026' }).isDisabled())
+      assert(await calendar.getByRole('button', { name: 'Sobota 31. 10. 2026' }).isDisabled())
+      await calendar.getByRole('button', { name: 'Následující měsíc' }).click()
+      await calendar.getByRole('button', { name: 'Čtvrtek 19. 11. 2026' }).click()
+      await page.locator('[name=delivery-postal]').fill('11000')
+      assert.equal(await page.locator('[name=delivery-time]').inputValue(), '14:30–16:00')
+      await page.getByRole('button', { name: 'Uložit a vybírat' }).click()
+      await page.locator('.header-cart').click()
+      await page.getByRole('button', { name: 'Pokračovat k doručení' }).click()
+      assert.equal(await page.getByRole('button', { name: 'Čtvrtek 19. 11. 2026', exact: true }).getAttribute('aria-pressed'), 'true')
+      assert.equal(await page.locator('[name=checkout-time]').inputValue(), '14:30–16:00')
+    }, { postalSlots: { '11000': ['14:30–16:00'] } })
+
     await run(browser, base, 'Online payment hidden unless explicitly enabled', async ({ page }) => {
       await review(page, base)
       assert.equal(await page.locator('input[value=card]').count(), 0)
       assert.equal(await page.locator('input[value=card_on_delivery]').count(), 1)
     }, { enabled: false })
+
+    await run(browser, base, 'Picking an address fills editable fields; manual checkout works when the registry is offline', async ({ page }) => {
+      await page.goto(base)
+      await page.locator('.product-card').first().getByRole('button', { name: /Přidat .* do košíku/ }).click()
+      await page.locator('.header-cart').click()
+      await page.getByRole('button', { name: 'Pokračovat k doručení', exact: true }).click()
+      const street = page.locator('[name=street-address]')
+      await street.fill('Pod sídlištěm 9')
+      await page.getByRole('option', { name: /Pod sídlištěm 1800/ }).waitFor()
+      await street.press('ArrowDown')
+      await street.press('Enter')
+      assert.equal(await street.inputValue(), 'Pod sídlištěm 1800/9, Kobylisy')
+      assert.equal(await page.locator('[name=city]').inputValue(), 'Praha 8')
+      assert.equal(await page.locator('[name=postal-code]').inputValue(), '18200')
+
+      const offline = page.waitForResponse(response => new URL(response.url()).pathname === '/api/address-suggestions' && response.status() === 503)
+      await street.fill('Vlastní adresa 5')
+      await offline
+      await page.locator('[name=city]').fill('Praha')
+      await page.locator('[name=postal-code]').fill('11000')
+      await page.locator('[name=email]').fill('test@example.test')
+      const next = page.getByRole('button', { name: 'Zkontrolovat objednávku', exact: true })
+      await next.click()
+      assert(await page.locator('[name=name]').evaluate(el => el.matches(':invalid')))
+      await page.locator('[name=name]').fill('Anna Testerová')
+      await next.click()
+      assert(await page.locator('[name=tel]').evaluate(el => el.matches(':invalid')))
+      await page.locator('[name=tel]').fill('+420 777 123 456')
+      await next.click()
+      await page.getByText('Vlastní adresa 5', { exact: true }).waitFor()
+    })
 
     let storedAtRedirect
     await run(browser, base, 'Lost create response reuses the key, delayed checkout persists recovery before redirect', async ({ page, requests }) => {
