@@ -104,7 +104,7 @@ async function lostOrderResponse(browser) {
     assert.equal(replayed.id, accepted.id, 'The retry returns the original order')
     assert.deepEqual(retriedPayload, firstPayload, 'Retry sends identical payload and idempotency key')
     assert.equal(orderCount(email), 1, 'Retry did not create a second database order')
-    await page.getByRole('heading', { name: 'Objednávku jsme přijali.', exact: true }).waitFor()
+    await page.getByRole('heading', { name: 'Dobrá pauza je na dohled.', exact: true }).waitFor()
     assert.equal(await page.locator('.header-cart .cart-count').innerText(), '0')
     assert.equal(await page.evaluate(() => sessionStorage.getItem('brunch-order-attempt')), null)
     results.push({ scenario: 'lost success response and safe retry', passed: true, orderId: replayed.id, orderNumber: replayed.number, databaseOrderCount: 1 })
@@ -153,7 +153,7 @@ async function changedPrice(browser) {
     assert.notEqual(payloads[1].idempotency_key, payloads[0].idempotency_key, 'Reconfirmed changed payload gets a new attempt key')
     assert.equal(order.total_cents, payloads[1].expected_total_cents)
     assert.equal(orderCount(email), 1)
-    await page.getByRole('heading', { name: 'Objednávku jsme přijali.', exact: true }).waitFor()
+    await page.getByRole('heading', { name: 'Dobrá pauza je na dohled.', exact: true }).waitFor()
     results.push({ scenario: 'real 409 for stale price, refresh, explicit reconfirmation', passed: true, oldTotalCents: payloads[0].expected_total_cents, confirmedTotalCents: order.total_cents, databaseOrderCount: 1 })
   } finally { await context.close() }
 }

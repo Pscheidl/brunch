@@ -7,7 +7,7 @@ cargo fmt --manifest-path server/Cargo.toml --check
 cargo test --locked --lib
 cargo test --locked --manifest-path server/Cargo.toml --lib
 cargo test --locked --manifest-path server/Cargo.toml --test config
-cargo test --locked --manifest-path server/Cargo.toml --test api --test mail --test security --test administrators --test media --test payments -- --ignored --test-threads=1
+cargo test --locked --manifest-path server/Cargo.toml --test api --test mail --test security --test administrators --test media --test payments --test customer_experience --test team_orders -- --ignored --test-threads=1
 cargo clippy --locked --manifest-path server/Cargo.toml --all-targets -- -D warnings
 ./scripts/build.sh --public-url /
 python3 scripts/check-pages.py --dist dist --public-url /

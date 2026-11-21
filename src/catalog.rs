@@ -19,6 +19,8 @@ pub struct Product {
     pub stock: Option<i32>,
     #[serde(default)]
     pub minimum_quantity: u16,
+    #[serde(default)]
+    pub variants: Vec<String>,
     pub version: i64,
 }
 
@@ -48,6 +50,18 @@ pub struct Settings {
     pub hero_image: String,
     #[serde(default)]
     pub hero_image_alt: String,
+    #[serde(default)]
+    pub public_contact_email: String,
+    #[serde(default)]
+    pub public_contact_phone: String,
+    #[serde(default)]
+    pub seller_name: String,
+    #[serde(default)]
+    pub seller_address: String,
+    #[serde(default)]
+    pub seller_ico: String,
+    #[serde(default)]
+    pub delivery_area_label: String,
 }
 
 pub const DEFAULT_HERO_IMAGE: &str = "images/brunch-spread.webp";
@@ -124,6 +138,8 @@ pub struct Order {
 }
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct OrderItem {
+    #[serde(default)]
+    pub variant: Option<String>,
     pub product_id: i64,
     pub name: String,
     pub quantity: u16,
@@ -148,11 +164,27 @@ pub struct PaymentRecovery {
 }
 #[derive(Clone, Debug, Serialize)]
 pub struct RequestedItem {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub variant: Option<String>,
     pub product_id: i64,
     pub quantity: u16,
 }
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+pub struct BillingInput {
+    pub name: String,
+    pub address: String,
+    pub company_id: String,
+    pub tax_id: String,
+}
+
 #[derive(Clone, Debug, Serialize)]
 pub struct OrderRequest {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub team_order_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub team_revision: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub billing: Option<BillingInput>,
     pub idempotency_key: String,
     pub email: String,
     pub name: String,
@@ -282,6 +314,9 @@ mod tests {
     use super::*;
     fn order_request() -> OrderRequest {
         OrderRequest {
+            team_order_id: None,
+            team_revision: None,
+            billing: None,
             idempotency_key: String::new(),
             email: "test@example.test".into(),
             name: "Jana Testovací".into(),
@@ -295,6 +330,7 @@ mod tests {
             delivery_slot: "09:00–10:00".into(),
             payment_method: "cash_on_delivery".into(),
             items: vec![RequestedItem {
+                variant: None,
                 product_id: 1,
                 quantity: 1,
             }],
@@ -338,6 +374,7 @@ mod tests {
 
     fn product(id: i64, cents: i64, stock: Option<i32>) -> Product {
         Product {
+            variants: Vec::new(),
             id,
             name: "Svačina".into(),
             description: String::new(),
@@ -432,5 +469,84 @@ mod tests {
             &[product(18, 100, Some(3)), product(7, 100, Some(0))]
         ));
         assert_eq!(cart, Cart::from([(18, 3)]));
+    }
+}
+
+/// Normalize Czech search without requiring customers to type accents.
+pub fn search_key(value: &str) -> String {
+    value
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .to_lowercase()
+        .chars()
+        .map(|c| match c {
+            'á' | 'ä' => 'a',
+            'č' => 'c',
+            'ď' => 'd',
+            'é' | 'ě' | 'ë' => 'e',
+            'í' | 'ï' => 'i',
+            'ň' => 'n',
+            'ó' | 'ö' => 'o',
+            'ř' => 'r',
+            'š' => 's',
+            'ť' => 't',
+            'ú' | 'ů' | 'ü' => 'u',
+            'ý' => 'y',
+            'ž' => 'z',
+            _ => c,
+        })
+        .collect()
+}
+pub fn allergen_label(value: &str) -> String {
+    const LABELS: [&str; 14] = [
+        "obiloviny obsahující lepek",
+        "korýši",
+        "vejce",
+        "ryby",
+        "arašídy",
+        "sója",
+        "mléko",
+        "skořápkové plody",
+        "celer",
+        "hořčice",
+        "sezam",
+        "oxid siřičitý a siřičitany",
+        "vlčí bob",
+        "měkkýši",
+    ];
+    if value.trim().is_empty() {
+        return "Informace zatím nebyly doplněny. Před objednáním si je prosím ověřte u obsluhy."
+            .into();
+    }
+    value
+        .split(',')
+        .map(|part| {
+            let t = part.trim();
+            t.parse::<usize>()
+                .ok()
+                .filter(|i| (1..=14).contains(i))
+                .map(|i| format!("{i} – {}", LABELS[i - 1]))
+                .unwrap_or_else(|| t.into())
+        })
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+#[cfg(test)]
+mod ux_tests {
+    use super::*;
+    #[test]
+    fn czech_search_is_accent_and_space_insensitive() {
+        assert_eq!(search_key("  ŠUNKA   & Sýr  "), "sunka & syr");
+        assert!(search_key("Vajíčková pomazánka").contains(&search_key("vajickova")));
+    }
+    #[test]
+    fn missing_allergens_are_never_presented_as_allergen_free() {
+        assert!(allergen_label("").contains("nebyly doplněny"));
+        assert_eq!(
+            allergen_label("1, 3, 7"),
+            "1 – obiloviny obsahující lepek, 3 – vejce, 7 – mléko"
+        );
+        assert_eq!(allergen_label("Obsahuje mléko"), "Obsahuje mléko");
     }
 }

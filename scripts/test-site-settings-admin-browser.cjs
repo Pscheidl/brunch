@@ -30,7 +30,8 @@ async function main() {
   const defaultImage = '/images/brunch-spread.webp'
   const defaultAlt = 'Kváskový sendvič, jogurt s granolou a hummus se zeleninou na prostřeném stole'
   const customImage = '/api/images/12345678-1234-4234-9234-123456789012'
-  let settings = { hero_image: '', hero_image_alt: defaultAlt, version: 1 }
+  const contacts = { public_contact_email: '', public_contact_phone: '', seller_name: '', seller_address: '', seller_ico: '', delivery_area_label: '' }
+  let settings = { ...contacts, hero_image: '', hero_image_alt: defaultAlt, version: 1 }
   let uploadStarted
   const uploadedPhoto = await fs.readFile(path.join(root, 'images/brunch-spread.webp'))
   page.on('pageerror', error => errors.push(error.message))
@@ -112,16 +113,16 @@ async function main() {
     await description().fill('  Čerstvé pečivo a ovoce na stole  ')
     assert.equal(await preview().getAttribute('alt'), 'Čerstvé pečivo a ovoce na stole')
     assert.equal((await save()).status(), 200)
-    await page.getByText('Hlavní fotografie webu byla zveřejněna.', { exact: true }).waitFor()
-    assert.deepEqual(saves[0], { hero_image: customImage, hero_image_alt: 'Čerstvé pečivo a ovoce na stole', version: 1 })
+    await page.getByText('Nastavení webu bylo zveřejněno.', { exact: true }).waitFor()
+    assert.deepEqual(saves[0], { ...contacts, hero_image: customImage, hero_image_alt: 'Čerstvé pečivo a ovoce na stole', version: 1 })
 
     await page.getByRole('button', { name: 'Použít výchozí fotografii', exact: true }).click()
     assert.equal(await preview().getAttribute('src'), defaultImage)
     assert.equal(await description().inputValue(), defaultAlt)
     assert.equal(saves.length, 1, 'Reset is only a draft until saved')
     assert.equal((await save()).status(), 200)
-    await page.getByText('Hlavní fotografie webu byla zveřejněna.', { exact: true }).waitFor()
-    assert.deepEqual(saves[1], { hero_image: '', hero_image_alt: defaultAlt, version: 2 })
+    await page.getByText('Nastavení webu bylo zveřejněno.', { exact: true }).waitFor()
+    assert.deepEqual(saves[1], { ...contacts, hero_image: '', hero_image_alt: defaultAlt, version: 2 })
 
     const conflictUpload = await beginUpload()
     await conflictUpload({ json: { url: customImage } })

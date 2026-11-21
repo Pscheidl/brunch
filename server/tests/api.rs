@@ -244,6 +244,219 @@ async fn site_settings_validate_uploads_authorization_and_concurrent_updates() {
 
 #[tokio::test]
 #[ignore = "requires real PostgreSQL via TEST_DATABASE_URL"]
+async fn public_contacts_validate_publish_preserve_legacy_updates_and_conflict() {
+    let app = TestApp::new().await;
+    let guest = app.client();
+    let admin = app.login("admin@example.test").await;
+    let initial = app.get(&admin, "/api/admin/site-settings").await;
+    let fields = [
+        "public_contact_email",
+        "public_contact_phone",
+        "seller_name",
+        "seller_address",
+        "seller_ico",
+        "delivery_area_label",
+    ];
+    for field in fields {
+        assert_eq!(initial[field], "");
+    }
+    let mut input = initial.clone();
+    input["public_contact_email"] = json!(" INFO@EXAMPLE.TEST ");
+    input["public_contact_phone"] = json!(" +420 777 123 456 ");
+    input["seller_name"] = json!(" Testovací pekárna ");
+    input["seller_address"] = json!(" Testovací 1\nPraha ");
+    input["seller_ico"] = json!("12345678");
+    input["delivery_area_label"] = json!(" Praha 1 až 5 ");
+    let saved = app
+        .call(
+            &admin,
+            Method::PUT,
+            "/api/admin/site-settings",
+            Some(&input),
+            StatusCode::OK,
+        )
+        .await;
+    assert_eq!(saved["public_contact_email"], "info@example.test");
+    assert_eq!(saved["seller_name"], "Testovací pekárna");
+    assert_eq!(saved["seller_address"], "Testovací 1\nPraha");
+    let public = app.get(&guest, "/api/settings").await;
+    for field in fields {
+        assert_eq!(public[field], saved[field], "public field {field}");
+    }
+    assert!(
+        public.get("order_email").is_none(),
+        "private order recipient is never the public contact"
+    );
+    for (field, value) in [
+        ("public_contact_email", "not-email"),
+        ("public_contact_phone", "javascript:123456"),
+        ("public_contact_phone", "1"),
+        ("seller_ico", "123"),
+        ("seller_ico", "abcdefgh"),
+        ("seller_name", "bad\u{0000}value"),
+    ] {
+        let mut invalid = saved.clone();
+        invalid[field] = json!(value);
+        app.call(
+            &admin,
+            Method::PUT,
+            "/api/admin/site-settings",
+            Some(&invalid),
+            StatusCode::BAD_REQUEST,
+        )
+        .await;
+        assert_eq!(
+            app.get(&admin, "/api/admin/site-settings").await,
+            saved,
+            "invalid contacts do not change settings"
+        );
+    }
+    let legacy = json!({"hero_image":"", "hero_image_alt":"", "version":saved["version"]});
+    let preserved = app
+        .call(
+            &admin,
+            Method::PUT,
+            "/api/admin/site-settings",
+            Some(&legacy),
+            StatusCode::OK,
+        )
+        .await;
+    for field in fields {
+        assert_eq!(
+            preserved[field], saved[field],
+            "legacy client preserves {field}"
+        );
+    }
+    app.call(
+        &admin,
+        Method::PUT,
+        "/api/admin/site-settings",
+        Some(&saved),
+        StatusCode::CONFLICT,
+    )
+    .await;
+    let mut cleared = preserved.clone();
+    for field in fields {
+        cleared[field] = json!("");
+    }
+    let cleared = app
+        .call(
+            &admin,
+            Method::PUT,
+            "/api/admin/site-settings",
+            Some(&cleared),
+            StatusCode::OK,
+        )
+        .await;
+    for field in fields {
+        assert_eq!(cleared[field], "");
+    }
+    app.close().await;
+}
+
+#[tokio::test]
+#[ignore = "requires real PostgreSQL via TEST_DATABASE_URL"]
+async fn product_variants_validate_selection_and_preserve_order_snapshot() {
+    let app = TestApp::new().await;
+    let guest = app.client();
+    let admin = app.login("admin@example.test").await;
+    let created = app.post(&admin, "/api/admin/products", &json!({"name":"Testovací box", "price_cents":43000, "variants":["  Šunka a sýr  ","Zeleninový"]})).await;
+    assert_eq!(created["variants"], json!(["Šunka a sýr", "Zeleninový"]));
+    let endpoint = format!("/api/admin/products/{}", created["id"]);
+    for invalid in [
+        json!([""]),
+        json!(["Stejné", "Stejné"]),
+        json!(["x".repeat(121)]),
+        json!((0..31).map(|i| format!("Varianta {i}")).collect::<Vec<_>>()),
+    ] {
+        let mut update = product_input(&created);
+        update["variants"] = invalid;
+        app.call(
+            &admin,
+            Method::PUT,
+            &endpoint,
+            Some(&update),
+            StatusCode::BAD_REQUEST,
+        )
+        .await;
+    }
+    let mail_before = app.count("outbox").await;
+    let mut order_input = app
+        .order(&guest, "variants@example.test", &created, 1)
+        .await;
+    app.call(
+        &guest,
+        Method::POST,
+        "/api/orders",
+        Some(&order_input),
+        StatusCode::CONFLICT,
+    )
+    .await;
+    order_input["items"][0]["variant"] = json!("Neexistující");
+    app.call(
+        &guest,
+        Method::POST,
+        "/api/orders",
+        Some(&order_input),
+        StatusCode::CONFLICT,
+    )
+    .await;
+    assert_eq!(app.count("orders").await, 0);
+    assert_eq!(app.count("outbox").await, mail_before);
+    order_input["items"][0]["variant"] = json!("Šunka a sýr");
+    let order = app.post(&guest, "/api/orders", &order_input).await;
+    assert_eq!(order["items"][0]["variant"], "Šunka a sýr");
+    assert!(
+        order["items"][0]["name"]
+            .as_str()
+            .unwrap()
+            .contains("Šunka a sýr")
+    );
+    let mut update = product_input(&created);
+    update.as_object_mut().unwrap().remove("variants");
+    update["description"] = json!("Nový popis");
+    let preserved = app
+        .call(
+            &admin,
+            Method::PUT,
+            &endpoint,
+            Some(&update),
+            StatusCode::OK,
+        )
+        .await;
+    assert_eq!(
+        preserved["variants"], created["variants"],
+        "legacy product editor preserves variants"
+    );
+    update = product_input(&preserved);
+    update["variants"] = json!(["Jiná náplň"]);
+    app.call(
+        &admin,
+        Method::PUT,
+        &endpoint,
+        Some(&update),
+        StatusCode::OK,
+    )
+    .await;
+    let replay = app.post(&guest, "/api/orders", &order_input).await;
+    assert_eq!(
+        replay["id"], order["id"],
+        "a replay retains original accepted choice"
+    );
+    assert_eq!(replay["items"][0]["variant"], "Šunka a sýr");
+    let summary = app
+        .get(
+            &admin,
+            &format!("/api/admin/orders/{}", order["id"].as_str().unwrap()),
+        )
+        .await;
+    assert_eq!(summary["items"][0]["variant"], "Šunka a sýr");
+    assert_eq!(app.count("orders").await, 1);
+    app.close().await;
+}
+
+#[tokio::test]
+#[ignore = "requires real PostgreSQL via TEST_DATABASE_URL"]
 async fn terms_publication_is_authorized_versioned_and_preserves_accepted_text() {
     let app = TestApp::new().await;
     let guest = app.client();
@@ -694,10 +907,10 @@ async fn upgrade_preserves_existing_products_photos_orders_and_settings() {
 
     // Compare every existing field, including image bytes and historical prices.
     let comparisons = [
-        ("products", " - 'minimum_quantity'"),
+        ("products", " - 'minimum_quantity' - 'variants'"),
         ("images", ""),
         ("product_prices", ""),
-        ("order_items", ""),
+        ("order_items", " - 'variant'"),
         (
             "shop_settings",
             " - 'delivery_slots' - 'additional_order_emails'",
@@ -731,6 +944,18 @@ async fn upgrade_preserves_existing_products_photos_orders_and_settings() {
         let actual: Value = sqlx::query_scalar(&query).fetch_one(&pool).await.unwrap();
         assert_eq!(actual, expected, "upgrade changed existing {table} fields");
     }
+    assert!(
+        sqlx::query_scalar::<_, bool>("SELECT bool_and(cardinality(variants)=0) FROM products")
+            .fetch_one(&pool)
+            .await
+            .unwrap()
+    );
+    assert!(
+        sqlx::query_scalar::<_, bool>("SELECT bool_and(variant IS NULL) FROM order_items")
+            .fetch_one(&pool)
+            .await
+            .unwrap()
+    );
     let state: (String, i64) = sqlx::query_as("SELECT status,version FROM orders")
         .fetch_one(&pool)
         .await
