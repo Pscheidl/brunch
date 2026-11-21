@@ -80,7 +80,7 @@
 @media(max-width:800px) { .desktop-nav { gap:18px; } .desktop-nav a:last-child { display:none; } }
 @media(max-width:600px) {
  .product-photo.photo-frame { grid-template-rows:minmax(0,1fr) auto; aspect-ratio:auto; height:128px; padding:4px 4px 0; gap:6px; }
- .product-photo .photo-detail { position:static; justify-self:end; padding:2px 0; border:0; background:transparent; opacity:1; transform:none; }
+ .product-photo .photo-detail { position:relative; inset:auto; z-index:1; justify-self:end; padding:2px 0; border:0; background:transparent; opacity:1; transform:none; }
  .account-button { justify-content:center; width:44px; padding:8px; }
  .account-button span { display:none; }
  .account-button .icon { width:17px; height:17px; }
