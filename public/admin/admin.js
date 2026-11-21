@@ -12,7 +12,7 @@ const statuses = { awaiting_payment: 'Čeká na zaplacení', new: 'Přijatá', c
 const payments = { unpaid: 'Nezaplaceno', paid: 'Zaplaceno' }
 const onlinePaymentStates = { pending: 'Čeká na přípravu nebo ověření', ready: 'Platební brána je připravena, platba čeká', paid: 'Platba ověřena', failed: 'Platba neproběhla', expired: 'Platnost platby skončila', review: 'Vyžaduje kontrolu obsluhy' }
 const mailStates = { pending: 'Čeká na odeslání', sent: 'Odesláno', failed: 'Odeslání selhalo' }
-const routes = [['orders', 'Objednávky'], ['products', 'Zboží a ceny'], ['categories', 'Kategorie'], ['customers', 'Zákazníci'], ['delivery-areas', 'Oblasti rozvozu'], ['settings', 'Doprava a nastavení'], ['invoice-settings', 'Fakturační údaje'], ['terms', 'Obchodní podmínky'], ['administrators', 'Administrátoři'], ['mail', 'E-maily']]
+const routes = [['orders', 'Objednávky'], ['products', 'Zboží a ceny'], ['categories', 'Kategorie'], ['customers', 'Zákazníci'], ['delivery-areas', 'Oblasti rozvozu'], ['settings', 'Doprava a nastavení'], ['site-settings', 'Obecné nastavení webu'], ['invoice-settings', 'Fakturační údaje'], ['terms', 'Obchodní podmínky'], ['administrators', 'Administrátoři'], ['mail', 'E-maily']]
 const normalizePostalCode = value => String(value ?? '').replace(/[\s\u0085]/g, '')
 const formatPostalCode = value => normalizePostalCode(value).replace(/^([0-9]{3})([0-9]{2})$/, '$1 $2')
 
@@ -51,7 +51,7 @@ async function api(path, options = {}) {
   const data = await response.json().catch(() => ({}))
   if (!response.ok) {
     const conflictHint = response.status === 409 && !path.startsWith('/api/admin/administrators')
-    const conflictAction = path === '/api/admin/terms' ? 'Načtěte aktuální znění tlačítkem Obnovit. Váš rozepsaný text zatím zůstává ve formuláři.' : 'Zavřete okno a načtěte aktuální data tlačítkem Obnovit.'
+    const conflictAction = path === '/api/admin/terms' ? 'Načtěte aktuální znění tlačítkem Obnovit. Váš rozepsaný text zatím zůstává ve formuláři.' : path === '/api/admin/site-settings' ? 'Načtěte aktuální nastavení tlačítkem Obnovit. Vybraná fotografie i rozepsaný popis zatím zůstávají ve formuláři.' : 'Zavřete okno a načtěte aktuální data tlačítkem Obnovit.'
     const error = new Error(conflictHint ? `${data.error || 'Záznam se mezitím změnil.'} ${conflictAction}` : data.error || `Požadavek se nepodařil (${response.status}).`)
     error.status = response.status
     if (path.startsWith('/api/admin/') && path !== '/api/admin/auth/login' && [401, 403].includes(response.status)) {
@@ -181,7 +181,7 @@ async function renderPage() {
   }
   content.replaceChildren(el('p', { class: 'loading', role: 'status' }, 'Načítám data…'))
   try {
-    const page = await ({ orders: ordersPage, products: productsPage, categories: categoriesPage, customers: customersPage, 'delivery-areas': deliveryAreasPage, settings: settingsPage, 'invoice-settings': invoiceSettingsPage, terms: termsPage, administrators: administratorsPage, mail: mailPage })[state.page]()
+    const page = await ({ orders: ordersPage, products: productsPage, categories: categoriesPage, customers: customersPage, 'delivery-areas': deliveryAreasPage, settings: settingsPage, 'site-settings': siteSettingsPage, 'invoice-settings': invoiceSettingsPage, terms: termsPage, administrators: administratorsPage, mail: mailPage })[state.page]()
     if (generation === state.generation) content.replaceChildren(...page)
   } catch (error) {
     if (generation !== state.generation) return

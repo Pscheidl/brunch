@@ -902,9 +902,9 @@ fn Home() -> impl IntoView {
         </div></header>
         <main>
             <Show when=move ||shop.payment_recovery.get().is_some()><div class="page-width api-message" role="status"><p>"Máte uloženou objednávku s online platbou. Ověřte její stav nebo pokračujte v platbě."</p><button class="button secondary" on:click=move |_|shop.resume_payment()>"Otevřít uloženou objednávku"</button></div></Show>
-            <section class="hero page-width" aria-labelledby="hero-title"><div class="hero-copy"><div class="eyebrow"><span class="status-dot"></span>"Z PEKÁRNY ROVNOU K VÁM"</div><h1 id="hero-title">"Dobrá pauza."<br/><span>"Lepší den."</span></h1><p>"Poctivé pečivo. Čerstvé suroviny. Svačiny, na které se budete těšit. Až k vám do kanceláře."</p><a class="button primary hero-cta" href="#nabidka">"Co si dnes dáte?"<Icon/></a><div class="hero-footnote"><Icon name="check"/>"Pár kliknutí. Bez registrace."</div></div><div class="hero-visual"><img src="images/brunch-spread.webp" alt="Kváskový sendvič, jogurt s granolou a hummus se zeleninou na prostřeném stole" width="1536" height="1024" fetchpriority="high"/><div class="photo-caption"><span class="caption-icon"><Icon name="sun"/></span><div><strong>"Malá pauza. Velká radost."</strong><span>"Dobré věci si zaslouží svůj čas."</span></div></div><span class="photo-index">"01 / DOBRÉ RÁNO"</span></div></section>
+            <section class="hero page-width" aria-labelledby="hero-title"><div class="hero-copy"><div class="eyebrow"><span class="status-dot"></span>"Z PEKÁRNY MYSTERIUM GAUDI"</div><h1 id="hero-title">"Dobrá pauza."<br/><span>"Lepší den."</span></h1><p>"Jedinečné houstičky z pekárny Mysterium Gaudi, pečené podle originální domácí receptury. Poctivý základ našich svačin, doplněný čerstvými surovinami. Až k vám do kanceláře."</p><a class="button primary hero-cta" href="#nabidka">"Co si dnes dáte?"<Icon/></a><div class="hero-footnote"><Icon name="check"/>"Pár kliknutí. Bez registrace."</div></div><div class="hero-visual"><HeroPhoto shop/><div class="photo-caption"><span class="caption-icon"><Icon name="sun"/></span><div><strong>"Malá pauza. Velká radost."</strong><span>"Dobré věci si zaslouží svůj čas."</span></div></div><span class="photo-index">"01 / DOBRÉ RÁNO"</span></div></section>
             <div class="page-width"><section class="delivery-strip" aria-label="Nastavení doručení"><button class="delivery-selector" on:click=move |_| {shop.check_delivery_date();open_dialog(shop.delivery_dialog);}><Icon name="pin"/><span><small>"VAŠE ADRESA"</small><strong>{move || if shop.details.postal.get().is_empty() {"Kam to přivezeme?".into()} else {format!("PSČ {}",shop.details.postal.get())}}</strong></span><Icon name="chevron"/></button><button class="delivery-selector" on:click=move |_| {shop.check_delivery_date();open_dialog(shop.delivery_dialog);}><Icon name="clock"/><span><small>"POŽADOVANÝ TERMÍN"</small><strong>{move ||shop.delivery_label()}</strong></span><Icon name="chevron"/></button><div class="delivery-price"><Icon name="truck"/><span>{move ||shop.delivery_info()}</span></div></section><div class="benefits"><span><Icon name="leaf"/>"Suroviny, které znáte"</span><span><Icon name="sun"/>"Připraveno na vaše ráno"</span><span><Icon name="bag"/>"Pro vás i celý tým"</span></div></div>
-            <section class="catalog page-width" id="nabidka" aria-labelledby="catalog-title"><div class="section-heading"><div><p class="eyebrow">"VAŠE DALŠÍ OBLÍBENÁ SVAČINA"</p><h2 id="catalog-title">"Na co máte chuť?"</h2></div><p class="catalog-note">"Něco malého. Něco dobrého. Něco pro vás."</p></div>
+            <section class="catalog page-width" id="nabidka" aria-labelledby="catalog-title"><div class="section-heading"><div><p class="eyebrow">"VAŠE DALŠÍ OBLÍBENÁ SVAČINA"</p><h2 id="catalog-title">"Na co máte chuť?"</h2></div><p class="catalog-note">"Originální houstičky. Domácí receptura. Poctivá chuť."</p></div>
                 <div class="filter-bar"><div class="categories" role="group" aria-label="Kategorie svačin">{move || {let mut names = vec![String::new()]; for p in shop.products.get() {if !p.category.is_empty() && !names.contains(&p.category) {names.push(p.category);}} names.into_iter().map(move |name| {let active=name.clone(); let pressed=name.clone(); let choose=name.clone(); let label=if name.is_empty() {"Vše".to_owned()} else if name=="Vše" {"Kategorie Vše".to_owned()} else {name}; view! {<button class:active=move ||category.get()==active aria-pressed=move ||category.get()==pressed on:click=move |_|category.set(choose.clone())>{label}</button>}}).collect_view()}}</div><label class="vegan-filter"><input type="checkbox" prop:checked=move ||vegan.get() on:change=move |ev|vegan.set(event_target_checked(&ev))/><Icon name="leaf"/>"Jen rostlinné"</label></div>
                 <label class="catalog-search"><Icon name="bag"/><input type="search" aria-label="Hledat v nabídce" placeholder="Najít oblíbenou svačinu…" prop:value=move ||search.get() on:input=move |ev|search.set(event_target_value(&ev))/></label>
                 <Show when=move ||shop.loading.get()><p class="shop-status" role="status">"Načítáme čerstvou nabídku…"</p></Show>
@@ -943,6 +943,36 @@ fn product_image(product: &Product) -> impl IntoView + use<> {
     };
     leptos::either::Either::Right(view! { <span class=class aria-hidden="true"></span> })
 }
+#[component]
+fn HeroPhoto(shop: Shop) -> impl IntoView {
+    let failed_source = RwSignal::new(None::<String>);
+    let source = move || {
+        let requested = shop.settings.with(|settings| settings.hero_image.clone());
+        if requested.is_empty() || failed_source.get().as_deref() == Some(requested.as_str()) {
+            catalog::DEFAULT_HERO_IMAGE.to_owned()
+        } else {
+            requested
+        }
+    };
+    view! {
+        <img src=source
+            alt=move || if source() == catalog::DEFAULT_HERO_IMAGE {
+                catalog::DEFAULT_HERO_ALT.to_owned()
+            } else {
+                shop.settings.with(|settings| settings.hero_image_alt.clone())
+            }
+            width="1536" height="1024" fetchpriority="high"
+            on:error=move |event| {
+                let image = event_target::<web_sys::HtmlElement>(&event);
+                if let Some(failed) = image.get_attribute("src") {
+                    if failed != catalog::DEFAULT_HERO_IMAGE {
+                        failed_source.set(Some(failed));
+                    }
+                }
+            }/>
+    }
+}
+
 #[component]
 fn ProductCard(product: Product, shop: Shop) -> impl IntoView {
     let id = product.id;

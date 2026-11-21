@@ -44,7 +44,15 @@ pub struct Settings {
     pub delivery_postal_codes: Vec<String>,
     #[serde(default)]
     pub online_payment_enabled: bool,
+    #[serde(default)]
+    pub hero_image: String,
+    #[serde(default)]
+    pub hero_image_alt: String,
 }
+
+pub const DEFAULT_HERO_IMAGE: &str = "images/brunch-spread.webp";
+pub const DEFAULT_HERO_ALT: &str =
+    "Kváskový sendvič, jogurt s granolou a hummus se zeleninou na prostřeném stole";
 
 #[derive(Clone, Debug, Deserialize)]
 pub struct Terms {
@@ -362,6 +370,7 @@ mod tests {
             free_delivery_from_cents: Some(35000),
             delivery_postal_codes: vec!["11000".into()],
             online_payment_enabled: false,
+            ..Settings::default()
         };
         assert_eq!(delivery_fee(34999, &settings), 4900);
         assert_eq!(delivery_fee(35000, &settings), 0);

@@ -1,6 +1,7 @@
 mod categories;
 
 mod invoices;
+mod site_settings;
 mod terms;
 
 use crate::{ApiError, ApiResult, AppState, auth, client_ip, mail};
@@ -37,6 +38,7 @@ pub fn routes() -> Router<AppState> {
     Router::new()
         .merge(invoices::routes())
         .merge(categories::routes())
+        .merge(site_settings::routes())
         .merge(terms::routes())
         .route("/api/products", get(products))
         .route("/api/settings", get(settings))
@@ -302,8 +304,9 @@ async fn settings(State(state): State<AppState>) -> ApiResult<Json<Value>> {
         (i64, Option<i64>, Vec<String>) = sqlx::query_as(
             "SELECT delivery_fee_cents,free_delivery_from_cents,ARRAY(SELECT postal_code FROM delivery_areas WHERE active ORDER BY postal_code) AS delivery_postal_codes FROM shop_settings WHERE id=1",
         ).fetch_one(&state.pool).await?;
+    let site = site_settings::read(&state.pool).await?;
     Ok(Json(
-        json!({"delivery_fee_cents":delivery_fee_cents,"free_delivery_from_cents":free_delivery_from_cents,"delivery_postal_codes":delivery_postal_codes,"online_payment_enabled":state.config.teya.is_some()}),
+        json!({"delivery_fee_cents":delivery_fee_cents,"free_delivery_from_cents":free_delivery_from_cents,"delivery_postal_codes":delivery_postal_codes,"online_payment_enabled":state.config.teya.is_some(),"hero_image":site.hero_image,"hero_image_alt":site.hero_image_alt}),
     ))
 }
 

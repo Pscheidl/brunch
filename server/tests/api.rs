@@ -18,6 +18,232 @@ struct TestApp {
 
 #[tokio::test]
 #[ignore = "requires real PostgreSQL via TEST_DATABASE_URL"]
+async fn site_settings_validate_uploads_authorization_and_concurrent_updates() {
+    let app = TestApp::new().await;
+    let guest = app.client();
+    let customer = app.login("hero-customer@example.test").await;
+    let admin = app.login("admin@example.test").await;
+    let initial = app.get(&admin, "/api/admin/site-settings").await;
+    assert_eq!(initial["version"], 1);
+    assert_eq!(initial["hero_image"], "");
+    assert_eq!(
+        initial["hero_image_alt"],
+        "Kváskový sendvič, jogurt s granolou a hummus se zeleninou na prostřeném stole"
+    );
+    for (client, status) in [
+        (&guest, StatusCode::UNAUTHORIZED),
+        (&customer, StatusCode::FORBIDDEN),
+    ] {
+        app.call(
+            client,
+            Method::GET,
+            "/api/admin/site-settings",
+            None,
+            status,
+        )
+        .await;
+        app.call(
+            client,
+            Method::PUT,
+            "/api/admin/site-settings",
+            Some(&initial),
+            status,
+        )
+        .await;
+    }
+    for (header, value) in [
+        ("x-brunch-request", ""),
+        ("origin", "https://another.example.test"),
+    ] {
+        let response = admin
+            .put(format!("{}/api/admin/site-settings", app.url))
+            .header(header, value)
+            .json(&initial)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    }
+
+    // The accepted URL comes from the existing sanitizer, not arbitrary remote content.
+    let mut source = std::io::Cursor::new(Vec::new());
+    image::DynamicImage::new_rgb8(8, 8)
+        .write_to(&mut source, image::ImageFormat::Png)
+        .unwrap();
+    let upload = admin
+        .post(format!("{}/api/admin/images", app.url))
+        .header("content-type", "application/octet-stream")
+        .body(source.into_inner())
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(upload.status(), StatusCode::OK);
+    let uploaded: Value = upload.json().await.unwrap();
+    let image_url = uploaded["url"].as_str().unwrap();
+    let response = guest
+        .get(format!("{}{image_url}", app.url))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(response.headers()["content-type"], "image/jpeg");
+
+    let mut update =
+        json!({"hero_image":image_url,"hero_image_alt":"  Domácí houstičky  ","version":1});
+    let invalid_images = [
+        "https://example.test/photo.jpg".to_owned(),
+        "//example.test/photo.jpg".to_owned(),
+        "javascript:alert(1)".to_owned(),
+        "data:image/svg+xml,<svg/>".to_owned(),
+        "/images/brunch-spread.webp".to_owned(),
+        "/api/images/not-a-uuid".to_owned(),
+        format!("/api/images/{}", Uuid::new_v4()),
+        format!("{image_url}?other=1"),
+        format!("{image_url}#fragment"),
+        format!("{image_url}/../other"),
+        image_url.replace("/api/images/", "/api/images/%2e%2e/"),
+        image_url.to_uppercase(),
+        format!(
+            "/api/images/{}",
+            image_url["/api/images/".len()..].to_uppercase()
+        ),
+        format!(" {image_url}"),
+        format!("{image_url} "),
+        image_url.replace('-', ""),
+    ];
+    for invalid in invalid_images {
+        update["hero_image"] = json!(invalid);
+        app.call(
+            &admin,
+            Method::PUT,
+            "/api/admin/site-settings",
+            Some(&update),
+            StatusCode::BAD_REQUEST,
+        )
+        .await;
+    }
+    update["hero_image"] = json!(image_url);
+    for invalid in [
+        "".to_owned(),
+        " \n\t ".to_owned(),
+        "ž".repeat(501),
+        "Popis\u{0000}".to_owned(),
+    ] {
+        update["hero_image_alt"] = json!(invalid);
+        app.call(
+            &admin,
+            Method::PUT,
+            "/api/admin/site-settings",
+            Some(&update),
+            StatusCode::BAD_REQUEST,
+        )
+        .await;
+    }
+    update["hero_image_alt"] = json!(format!("  {}  ", "ž".repeat(500)));
+    for invalid in [0, -1] {
+        update["version"] = json!(invalid);
+        app.call(
+            &admin,
+            Method::PUT,
+            "/api/admin/site-settings",
+            Some(&update),
+            StatusCode::BAD_REQUEST,
+        )
+        .await;
+    }
+    assert_eq!(app.get(&admin, "/api/admin/site-settings").await, initial);
+    update["version"] = json!(1);
+    let (a, b) = tokio::join!(
+        admin
+            .put(format!("{}/api/admin/site-settings", app.url))
+            .json(&update)
+            .send(),
+        admin
+            .put(format!("{}/api/admin/site-settings", app.url))
+            .json(&update)
+            .send()
+    );
+    let statuses = [a.unwrap().status(), b.unwrap().status()];
+    assert_eq!(
+        statuses
+            .iter()
+            .filter(|&&status| status == StatusCode::OK)
+            .count(),
+        1
+    );
+    assert_eq!(
+        statuses
+            .iter()
+            .filter(|&&status| status == StatusCode::CONFLICT)
+            .count(),
+        1
+    );
+    let saved = app.get(&admin, "/api/admin/site-settings").await;
+    assert_eq!(saved["version"], 2);
+    assert_eq!(saved["hero_image"], image_url);
+    assert_eq!(saved["hero_image_alt"], "ž".repeat(500));
+    let public = app.get(&guest, "/api/settings").await;
+    assert_eq!(public["hero_image"], saved["hero_image"]);
+    assert_eq!(public["hero_image_alt"], saved["hero_image_alt"]);
+    assert!(public.get("version").is_none());
+    assert!(public.get("updated_at").is_none());
+    assert!(public.get("order_email").is_none());
+
+    let products = app.get(&guest, "/api/products").await;
+    let order = app
+        .order(&guest, "hero-order@example.test", &products[0], 1)
+        .await;
+    app.post(&guest, "/api/orders", &order).await;
+    let snapshot_sql = "SELECT jsonb_build_object(
+        'products',(SELECT jsonb_agg(to_jsonb(p) ORDER BY id) FROM products p),
+        'prices',(SELECT jsonb_agg(to_jsonb(p) ORDER BY id) FROM product_prices p),
+        'images',(SELECT jsonb_agg(to_jsonb(p) ORDER BY id) FROM images p),
+        'orders',(SELECT jsonb_agg(to_jsonb(p) ORDER BY id) FROM orders p),
+        'items',(SELECT jsonb_agg(to_jsonb(p) ORDER BY id) FROM order_items p),
+        'mail',(SELECT jsonb_agg(to_jsonb(p) ORDER BY id) FROM outbox p),
+        'shop',(SELECT jsonb_agg(to_jsonb(p) ORDER BY id) FROM shop_settings p),
+        'areas',(SELECT jsonb_agg(to_jsonb(p) ORDER BY id) FROM delivery_areas p))";
+    let before: Value = sqlx::query_scalar(snapshot_sql)
+        .fetch_one(&app.pool)
+        .await
+        .unwrap();
+    migrate(&app.pool).await.unwrap();
+    commerce::initialize(&app.pool, "unchanged@example.test", false)
+        .await
+        .unwrap();
+    assert_eq!(
+        app.get(&admin, "/api/admin/site-settings").await,
+        saved,
+        "restart must preserve the selected image and description"
+    );
+    let reset = app
+        .call(
+            &admin,
+            Method::PUT,
+            "/api/admin/site-settings",
+            Some(&json!({"hero_image":"","hero_image_alt":"","version":2})),
+            StatusCode::OK,
+        )
+        .await;
+    assert_eq!(reset["version"], 3);
+    assert_eq!(reset["hero_image"], "");
+    assert_eq!(reset["hero_image_alt"], initial["hero_image_alt"]);
+    let public = app.get(&guest, "/api/settings").await;
+    assert_eq!(public["hero_image"], "");
+    assert_eq!(public["hero_image_alt"], initial["hero_image_alt"]);
+    let after: Value = sqlx::query_scalar(snapshot_sql)
+        .fetch_one(&app.pool)
+        .await
+        .unwrap();
+    assert_eq!(
+        after, before,
+        "site settings must not modify commerce data or stored photo bytes"
+    );
+    app.close().await;
+}
+
+#[tokio::test]
+#[ignore = "requires real PostgreSQL via TEST_DATABASE_URL"]
 async fn terms_publication_is_authorized_versioned_and_preserves_accepted_text() {
     let app = TestApp::new().await;
     let guest = app.client();
@@ -519,6 +745,12 @@ async fn upgrade_preserves_existing_products_photos_orders_and_settings() {
     assert_eq!(categories, ["", "Pečivo"]);
     let defaults: (bool, bool, bool) = sqlx::query_as("SELECT (SELECT bool_and(minimum_quantity=0) FROM products), (SELECT cardinality(delivery_slots)=3 FROM shop_settings), (SELECT delivery_slots IS NULL FROM delivery_areas)").fetch_one(&pool).await.unwrap();
     assert_eq!(defaults, (true, true, true));
+    let site_defaults: (i32, String, i64) =
+        sqlx::query_as("SELECT id,hero_image,version FROM site_settings")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(site_defaults, (1, String::new(), 1));
     pool.close().await;
     sqlx::query(&format!("DROP SCHEMA {schema} CASCADE"))
         .execute(&database)

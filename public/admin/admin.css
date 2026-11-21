@@ -25,6 +25,14 @@
 .terms-preview h3{font-size:20px;line-height:1.4;overflow-wrap:anywhere}
 .terms-text{white-space:pre-wrap;overflow-wrap:anywhere;font-size:16px;line-height:1.75}
 .order-origin{margin-top:8px;overflow-wrap:anywhere}
+.site-settings-editor{max-width:860px}
+.site-settings-editor>[data-form-error]{margin-bottom:20px}
+.site-settings-editor h2{font-size:20px;line-height:1.4}
+.site-settings-editor>.section-note{margin-bottom:20px}
+.hero-settings-preview{margin:0 0 24px;max-width:600px}
+.hero-settings-preview img{display:block;width:100%;height:auto;aspect-ratio:3/2;object-fit:cover;border-radius:14px;background:var(--tint)}
+.hero-settings-preview figcaption{margin-top:8px}
+@media(max-width:760px){.site-settings-editor .actions>.button{white-space:normal}}
 @media(max-width:760px){.terms-editor .actions>.button{white-space:normal}.terms-editor textarea{min-height:340px}}
 @media print {
   body:has(.invoice) {overflow:visible}
