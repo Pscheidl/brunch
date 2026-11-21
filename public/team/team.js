@@ -171,7 +171,8 @@ function selectionForm(initial, save, cancel) {
     if (!available.some(p => p.id === old.product_id)) available.push({ id: old.product_id, name: 'Nedostupná položka', price_cents: 0, active: false, stock: 0, variants: [] })
   }
   for (const product of available) {
-    const max = product.active === false ? 0 : Math.min(product.stock ?? 99, 99)
+    const limit = product.banquet ? 2147483647 : 99
+    const max = product.active === false ? 0 : Math.min(product.stock ?? limit, limit)
     const input = node('input', { type: 'number', name: `quantity-${product.id}`, min: 0, max: Math.max(max, selected.get(product.id)?.quantity || 0), step: 1, inputmode: 'numeric', value: selected.get(product.id)?.quantity || 0, 'aria-label': `Počet: ${product.name}` })
     let variant = null
     if (product.variants?.length) {
@@ -186,7 +187,8 @@ function selectionForm(initial, save, cancel) {
     }
     input.addEventListener('input', change)
     variant?.addEventListener('change', change)
-    const info = node('div', {}, node('h3', {}, product.name), product.banquet ? node('small', { class: 'banquet-label' }, 'Banketní pečivo · ') : null, node('span', {}, `${money(product.price_cents)} / ks`), node('small', {}, ` · ${product.stock == null ? `max. ${max} ks v objednávce` : `${max} ks dostupných`}${product.minimum_quantity > 1 ? ` · minimum za tým ${product.minimum_quantity} ks` : ''}`), field('Počet kusů', input), variant ? field('Varianta', variant) : null)
+    const availability = product.stock == null && product.banquet ? 'Množství bez omezení' : product.stock == null ? `max. ${max} ks v objednávce` : `${max} ks dostupných`
+    const info = node('div', {}, node('h3', {}, product.name), product.banquet ? node('small', { class: 'banquet-label' }, 'Banketní pečivo · ') : null, node('span', {}, `${money(product.price_cents)} / ks`), node('small', {}, ` · ${availability}${product.minimum_quantity > 1 ? ` · minimum za tým ${product.minimum_quantity} ks` : ''}`), field('Počet kusů', input), variant ? field('Varianta', variant) : null)
     grid.append(node('div', { class: 'product' }, product.image ? node('img', { src: product.image.startsWith('/') ? product.image : `/${product.image}`, alt: '', loading: 'lazy', width: 80, height: 80 }) : node('span'), info))
   }
   updateTotal()

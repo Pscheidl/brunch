@@ -177,14 +177,6 @@ impl ProductInput {
                 "Cena nebo skladové množství jsou mimo povolený rozsah.",
             ));
         }
-        if self
-            .minimum_quantity
-            .is_some_and(|n| !(0..=99).contains(&n))
-        {
-            return Err(ApiError::bad_request(
-                "Minimální odběr musí být od 0 do 99 kusů.",
-            ));
-        }
         if self.image.starts_with("//")
             || self.image.contains([':', '\\', '<', '>', '"', '\''])
             || self.image.chars().any(char::is_whitespace)
@@ -201,17 +193,22 @@ impl ProductInput {
 fn validate_banquet_product(banquet: bool, minimum_quantity: i32) -> ApiResult<()> {
     if banquet && minimum_quantity < 1 {
         return Err(ApiError::bad_request(
-            "U banketního pečiva vyplňte minimální odběr od 1 do 99 kusů.",
+            "U banketního pečiva vyplňte minimální odběr alespoň 1 kus.",
+        ));
+    }
+    if !banquet && !(0..=99).contains(&minimum_quantity) {
+        return Err(ApiError::bad_request(
+            "Minimální odběr běžného zboží musí být od 0 do 99 kusů.",
         ));
     }
     Ok(())
 }
 
-fn validate_banquet_quantity(quantity: i32, minimum: i32) -> ApiResult<()> {
-    if quantity > 0 && quantity < minimum {
+fn validate_banquet_quantity(quantity: i64, minimum: i32) -> ApiResult<()> {
+    if quantity > 0 && quantity < i64::from(minimum) {
         return Err(ApiError::conflict(format!(
             "Minimální odběr banketního pečiva je celkem {minimum} ks. V košíku máte {quantity} ks, doplňte ještě {} ks banketního pečiva. Různé druhy můžete kombinovat.",
-            minimum - quantity
+            i64::from(minimum) - quantity
         )));
     }
     Ok(())
@@ -727,13 +724,13 @@ impl OrderInput {
             ));
         }
         let mut ids = HashSet::new();
-        if self.items.iter().any(|item| {
-            item.product_id <= 0
-                || !(1..=99).contains(&item.quantity)
-                || !ids.insert(item.product_id)
-        }) {
+        if self
+            .items
+            .iter()
+            .any(|item| item.product_id <= 0 || item.quantity < 1 || !ids.insert(item.product_id))
+        {
             return Err(ApiError::bad_request(
-                "Neplatné nebo duplicitní položky košíku. Množství musí být 1 až 99.",
+                "Neplatné nebo duplicitní položky košíku. Množství musí být kladné celé číslo.",
             ));
         }
         self.items.sort_by_key(|i| i.product_id);
@@ -1057,7 +1054,7 @@ async fn create_order(
             .await?;
     let by_id: BTreeMap<i64, Product> = products.into_iter().map(|p| (p.id, p)).collect();
     let mut subtotal: i64 = 0;
-    let mut banquet_quantity = 0;
+    let mut banquet_quantity: i64 = 0;
     for item in &input.items {
         let product = by_id
             .get(&item.product_id)
@@ -1077,6 +1074,12 @@ async fn create_order(
                 product.name
             )));
         }
+        if !product.banquet && item.quantity > 99 {
+            return Err(ApiError::bad_request(format!(
+                "U běžného zboží {} lze objednat nejvýše 99 kusů.",
+                product.name
+            )));
+        }
         if item.quantity < product.minimum_quantity {
             return Err(ApiError::conflict(format!(
                 "Minimální odběr u položky {} je {} ks.",
@@ -1090,7 +1093,9 @@ async fn create_order(
             )));
         }
         if product.banquet {
-            banquet_quantity += item.quantity;
+            banquet_quantity = banquet_quantity
+                .checked_add(i64::from(item.quantity))
+                .ok_or_else(|| ApiError::bad_request("Příliš mnoho banketního pečiva."))?;
         }
         subtotal = subtotal
             .checked_add(product.price_cents * i64::from(item.quantity))

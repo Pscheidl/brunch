@@ -18,7 +18,7 @@ pub struct Product {
     pub active: bool,
     pub stock: Option<i32>,
     #[serde(default)]
-    pub minimum_quantity: u16,
+    pub minimum_quantity: u32,
     #[serde(default)]
     pub banquet: bool,
     #[serde(default)]
@@ -27,17 +27,22 @@ pub struct Product {
 }
 
 impl Product {
-    pub fn minimum(&self) -> u16 {
+    pub fn minimum(&self) -> u32 {
         self.minimum_quantity.max(1)
     }
 
-    pub fn maximum(&self) -> u16 {
-        self.stock.unwrap_or(99).clamp(0, 99) as u16
+    pub fn maximum(&self) -> u32 {
+        let limit = if self.banquet { i32::MAX } else { 99 };
+        self.stock.unwrap_or(limit).clamp(0, limit) as u32
     }
 
-    pub fn orderable_quantity(&self, requested: u16) -> Option<u16> {
+    pub fn orderable_quantity(&self, requested: u32) -> Option<u32> {
         let (min, max) = (self.minimum(), self.maximum());
         (self.active && min <= max).then(|| requested.clamp(min, max))
+    }
+
+    pub fn total_price_cents(&self, quantity: u32) -> i64 {
+        self.price_cents.saturating_mul(i64::from(quantity))
     }
 }
 
@@ -214,7 +219,7 @@ pub struct OrderItem {
     pub variant: Option<String>,
     pub product_id: i64,
     pub name: String,
-    pub quantity: u16,
+    pub quantity: u32,
     pub unit_price_cents: i64,
     pub total_cents: i64,
 }
@@ -239,7 +244,7 @@ pub struct RequestedItem {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub variant: Option<String>,
     pub product_id: i64,
-    pub quantity: u16,
+    pub quantity: u32,
 }
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
 pub struct BillingInput {
@@ -305,7 +310,7 @@ impl OrderRequest {
     }
 }
 
-pub type Cart = BTreeMap<i64, u16>;
+pub type Cart = BTreeMap<i64, u32>;
 
 pub fn normalize_postal_code(value: &str) -> String {
     value
@@ -324,8 +329,8 @@ pub fn delivery_available(value: &str, settings: &Settings) -> bool {
 pub fn subtotal(cart: &Cart, products: &[Product]) -> i64 {
     products
         .iter()
-        .map(|p| p.price_cents * i64::from(cart.get(&p.id).copied().unwrap_or(0)))
-        .sum()
+        .map(|p| p.total_price_cents(cart.get(&p.id).copied().unwrap_or(0)))
+        .fold(0, i64::saturating_add)
 }
 pub fn delivery_fee(amount: i64, settings: &Settings) -> i64 {
     if amount == 0
@@ -338,22 +343,22 @@ pub fn delivery_fee(amount: i64, settings: &Settings) -> i64 {
         settings.delivery_fee_cents
     }
 }
-pub fn quantity(cart: &Cart) -> u32 {
-    cart.values().map(|n| u32::from(*n)).sum()
+pub fn quantity(cart: &Cart) -> u64 {
+    cart.values().map(|n| u64::from(*n)).sum()
 }
-pub fn banquet_quantity(cart: &Cart, products: &[Product]) -> u32 {
+pub fn banquet_quantity(cart: &Cart, products: &[Product]) -> u64 {
     products
         .iter()
         .filter(|product| product.banquet)
-        .map(|product| u32::from(cart.get(&product.id).copied().unwrap_or(0)))
+        .map(|product| u64::from(cart.get(&product.id).copied().unwrap_or(0)))
         .sum()
 }
-pub fn banquet_missing(cart: &Cart, products: &[Product], minimum: u32) -> u32 {
+pub fn banquet_missing(cart: &Cart, products: &[Product], minimum: u32) -> u64 {
     let quantity = banquet_quantity(cart, products);
     if quantity == 0 {
         0
     } else {
-        minimum.saturating_sub(quantity)
+        u64::from(minimum).saturating_sub(quantity)
     }
 }
 pub fn parse_cart(value: &str) -> Cart {
@@ -361,7 +366,7 @@ pub fn parse_cart(value: &str) -> Cart {
         .unwrap_or_default()
         .into_iter()
         .filter(|(id, n)| *id > 0 && *n > 0)
-        .map(|(id, n)| (id, n.min(99)))
+        .map(|(id, n)| (id, n.min(i32::MAX as u32)))
         .collect()
 }
 pub fn reconcile(cart: &mut Cart, products: &[Product]) -> bool {
@@ -384,7 +389,7 @@ pub fn money(cents: i64) -> String {
     if cents % 100 == 0 {
         format!("{} Kč", cents / 100)
     } else {
-        format!("{},{:02} Kč", cents / 100, cents.abs() % 100)
+        format!("{},{:02} Kč", cents / 100, cents.unsigned_abs() % 100)
     }
 }
 pub fn status_label(value: &str) -> &'static str {
@@ -591,13 +596,115 @@ mod tests {
     fn persisted_cart_recovers_safely_and_reconciles_stock() {
         assert!(parse_cart("broken").is_empty());
         let mut cart = parse_cart(r#"{"18":200,"7":2,"0":4,"22":1}"#);
-        assert_eq!(cart.get(&18), Some(&99));
+        assert_eq!(cart.get(&18), Some(&200));
         assert!(!cart.contains_key(&0));
         assert!(reconcile(
             &mut cart,
             &[product(18, 100, Some(3)), product(7, 100, Some(0))]
         ));
         assert_eq!(cart, Cart::from([(18, 3)]));
+    }
+
+    #[test]
+    fn banquet_quantities_use_stock_and_the_database_limit() {
+        let mut snack = product(18, 100, None);
+        assert_eq!(snack.maximum(), 99);
+        assert_eq!(snack.orderable_quantity(70000), Some(99));
+        snack.stock = Some(70000);
+        assert_eq!(snack.maximum(), 99);
+        snack.banquet = true;
+        snack.minimum_quantity = 120;
+        assert_eq!(snack.orderable_quantity(1), Some(120));
+        assert_eq!(snack.orderable_quantity(70001), Some(70000));
+        snack.minimum_quantity = 70000;
+        assert_eq!(snack.orderable_quantity(1), Some(70000));
+        snack.stock = Some(69999);
+        assert_eq!(snack.orderable_quantity(70000), None);
+        snack.stock = None;
+        assert_eq!(snack.maximum(), i32::MAX as u32);
+        assert_eq!(snack.orderable_quantity(u32::MAX), Some(i32::MAX as u32));
+        let restored: Product =
+            serde_json::from_str(&serde_json::to_string(&snack).unwrap()).unwrap();
+        assert_eq!(restored.minimum(), 70000);
+    }
+
+    #[test]
+    fn restored_banquet_cart_keeps_large_quantities_until_product_reconciliation() {
+        let mut products = vec![
+            product(1, 100, None),
+            product(2, 100, None),
+            product(3, 100, None),
+            product(4, 100, None),
+        ];
+        products[0].banquet = true;
+        products[0].minimum_quantity = 120;
+        products[1].banquet = true;
+        products[1].minimum_quantity = 70000;
+        products[3].banquet = true;
+        let mut cart = parse_cart(r#"{"1":120,"2":70000,"3":70000,"4":4294967295}"#);
+        assert_eq!(cart[&1], 120);
+        assert_eq!(cart[&2], 70000);
+        assert_eq!(cart[&4], i32::MAX as u32);
+        assert!(reconcile(&mut cart, &products));
+        assert_eq!(cart[&1], 120);
+        assert_eq!(cart[&2], 70000);
+        assert_eq!(cart[&3], 99);
+        assert_eq!(cart[&4], i32::MAX as u32);
+        assert!(!reconcile(&mut cart, &products));
+        products[1].minimum_quantity = 120;
+        products[1].stock = Some(60000);
+        assert!(reconcile(&mut cart, &products));
+        assert_eq!(cart[&2], 60000);
+    }
+
+    #[test]
+    fn order_detail_and_request_preserve_quantities_above_u16() {
+        let order: Order = serde_json::from_value(serde_json::json!({
+            "id": "large-order", "number": "TEST-LARGE", "status": "new",
+            "payment_method": "cash_on_delivery", "subtotal_cents": 7012000,
+            "delivery_fee_cents": 0, "total_cents": 7012000,
+            "items": [
+                {"product_id": 1, "name": "Banketní pečivo", "quantity": 120,
+                 "unit_price_cents": 100, "total_cents": 12000},
+                {"product_id": 2, "name": "Banketní pečivo", "quantity": 70000,
+                 "unit_price_cents": 100, "total_cents": 7000000}
+            ]
+        }))
+        .unwrap();
+        assert_eq!(order.items[0].quantity, 120);
+        assert_eq!(order.items[1].quantity, 70000);
+        let mut request = order_request();
+        request.items[0].quantity = order.items[1].quantity;
+        assert_eq!(
+            serde_json::to_value(request).unwrap()["items"][0]["quantity"],
+            70000
+        );
+    }
+
+    #[test]
+    fn large_cart_counts_and_prices_do_not_overflow() {
+        let products: Vec<_> = (1..=50)
+            .map(|id| {
+                let mut item = product(id, 10000000, None);
+                item.banquet = true;
+                item
+            })
+            .collect();
+        let cart: Cart = products
+            .iter()
+            .map(|product| (product.id, i32::MAX as u32))
+            .collect();
+        assert_eq!(quantity(&cart), 107374182350);
+        assert_eq!(banquet_quantity(&cart, &products), 107374182350);
+        assert_eq!(banquet_missing(&cart, &products, 4950), 0);
+        assert_eq!(subtotal(&cart, &products), 1073741823500000000);
+        let corrupt_products = [product(1, i64::MAX, None), product(2, i64::MAX, None)];
+        assert_eq!(subtotal(&cart, &corrupt_products), i64::MAX);
+        assert_eq!(
+            product(1, i64::MIN, None).total_price_cents(u32::MAX),
+            i64::MIN
+        );
+        assert_eq!(money(i64::MIN), "-92233720368547758,08 Kč");
     }
 }
 

@@ -419,7 +419,8 @@ function productDialog(product, categories) {
     payload.stock = String(values.get('stock')).trim() === '' ? null : Number(values.get('stock'))
     payload.minimum_quantity = Number(values.get('minimum_quantity') || 0)
     payload.banquet = values.has('banquet')
-    if (!Number.isInteger(payload.minimum_quantity) || payload.minimum_quantity < (payload.banquet ? 1 : 0) || payload.minimum_quantity > 99) throw new Error(payload.banquet ? 'U banketního pečiva vyplňte minimální odběr od 1 do 99 kusů.' : 'Minimální odběr musí být celé číslo od 0 do 99 kusů.')
+    if (!Number.isSafeInteger(payload.minimum_quantity) || payload.minimum_quantity < (payload.banquet ? 1 : 0) || (!payload.banquet && payload.minimum_quantity > 99)) throw new Error(payload.banquet ? 'U banketního pečiva vyplňte minimální odběr jako celé číslo od 1 kusu.' : 'Minimální odběr musí být celé číslo od 0 do 99 kusů.')
+    if (payload.minimum_quantity > 2147483647) throw new Error('Zadaný minimální odběr je příliš vysoký.')
     payload.vegan = values.has('vegan')
     payload.active = values.has('active')
     if (product) payload.version = product.version
@@ -436,8 +437,10 @@ function productDialog(product, categories) {
   function updateBanquetMinimum() {
     minimum.required = banquet.checked
     minimum.min = banquet.checked ? '1' : '0'
+    if (banquet.checked) minimum.removeAttribute('max')
+    else minimum.max = '99'
     minimumHint.textContent = banquet.checked
-      ? 'Povinné pro banketní pečivo: 1 až 99 kusů tohoto výrobku. Navíc musí objednávka splnit společné minimum všech banketních výrobků nastavené v obecném nastavení.'
+      ? 'Povinné pro banketní pečivo: celé číslo od 1 kusu tohoto výrobku. Navíc musí objednávka splnit společné minimum všech banketních výrobků nastavené v obecném nastavení.'
       : 'Nepovinné. Prázdné pole nebo nula znamená bez minima. Při prvním přidání do košíku se nastaví zadaný počet.'
   }
   banquet.addEventListener('change', updateBanquetMinimum)

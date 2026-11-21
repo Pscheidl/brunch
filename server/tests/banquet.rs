@@ -219,7 +219,7 @@ async fn banquet_catalog_and_settings_validate_and_preserve_older_clients() {
         .await;
     assert_eq!(normal["banquet"], false);
     assert_eq!(normal["minimum_quantity"], 0);
-    for minimum in [None, Some(0), Some(-1), Some(100)] {
+    for minimum in [None, Some(0), Some(-1)] {
         let mut body = json!({"name":"Banketní pečivo","price_cents":100,"banquet":true});
         if let Some(value) = minimum {
             body["minimum_quantity"] = json!(value);
@@ -362,6 +362,277 @@ async fn banquet_catalog_and_settings_validate_and_preserve_older_clients() {
             .await
             .is_err()
     );
+    app.close().await;
+}
+
+#[tokio::test]
+#[ignore = "requires real PostgreSQL via TEST_DATABASE_URL"]
+async fn banquet_product_minimum_accepts_large_integers_and_preserves_partial_updates() {
+    let app = TestApp::new().await;
+    let admin = app.login("admin@example.test").await;
+    let mut product = app
+        .post(
+            &admin,
+            "/api/admin/products",
+            &json!({"name":"Banketní houska","price_cents":100,"banquet":true,"minimum_quantity":100}),
+        )
+        .await;
+    let path = format!("/api/admin/products/{}", product["id"]);
+    for minimum in [120, 70_000, i32::MAX] {
+        product = app
+            .call(
+                &admin,
+                Method::PUT,
+                &path,
+                Some(&json!({"name":"Banketní houska","price_cents":100,"minimum_quantity":minimum,"version":product["version"]})),
+                StatusCode::OK,
+            )
+            .await;
+        assert_eq!(product["minimum_quantity"], minimum);
+        assert_eq!(product["banquet"], true);
+    }
+    product = app
+        .call(
+            &admin,
+            Method::PUT,
+            &path,
+            Some(&json!({"name":"Přejmenovaná houska","price_cents":100,"version":product["version"]})),
+            StatusCode::OK,
+        )
+        .await;
+    assert_eq!(product["minimum_quantity"], i32::MAX);
+    for changes in [
+        json!({"banquet":false}),
+        json!({"minimum_quantity":0}),
+        json!({"minimum_quantity":-1}),
+    ] {
+        let mut body = json!({"name":"Houska","price_cents":100,"version":product["version"]});
+        body.as_object_mut()
+            .unwrap()
+            .extend(changes.as_object().unwrap().clone());
+        app.call(
+            &admin,
+            Method::PUT,
+            &path,
+            Some(&body),
+            StatusCode::BAD_REQUEST,
+        )
+        .await;
+    }
+    for minimum in [json!(1.5), json!("120"), json!(2_147_483_648_i64)] {
+        let response = admin
+            .put(format!("{}{path}", app.url))
+            .json(&json!({"name":"Houska","price_cents":100,"minimum_quantity":minimum,"version":product["version"]}))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    }
+    for banquet in [None, Some(false)] {
+        let mut body = json!({"name":"Běžná houska","price_cents":100,"minimum_quantity":100});
+        if let Some(banquet) = banquet {
+            body["banquet"] = json!(banquet);
+        }
+        app.call(
+            &admin,
+            Method::POST,
+            "/api/admin/products",
+            Some(&body),
+            StatusCode::BAD_REQUEST,
+        )
+        .await;
+    }
+    assert!(
+        sqlx::query("UPDATE products SET banquet=false WHERE id=$1")
+            .bind(product["id"].as_i64().unwrap())
+            .execute(&app.pool)
+            .await
+            .is_err()
+    );
+    let ordinary = app
+        .call(
+            &admin,
+            Method::PUT,
+            &path,
+            Some(&json!({"name":"Běžná houska","price_cents":100,"banquet":false,"minimum_quantity":99,"version":product["version"]})),
+            StatusCode::OK,
+        )
+        .await;
+    assert_eq!(ordinary["minimum_quantity"], 99);
+    assert_eq!(ordinary["banquet"], false);
+    app.close().await;
+}
+
+#[tokio::test]
+#[ignore = "requires real PostgreSQL via TEST_DATABASE_URL"]
+async fn large_banquet_orders_preserve_stock_snapshots_invoices_and_standard_limits() {
+    let app = TestApp::new().await;
+    let guest = app.client();
+    let admin = app.login("admin@example.test").await;
+    let ids = app.fixture_products().await;
+    sqlx::query("UPDATE products SET stock=100000,minimum_quantity=120 WHERE id=$1")
+        .bind(ids[0])
+        .execute(&app.pool)
+        .await
+        .unwrap();
+    sqlx::query("UPDATE products SET minimum_quantity=100 WHERE id=$1")
+        .bind(ids[1])
+        .execute(&app.pool)
+        .await
+        .unwrap();
+    for (id, quantity, status) in [
+        (ids[0], 119, StatusCode::CONFLICT),
+        (ids[0], 0, StatusCode::BAD_REQUEST),
+        (ids[0], -1, StatusCode::BAD_REQUEST),
+        (ids[3], 100, StatusCode::BAD_REQUEST),
+    ] {
+        let body = app
+            .order(
+                &guest,
+                json!([{"product_id":id,"quantity":quantity}]),
+                false,
+            )
+            .await;
+        app.call(&guest, Method::POST, "/api/orders", Some(&body), status)
+            .await;
+    }
+    let mut body = app
+        .order(&guest, json!([{"product_id":ids[0],"quantity":120}]), false)
+        .await;
+    for quantity in [json!(1.5), json!("120"), json!(2_147_483_648_i64)] {
+        body["items"][0]["quantity"] = quantity;
+        let response = guest
+            .post(format!("{}/api/orders", app.url))
+            .json(&body)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    }
+    let count: i64 = sqlx::query_scalar("SELECT count(*) FROM orders")
+        .fetch_one(&app.pool)
+        .await
+        .unwrap();
+    assert_eq!(count, 0);
+    for (id, quantity) in [(ids[1], 100), (ids[0], 120), (ids[0], 70_000)] {
+        let body = app
+            .order(
+                &guest,
+                json!([{"product_id":id,"quantity":quantity}]),
+                false,
+            )
+            .await;
+        let order = app.post(&guest, "/api/orders", &body).await;
+        assert_eq!(order["items"][0]["quantity"], quantity);
+        assert_eq!(order["subtotal_cents"], i64::from(quantity) * 100);
+        let snapshot = app
+            .get(
+                &admin,
+                &format!("/api/admin/orders/{}", order["id"].as_str().unwrap()),
+            )
+            .await;
+        assert_eq!(snapshot["items"][0]["quantity"], quantity);
+        assert_eq!(
+            app.post(&guest, "/api/orders", &body).await["id"],
+            order["id"]
+        );
+        if quantity == 70_000 {
+            sqlx::query("UPDATE invoice_supplier SET name='Pekárna',address='Test 1, Praha',company_id='12345678'")
+                .execute(&app.pool).await.unwrap();
+            let invoice = app.post(
+                &admin,
+                &format!("/api/admin/orders/{}/invoice", order["id"].as_str().unwrap()),
+                &json!({"supplier_version":1,"customer_name":"Odběratel","customer_address":"Test 2, Praha","customer_company_id":"","customer_tax_id":"","supply_date":order["delivery_date"],"due_date":order["delivery_date"],"vat_rates":{}}),
+            ).await;
+            assert_eq!(invoice["lines"][0]["quantity"], quantity);
+            assert_eq!(invoice["lines"][0]["total_cents"], 7_000_000);
+            // A current product edit must not change the historical order or invoice.
+            sqlx::query("UPDATE products SET minimum_quantity=70001 WHERE id=$1")
+                .bind(id)
+                .execute(&app.pool)
+                .await
+                .unwrap();
+            assert_eq!(
+                app.post(&guest, "/api/orders", &body).await["items"][0]["quantity"],
+                quantity
+            );
+            assert_eq!(
+                app.get(
+                    &admin,
+                    &format!(
+                        "/api/admin/orders/{}/invoice",
+                        order["id"].as_str().unwrap()
+                    )
+                )
+                .await,
+                invoice
+            );
+        }
+    }
+    let stock: i32 = sqlx::query_scalar("SELECT stock FROM products WHERE id=$1")
+        .bind(ids[0])
+        .fetch_one(&app.pool)
+        .await
+        .unwrap();
+    assert_eq!(stock, 29_880);
+    let ordinary = app
+        .order(&guest, json!([{"product_id":ids[3],"quantity":99}]), false)
+        .await;
+    assert_eq!(
+        app.post(&guest, "/api/orders", &ordinary).await["items"][0]["quantity"],
+        99
+    );
+    app.close().await;
+}
+
+#[tokio::test]
+#[ignore = "requires real PostgreSQL via TEST_DATABASE_URL"]
+async fn banquet_totals_use_wide_counts_without_relaxing_the_order_price_limit() {
+    let app = TestApp::new().await;
+    let guest = app.client();
+    let ids = app.fixture_products().await;
+    sqlx::query(
+        "UPDATE products SET stock=NULL,price_cents=0,minimum_quantity=$2 WHERE id=ANY($1)",
+    )
+    .bind(&ids[..2])
+    .bind(i32::MAX)
+    .execute(&app.pool)
+    .await
+    .unwrap();
+    let mut body = app
+        .order(
+            &guest,
+            json!([
+                {"product_id":ids[0],"quantity":i32::MAX},
+                {"product_id":ids[1],"quantity":i32::MAX}
+            ]),
+            false,
+        )
+        .await;
+    body["expected_total_cents"] = json!(4900);
+    let order = app.post(&guest, "/api/orders", &body).await;
+    assert_eq!(order["subtotal_cents"], 0);
+    assert_eq!(order["items"][0]["quantity"], i32::MAX);
+    assert_eq!(order["items"][1]["quantity"], i32::MAX);
+    sqlx::query("UPDATE products SET price_cents=100 WHERE id=$1")
+        .bind(ids[0])
+        .execute(&app.pool)
+        .await
+        .unwrap();
+    body["idempotency_key"] = json!(Uuid::new_v4());
+    app.call(
+        &guest,
+        Method::POST,
+        "/api/orders",
+        Some(&body),
+        StatusCode::BAD_REQUEST,
+    )
+    .await;
+    let count: i64 = sqlx::query_scalar("SELECT count(*) FROM orders")
+        .fetch_one(&app.pool)
+        .await
+        .unwrap();
+    assert_eq!(count, 1);
     app.close().await;
 }
 
