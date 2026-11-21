@@ -256,6 +256,7 @@ async fn banquet_catalog_and_settings_validate_and_preserve_older_clients() {
     assert_eq!(optional["banquet"], false);
 
     let mut settings = app.get(&admin, "/api/admin/settings").await;
+    let original_settings = settings.clone();
     for minimum in [0, -1, 4951] {
         settings["banquet_minimum_quantity"] = json!(minimum);
         app.call(
@@ -266,6 +267,41 @@ async fn banquet_catalog_and_settings_validate_and_preserve_older_clients() {
             StatusCode::BAD_REQUEST,
         )
         .await;
+    }
+    for minimum in [json!(1.5), json!("1")] {
+        settings["banquet_minimum_quantity"] = minimum.clone();
+        let response = admin
+            .put(format!("{}/api/admin/settings", app.url))
+            .json(&settings)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(
+            response.status(),
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "invalid banquet minimum: {minimum}"
+        );
+    }
+    assert_eq!(
+        app.get(&admin, "/api/admin/settings").await,
+        original_settings
+    );
+    for minimum in [1, 4950] {
+        settings["banquet_minimum_quantity"] = json!(minimum);
+        settings = app
+            .call(
+                &admin,
+                Method::PUT,
+                "/api/admin/settings",
+                Some(&settings),
+                StatusCode::OK,
+            )
+            .await;
+        assert_eq!(settings["banquet_minimum_quantity"], minimum);
+        assert_eq!(
+            app.get(&guest, "/api/settings").await["banquet_minimum_quantity"],
+            minimum
+        );
     }
     settings["banquet_minimum_quantity"] = json!(40);
     app.call(
