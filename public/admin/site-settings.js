@@ -131,7 +131,6 @@ function banquetMinimumForm(settings) {
     const quantity = Number(data.get('banquet_minimum_quantity'))
     if (!Number.isInteger(quantity) || quantity < 1 || quantity > 4950) throw new Error('Společné minimum banketního pečiva musí být celé číslo od 1 do 4950 kusů.')
     input.disabled = true
-    refresh.disabled = true
     try {
       const payload = {
         delivery_fee_cents: settings.delivery_fee_cents, free_delivery_from_cents: settings.free_delivery_from_cents,
@@ -142,21 +141,10 @@ function banquetMinimumForm(settings) {
       input.value = settings.banquet_minimum_quantity
       notify('Minimum banketního pečiva bylo uloženo.')
     } catch (error) {
-      if (error.status === 409) error.message = 'Nastavení mezitím změnil jiný správce. Načtěte aktuální hodnotu tlačítkem Obnovit minimum. Rozepsané údaje zatím zůstávají ve formuláři.'
+      if (error.status === 409) error.message = 'Nastavení mezitím změnil jiný správce. Poznamenejte si rozepsané změny a načtěte aktuální údaje tlačítkem Obnovit v záhlaví stránky.'
       throw error
-    } finally { input.disabled = false; refresh.disabled = false }
-  }) }, el('h2', { id: 'banquet-settings-title' }, 'Banketní pečivo'), minimum,
-  el('p', { class: 'hint' }, 'Například 10 ks banketních housek se sýrem, 10 ks s lososem a 10 ks s paštikou splní společné minimum 30 kusů. Každý výrobek zároveň musí splnit vlastní minimální odběr.'),
-  el('p', { class: 'hint' }, 'Změna se použije pro nové objednávky. Již přijaté objednávky zůstávají zachovány. Výchozí minimum je 30 kusů.'))
-  const refresh = button('Obnovit minimum', async () => {
-    refresh.disabled = true
-    try {
-      Object.assign(settings, await api('/api/admin/settings'))
-      input.value = settings.banquet_minimum_quantity ?? 30
-      form.querySelector('[data-form-error]')?.remove()
-    } catch (error) { formError(form, error) }
-    finally { refresh.disabled = false }
-  })
-  form.append(el('div', { class: 'actions' }, el('button', { type: 'submit', class: 'button primary' }, 'Uložit minimum banketního pečiva'), refresh))
+    } finally { input.disabled = false }
+  }) }, el('h2', { id: 'banquet-settings-title' }, 'Banketní pečivo'), minimum)
+  form.append(el('div', { class: 'actions' }, el('button', { type: 'submit', class: 'button primary' }, 'Uložit minimum banketního pečiva')))
   return form
 }
