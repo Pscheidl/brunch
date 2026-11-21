@@ -1,26 +1,20 @@
 .brand {
   display: inline-flex;
   align-items: center;
-  flex-shrink: 0;
-  gap: 10px;
-  color: #5d7144;
-  font-family: Geist, system-ui, sans-serif;
-  font-size: 30px;
-  font-weight: 650;
-  letter-spacing: -1.25px;
-  line-height: 1;
-  white-space: nowrap;
+  flex: 0 1 auto;
+  width: 220px;
+  min-width: 0;
+  max-width: 100%;
   text-decoration: none;
 }
-.brand-symbol { display: block; flex: 0 0 auto; width: 38px; height: 38px; }
-.brand-era { color: #93512e; font-weight: 500; }
-.footer-brand { font-size: 24px; gap: 8px; letter-spacing: -1px; }
-.footer-brand .brand-symbol { width: 30px; height: 30px; }
-@media (max-width: 600px) {
-  .brand { font-size: 23px; gap: 8px; letter-spacing: -.9px; }
-  .brand-symbol { width: 31px; height: 31px; }
+.brand-wordmark {
+  display: block;
+  width: 100%;
+  height: auto;
+  object-fit: contain;
+  mix-blend-mode: multiply;
 }
-@media (max-width: 359px) {
-  .brand { font-size: 21px; gap: 7px; }
-  .brand-symbol { width: 29px; height: 29px; }
+.footer-brand { width: 180px; }
+@media (max-width: 600px) {
+  .brand { width: 150px; }
 }

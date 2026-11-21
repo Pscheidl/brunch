@@ -20,8 +20,7 @@ pub fn App() -> impl IntoView {
 fn Brand(#[prop(default = "brand")] class: &'static str) -> impl IntoView {
     view! {
         <a class=class href="./" aria-label="Brunch Era, úvodní stránka">
-            <img class="brand-symbol" src="brand/mark.svg" width="38" height="38" alt=""/>
-            <span>"Brunch "<span class="brand-era">"Era"</span></span>
+            <img class="brand-wordmark" src="brand/wordmark.svg" width="704" height="168" alt=""/>
         </a>
     }
 }
