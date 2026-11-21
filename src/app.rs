@@ -299,6 +299,14 @@ impl Shop {
             self.pickup_selection
                 .set(Some(self.settings.get_untracked().pickup));
         }
+        // A different method can offer different times. Select a valid one as
+        // part of the user's choice, without an unrelated address-change notice.
+        if self.ready.get_untracked() && !self.pending_attempt() {
+            let slots = self.available_slots();
+            if !slots.contains(&self.slot.get_untracked()) {
+                self.slot.set(slots.first().cloned().unwrap_or_default());
+            }
+        }
         self.order_error.set(String::new());
         self.accepted_terms.set(None);
     }
@@ -1244,7 +1252,7 @@ fn Home() -> impl IntoView {
         <main>
             <Show when=move ||shop.payment_recovery.get().is_some()><div class="page-width api-message" role="status"><p>"Máte uloženou objednávku s online platbou. Ověřte její stav nebo pokračujte v platbě."</p><button class="button secondary" on:click=move |_|shop.resume_payment()>"Otevřít uloženou objednávku"</button></div></Show>
             <section class="hero page-width" aria-labelledby="hero-title"><div class="hero-copy"><div class="eyebrow"><span class="status-dot"></span>"Z PEKÁRNY MYSTERIUM GAUDI"</div><h1 id="hero-title">"Dobrá pauza."<br/><span>"Lepší den."</span></h1><p>"Jedinečné houstičky z pekárny Mysterium Gaudi, pečené podle originální domácí receptury. Poctivý základ našich svačin, doplněný čerstvými surovinami. Až k vám do kanceláře."</p><a class="button primary hero-cta" href="#nabidka">"Vybrat svačiny"</a></div><div class="hero-visual"><HeroPhoto shop/><div class="photo-caption"><span class="caption-icon"><Icon name="sun"/></span><div><strong>"Malá pauza. Velká radost."</strong><span>"Dobré věci si zaslouží svůj čas."</span></div></div><span class="photo-index">"01 / DOBRÉ RÁNO"</span></div></section>
-            <div class="page-width"><DeliveryAreaSummary shop/><PickupTeaser shop/><section class="delivery-strip" aria-label="Nastavení převzetí"><button class="delivery-selector" on:click=move |_| {shop.check_delivery_date();open_dialog(shop.delivery_dialog);}><Icon name="pin"/><span><small>{move ||if shop.pickup.get() {"OSOBNÍ ODBĚR"} else {"VAŠE ADRESA"}}</small><strong>{move || if shop.pickup.get() {shop.pickup_selection.get().map(|p|p.name).unwrap_or_else(||"Osobní odběr".into())} else if shop.details.postal.get().is_empty() {"Kam to přivezeme?".into()} else {format!("PSČ {}",shop.details.postal.get())}}</strong></span><Icon name="chevron"/></button><button class="delivery-selector" on:click=move |_| {shop.check_delivery_date();open_dialog(shop.delivery_dialog);}><Icon name="clock"/><span><small>"POŽADOVANÝ TERMÍN"</small><strong>{move ||shop.delivery_label()}</strong></span><Icon name="chevron"/></button><div class="delivery-price"><Icon name="truck"/><span>{move ||shop.delivery_info()}</span></div></section><div class="benefits"><span><Icon name="leaf"/>"Suroviny, které znáte"</span><span><Icon name="sun"/>"Připraveno na vaše ráno"</span><span><Icon name="bag"/>"Pro vás i celý tým"</span></div></div>
+            <div class="page-width"><DeliveryPanel shop/><div class="benefits"><span><Icon name="leaf"/>"Suroviny, které znáte"</span><span><Icon name="sun"/>"Připraveno na vaše ráno"</span><span><Icon name="bag"/>"Pro vás i celý tým"</span></div></div>
             <section class="catalog page-width" id="nabidka" aria-labelledby="catalog-title"><div class="section-heading"><div><p class="eyebrow">"VAŠE DALŠÍ OBLÍBENÁ SVAČINA"</p><h2 id="catalog-title">"Na co máte chuť?"</h2></div><p class="catalog-note">"Originální houstičky. Domácí receptura. Poctivá chuť."</p></div>
                 <div class="catalog-team"><span>"Objednáváte s kolegy?"</span><a href="/team/">"Společný košík"<Icon/></a></div>
                 <div class="filter-bar"><div class="categories" role="group" aria-label="Kategorie svačin">{move || {let mut names = vec![String::new()]; for p in shop.products.get() {if !p.category.is_empty() && !names.contains(&p.category) {names.push(p.category);}} names.into_iter().map(move |name| {let active=name.clone(); let pressed=name.clone(); let choose=name.clone(); let label=if name.is_empty() {"Vše".to_owned()} else if name=="Vše" {"Kategorie Vše".to_owned()} else {name}; view! {<button class:active=move ||category.get()==active aria-pressed=move ||category.get()==pressed on:click=move |_|category.set(choose.clone())>{label}</button>}}).collect_view()}}</div><label class="vegan-filter"><input type="checkbox" prop:checked=move ||vegan.get() on:change=move |ev|vegan.set(event_target_checked(&ev))/><Icon name="leaf"/>"Jen rostlinné"</label></div>
@@ -1384,8 +1392,74 @@ fn ProductDialog(shop: Shop) -> impl IntoView {
     }
 }
 #[component]
-fn FulfillmentChoice(shop: Shop, prefix: &'static str) -> impl IntoView {
-    view! {<Show when=move ||shop.settings.get().pickup.enabled ||shop.pickup.get()><fieldset class="fulfillment-choice" disabled=move ||shop.submitting.get()><legend>"Jak si objednávku převezmete?"</legend><label class:selected=move ||!shop.pickup.get()><input type="radio" name=format!("{prefix}-fulfillment") value="delivery" prop:checked=move ||!shop.pickup.get() on:change=move |_|shop.choose_fulfillment(false)/><span><strong>"Doručení na adresu"</strong><small>{move ||money(shop.settings.get().delivery_fee_cents)}</small></span></label><label class:selected=move ||shop.pickup.get()><input type="radio" name=format!("{prefix}-fulfillment") value="pickup" prop:checked=move ||shop.pickup.get() disabled=move ||!shop.settings.get().pickup.enabled on:change=move |_|shop.choose_fulfillment(true)/><span><strong>"Osobní odběr"</strong><small>"Zdarma"{move ||if shop.settings.get().pickup.parking_free {" · Parkování zdarma"} else {""}}</small></span></label></fieldset></Show>}
+fn DeliveryPanel(shop: Shop) -> impl IntoView {
+    view! {
+        <section class="delivery-strip" aria-label="Nastavení převzetí">
+            <FulfillmentChoice shop prefix="summary" compact=true/>
+            <div class="delivery-summary">
+                <button class="delivery-selector delivery-destination" type="button" on:click=move |_| {
+                    shop.check_delivery_date();
+                    open_dialog(shop.delivery_dialog);
+                }>
+                    <Icon name="pin"/>
+                    <span>
+                        <small>{move ||if shop.pickup.get() {"MÍSTO ODBĚRU"} else {"VAŠE ADRESA"}}</small>
+                        <strong>{move ||if shop.pickup.get() {
+                            shop.pickup_selection.get().map(|p|p.name).unwrap_or_else(||"Osobní odběr".into())
+                        } else if shop.details.postal.get().is_empty() {
+                            "Kam to přivezeme?".into()
+                        } else {
+                            format!("PSČ {}",shop.details.postal.get())
+                        }}</strong>
+                        <span class="delivery-address-detail">{move ||if shop.pickup.get() {
+                            shop.pickup_selection.get().map(|p|format!("{}, {} {}",p.street,p.postal_code,p.city)).unwrap_or_default()
+                        } else {
+                            "Zadat nebo změnit PSČ".into()
+                        }}</span>
+                    </span>
+                    <Icon name="chevron"/>
+                </button>
+                <button class="delivery-selector" type="button" on:click=move |_| {
+                    shop.check_delivery_date();
+                    open_dialog(shop.delivery_dialog);
+                }>
+                    <Icon name="clock"/>
+                    <span><small>"POŽADOVANÝ TERMÍN"</small><strong>{move ||shop.delivery_label()}</strong></span>
+                    <Icon name="chevron"/>
+                </button>
+                <div class="delivery-price" aria-live="polite" aria-atomic="true">
+                    {move ||view!{<Icon name=if shop.pickup.get() {"bag"}else{"truck"}/>}}
+                    <span>{move ||shop.delivery_info()}
+                        <Show when=move ||shop.pickup.get() && shop.pickup_selection.get().is_some_and(|p|p.parking_free)>
+                            <span class="pickup-parking">"Parkování zdarma"</span>
+                        </Show>
+                    </span>
+                </div>
+            </div>
+        </section>
+    }
+}
+#[component]
+fn FulfillmentChoice(
+    shop: Shop,
+    prefix: &'static str,
+    #[prop(default = false)] compact: bool,
+) -> impl IntoView {
+    view! {
+        <Show when=move ||shop.settings.get().pickup.enabled ||shop.pickup.get()>
+            <fieldset class="fulfillment-choice" class:compact=compact disabled=move ||shop.submitting.get()>
+                <legend>{if compact {"Způsob převzetí"} else {"Jak si objednávku převezmete?"}}</legend>
+                <label class:selected=move ||!shop.pickup.get()>
+                    <input type="radio" name=format!("{prefix}-fulfillment") value="delivery" prop:checked=move ||!shop.pickup.get() on:change=move |_|shop.choose_fulfillment(false)/>
+                    <span><strong>"Doručení na adresu"</strong>{(!compact).then(||view!{<small>{move ||money(shop.settings.get().delivery_fee_cents)}</small>})}</span>
+                </label>
+                <label class:selected=move ||shop.pickup.get()>
+                    <input type="radio" name=format!("{prefix}-fulfillment") value="pickup" prop:checked=move ||shop.pickup.get() disabled=move ||!shop.settings.get().pickup.enabled on:change=move |_|shop.choose_fulfillment(true)/>
+                    <span><strong>"Osobní odběr"</strong>{(!compact).then(||view!{<small>"Zdarma"{move ||if shop.settings.get().pickup.parking_free {" · Parkování zdarma"} else {""}}</small>})}</span>
+                </label>
+            </fieldset>
+        </Show>
+    }
 }
 #[component]
 fn PickupAddress(location: catalog::PickupLocation) -> impl IntoView {
@@ -1394,10 +1468,6 @@ fn PickupAddress(location: catalog::PickupLocation) -> impl IntoView {
 #[component]
 fn PickupDetails(shop: Shop) -> impl IntoView {
     view! {<Show when=move ||shop.pickup.get()>{move ||shop.pickup_selection.get().map(|p|view!{<PickupAddress location=catalog::PickupLocation{name:p.name,street:p.street,city:p.city,postal_code:p.postal_code,instructions:p.instructions,parking_free:p.parking_free}/>})}<Show when=move ||!shop.settings.get().pickup.enabled><p class="api-message error" role="alert">"Osobní odběr je nyní pozastaven. Zvolte doručení nebo se vraťte později."</p></Show></Show>}
-}
-#[component]
-fn PickupTeaser(shop: Shop) -> impl IntoView {
-    view! {<Show when=move ||shop.settings.get().pickup.enabled><section class="pickup-teaser" aria-label="Osobní odběr"><div><strong>"Vyzvedněte si objednávku osobně"</strong><p>{move ||{let p=shop.settings.get().pickup;format!("{}, {}, {} {}",p.name,p.street,p.postal_code,p.city)}}</p><Show when=move ||shop.settings.get().pickup.parking_free><span class="pickup-parking">"Parkování zdarma"</span></Show></div><button class="button secondary" on:click=move |_|{shop.choose_fulfillment(true);open_dialog(shop.delivery_dialog);}>"Zvolit osobní odběr"</button></section></Show>}
 }
 #[component]
 fn DeliveryFields(shop: Shop, prefix: &'static str) -> impl IntoView {
@@ -1977,10 +2047,6 @@ fn VariantSelector(id: i64, shop: Shop) -> impl IntoView {
             .unwrap_or_default()
     };
     view! {<Show when=move ||!options().is_empty()><label class="form-field variant-selector">"Vyberte variantu"<select aria-label=move ||format!("Varianta: {}",shop.products.get().iter().find(|p|p.id==id).map(|p|p.name.clone()).unwrap_or_default()) prop:value=move ||shop.variants.get().get(&id).cloned().unwrap_or_default() on:change=move |ev|shop.variants.update(|v|{let value=event_target_value(&ev);if value.is_empty(){v.remove(&id);}else{v.insert(id,value);}})><option value="">"Zvolte náplň nebo složení"</option>{move ||options().into_iter().map(|v|view! {<option value=v.clone()>{v.clone()}</option>}).collect_view()}</select></label></Show>}
-}
-#[component]
-fn DeliveryAreaSummary(shop: Shop) -> impl IntoView {
-    view! {<div class="delivery-area-summary"><p>{move ||{let settings=shop.settings.get();if !settings.delivery_area_label.is_empty(){format!("Rozvážíme: {}",settings.delivery_area_label)}else if settings.delivery_postal_codes.is_empty(){"Dostupnost rozvozu ověřte podle PSČ.".into()}else{format!("Rozvoz na {} PSČ. Ověřte si svou adresu před výběrem.",settings.delivery_postal_codes.len())}}}</p><label class="form-field">"Ověřit rozvoz podle PSČ"<input aria-label="PSČ pro ověření rozvozu" inputmode="numeric" autocomplete="postal-code" maxlength="7" placeholder="Např. 110 00" prop:value=move ||shop.details.postal.get() on:input=move |ev|update_postal_input(&ev,shop.details.postal)/></label><PostalAvailability shop id="hero-postal-status"/></div>}
 }
 #[component]
 fn ContactDetails(shop: Shop) -> impl IntoView {
