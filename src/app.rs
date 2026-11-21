@@ -392,6 +392,9 @@ impl Shop {
     fn open_product(self, id: i64) {
         self.selected_product.set(id);
         set_product_url(Some(id), true);
+        self.products.with(|products| {
+            update_product_metadata(products.iter().find(|product| product.id == id));
+        });
         open_dialog(self.product_dialog);
     }
     fn set_quantity(self, id: i64, value: u32) {
@@ -630,7 +633,10 @@ impl Shop {
                     self.ready.set(true);
                     self.check_delivery_date();
                 }
-                Err(err) => self.error.set(err.message),
+                Err(err) => {
+                    show_server_content_error(&err.message);
+                    self.error.set(err.message);
+                }
             }
             self.loading.set(false);
         });
@@ -1192,11 +1198,15 @@ fn Home() -> impl IntoView {
     let imported = RwSignal::new(false);
     Effect::new(move |_| {
         if shop.ready.get() && !imported.get_untracked() {
+            reveal_storefront();
             imported.set(true);
             if let Some(id) = product_from_url()
                 && shop.products.get_untracked().iter().any(|p| p.id == id)
             {
                 shop.selected_product.set(id);
+                shop.products.with(|products| {
+                    update_product_metadata(products.iter().find(|product| product.id == id));
+                });
                 open_dialog(shop.product_dialog);
             }
             import_team_cart(shop);
@@ -1211,6 +1221,9 @@ fn Home() -> impl IntoView {
             leptos::leptos_dom::helpers::window_event_listener_untyped("popstate", move |_| {
                 if let Some(id) = product_from_url() {
                     shop.selected_product.set(id);
+                    shop.products.with(|products| {
+                        update_product_metadata(products.iter().find(|product| product.id == id));
+                    });
                     open_dialog(shop.product_dialog);
                 } else {
                     close_dialog(shop.product_dialog);
@@ -1329,12 +1342,51 @@ fn ProductCard(product: Product, shop: Shop) -> impl IntoView {
     let image = product_image(&product);
     view! {
         <article class="product-card" class:in-cart={move ||shop.count(id)>0}>
-            <button class="product-photo photo-frame" aria-label=format!("Podrobnosti: {}",product.name) on:click=move |_|{shop.open_product(id);}>
+            <a class="product-photo photo-frame" href=format!("/?product={id}") aria-label=format!("Podrobnosti: {}",product.name) on:click=move |event: leptos::ev::MouseEvent|{
+                if ordinary_link_click(&event) {event.prevent_default();shop.open_product(id);}
+            }>
                 {image}<span class="product-tag">{product.tag}</span><span class="photo-detail">"Složení a alergeny"<Icon name="plus"/></span>
-            </button>
-            <FavoriteButton id shop/><div class="product-info"><div class="product-meta">{(!product.category.is_empty()).then(|| view! {<span>{product.category}</span>})}<span>{product.weight}</span>{product.banquet.then(|| view! {<span>"Banketní pečivo"</span>})}{(product.minimum_quantity>1).then(|| view! {<span>{format!("Od {} ks",product.minimum_quantity)}</span>})}</div><h3><button on:click=move |_|{shop.open_product(id);}>{product.name}</button></h3><p>{product.description}</p><div class="product-bottom"><span class="product-price">{money(product.price_cents)}<small>{if product.minimum_quantity.max(1)>1 {format!("{} ks od {}",product.minimum_quantity.max(1),money(product.price_cents.saturating_mul(i64::from(product.minimum_quantity.max(1)))))}else {" / ks".into()}}</small></span><QuantityControl id shop/></div></div>
+            </a>
+            <FavoriteButton id shop/><div class="product-info"><div class="product-meta">{(!product.category.is_empty()).then(|| view! {<span>{product.category}</span>})}<span>{product.weight}</span>{product.banquet.then(|| view! {<span>"Banketní pečivo"</span>})}{(product.minimum_quantity>1).then(|| view! {<span>{format!("Od {} ks",product.minimum_quantity)}</span>})}</div><h3><a href=format!("/?product={id}") on:click=move |event: leptos::ev::MouseEvent|{if ordinary_link_click(&event) {event.prevent_default();shop.open_product(id);}}>{product.name}</a></h3><p>{product.description}</p><div class="product-bottom"><span class="product-price">{money(product.price_cents)}<small>{if product.minimum_quantity.max(1)>1 {format!("{} ks od {}",product.minimum_quantity.max(1),money(product.price_cents.saturating_mul(i64::from(product.minimum_quantity.max(1)))))}else {" / ks".into()}}</small></span><QuantityControl id shop/></div></div>
         </article>
     }
+}
+
+fn ordinary_link_click(event: &leptos::ev::MouseEvent) -> bool {
+    event.button() == 0
+        && !event.ctrl_key()
+        && !event.meta_key()
+        && !event.shift_key()
+        && !event.alt_key()
+        && !event.default_prevented()
+}
+
+fn reveal_storefront() {
+    #[cfg(target_arch = "wasm32")]
+    if let Some(document) = web_sys::window().and_then(|window| window.document()) {
+        for id in ["server-content", "app-loading"] {
+            if let Some(element) = document.get_element_by_id(id) {
+                element.remove();
+            }
+        }
+        if let Some(root) = document.get_element_by_id("client-content") {
+            let _ = root.remove_attribute("hidden");
+        }
+    }
+}
+
+fn show_server_content_error(message: &str) {
+    #[cfg(target_arch = "wasm32")]
+    if let Some(document) = web_sys::window().and_then(|window| window.document()) {
+        if let Some(element) = document.get_element_by_id("loading-message") {
+            element.set_text_content(Some(message));
+        }
+        if let Some(retry) = document.get_element_by_id("loading-retry") {
+            let _ = retry.remove_attribute("hidden");
+        }
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    let _ = message;
 }
 #[component]
 fn QuantityControl(id: i64, shop: Shop) -> impl IntoView {
@@ -1384,7 +1436,14 @@ fn QuantityControl(id: i64, shop: Shop) -> impl IntoView {
 #[component]
 fn ProductDialog(shop: Shop) -> impl IntoView {
     view! {
-        <dialog node_ref=shop.product_dialog class="product-dialog" aria-labelledby="product-title" on:close=move |_|set_product_url(None,false)><button class="icon-button floating-close" aria-label="Zavřít detail svačiny" on:click=move |_|close_dialog(shop.product_dialog)><Icon name="close"/></button>
+        <dialog node_ref=shop.product_dialog class="product-dialog" aria-labelledby="product-title" on:close=move |_|{
+            // A queued close event from Back must not overwrite a later Forward navigation.
+            if !shop.product_dialog.get().is_some_and(|dialog| dialog.open()) {
+                set_product_url(None,false);
+                update_product_metadata(None);
+            }
+        }>
+            <button class="icon-button floating-close" aria-label="Zavřít detail svačiny" on:click=move |_|close_dialog(shop.product_dialog)><Icon name="close"/></button>
             {move ||shop.products.get().into_iter().find(|p|p.id==shop.selected_product.get()).map(|p|view! {
                 <div class="detail-photo photo-frame" role="img" aria-label=p.name.clone()>{product_image(&p)}</div><div class="detail-content"><div class="product-meta"><span>{p.tag}</span><span>{p.weight}</span>{p.banquet.then(|| view! {<span>"Banketní pečivo"</span>})}{(p.minimum_quantity>1).then(|| view! {<span>{format!("Minimální odběr {} ks",p.minimum_quantity)}</span>})}</div><h2 id="product-title">{p.name}</h2><p>{p.description}</p>{p.banquet.then(||view!{<p class="banquet-product-hint">{move ||format!("Banketní pečivo objednávejte celkem od {} ks. Do společného minima můžete kombinovat různé druhy.",shop.settings.get().banquet_minimum_quantity)}</p>})}<h3>"Co je uvnitř"</h3><p>{if p.ingredients.trim().is_empty() {"Složení zatím nebylo doplněno. Před objednáním si je prosím ověřte u obsluhy.".into()}else{p.ingredients.clone()}}</p><h3>"Alergeny"</h3><p>{catalog::allergen_label(&p.allergens)}</p><VariantSelector id=p.id shop/><a class="text-button product-permalink" href=format!("/?product={}",p.id)>"Odkaz na tuto svačinu"</a><div class="product-bottom"><strong class="product-price">{money(p.price_cents)}</strong><QuantityControl id=p.id shop/></div></div>
             })}
@@ -1866,6 +1925,52 @@ fn product_from_url() -> Option<i64> {
         None
     }
 }
+fn update_product_metadata(product: Option<&Product>) {
+    #[cfg(target_arch = "wasm32")]
+    if let Some(document) = web_sys::window().and_then(|window| window.document()) {
+        let (title, description) = match product {
+            Some(product) => (
+                format!("{} | Brunch Era", product.name),
+                if product.description.trim().is_empty() {
+                    product.name.chars().take(160).collect::<String>()
+                } else {
+                    product.description.chars().take(160).collect::<String>()
+                },
+            ),
+            None => (
+                "Brunch Era · Dobrá pauza začíná tady".to_owned(),
+                "Poctivé houstičky z pekárny Mysterium Gaudi podle originální domácí receptury. Čerstvé svačiny až k vám do kanceláře.".to_owned(),
+            ),
+        };
+        document.set_title(&title);
+        for (selector, content) in [
+            ("meta[name=description]", description.as_str()),
+            ("meta[property='og:title']", title.as_str()),
+            ("meta[property='og:description']", description.as_str()),
+        ] {
+            if let Ok(Some(meta)) = document.query_selector(selector) {
+                let _ = meta.set_attribute("content", content);
+            }
+        }
+        if let Ok(Some(canonical)) = document.query_selector("link[rel=canonical]")
+            && let Some(href) = canonical.get_attribute("href")
+            && let Ok(url) = web_sys::Url::new(&href)
+        {
+            url.set_search("");
+            url.set_hash("");
+            if let Some(product) = product {
+                url.search_params().set("product", &product.id.to_string());
+            }
+            let _ = canonical.set_attribute("href", &url.href());
+            if let Ok(Some(meta)) = document.query_selector("meta[property='og:url']") {
+                let _ = meta.set_attribute("content", &url.href());
+            }
+        }
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    let _ = product;
+}
+
 fn set_product_url(id: Option<i64>, push: bool) {
     #[cfg(target_arch = "wasm32")]
     {
