@@ -115,7 +115,7 @@ fn validate_items(items: &[Item]) -> ApiResult<()> {
     if items.len() > 50
         || items.iter().any(|item| {
             item.product_id <= 0
-                || !(1..=99).contains(&item.quantity)
+                || item.quantity < 1
                 || !ids.insert(item.product_id)
                 || item
                     .variant
@@ -124,7 +124,7 @@ fn validate_items(items: &[Item]) -> ApiResult<()> {
         })
     {
         return Err(ApiError::bad_request(
-            "Vyberte nejvýše 50 různých položek, každou v počtu 1 až 99.",
+            "Vyberte nejvýše 50 různých položek, každou alespoň v počtu 1 kus.",
         ));
     }
     Ok(())
@@ -269,7 +269,11 @@ async fn aggregate(
             .map_err(|_| ApiError::conflict("Uložený týmový košík nelze načíst."))?;
         for item in items {
             let entry = combined.entry(item.product_id).or_default();
-            entry.0 += item.quantity;
+            entry.0 = entry.0.checked_add(item.quantity).ok_or_else(|| {
+                ApiError::conflict(
+                    "Součet kusů některé položky je příliš vysoký. Upravte výběr účastníků.",
+                )
+            })?;
             entry.1.insert(item.variant);
         }
     }
@@ -290,7 +294,7 @@ async fn aggregate(
     } else {
         None
     };
-    let mut banquet_quantity = 0;
+    let mut banquet_quantity = 0i64;
     let mut result = Vec::new();
     for (id, (quantity, variants)) in combined {
         let product: Option<ProductAvailability> = sqlx::query_as("SELECT name,active,stock,minimum_quantity,banquet,variants FROM products WHERE id=$1 FOR SHARE")
@@ -306,7 +310,7 @@ async fn aggregate(
         else {
             return Err(ApiError::conflict("Některá položka již není v nabídce."));
         };
-        if !active || quantity > stock.unwrap_or(99).min(99) {
+        if !active || (!banquet && quantity > 99) || stock.is_some_and(|stock| quantity > stock) {
             return Err(ApiError::conflict(format!(
                 "U položky {name} není dostupný požadovaný počet. Upravte výběr účastníků."
             )));
@@ -331,7 +335,7 @@ async fn aggregate(
             )));
         }
         if banquet {
-            banquet_quantity += quantity;
+            banquet_quantity += i64::from(quantity);
         }
         result.push(Item {
             product_id: id,
@@ -455,6 +459,24 @@ async fn edit_contribution(
     let team = owner_team(&mut tx, id, user.id, true).await?;
     if team.closed_at.is_some() {
         return Err(ApiError::conflict("Košík je již uzavřený."));
+    }
+    let large_items: Vec<i64> = input
+        .items
+        .iter()
+        .filter(|item| item.quantity > 99)
+        .map(|item| item.product_id)
+        .collect();
+    if !large_items.is_empty()
+        && sqlx::query_scalar::<_, bool>(
+            "SELECT EXISTS(SELECT 1 FROM products WHERE id=ANY($1) AND NOT banquet)",
+        )
+        .bind(large_items)
+        .fetch_one(&mut *tx)
+        .await?
+    {
+        return Err(ApiError::bad_request(
+            "Běžné položky lze objednat nejvýše v počtu 99 kusů.",
+        ));
     }
     // The owner can repair several unavailable selections after the cutoff.
     // Full availability and minimum validation runs atomically when closing.
@@ -687,7 +709,7 @@ mod tests {
         );
     }
     #[test]
-    fn selections_reject_duplicates_and_out_of_range_counts() {
+    fn selections_reject_duplicates_and_nonpositive_counts() {
         assert!(
             validate_items(&[Item {
                 product_id: 1,
@@ -699,7 +721,7 @@ mod tests {
         assert!(
             validate_items(&[Item {
                 product_id: 1,
-                quantity: 100,
+                quantity: -1,
                 variant: None
             }])
             .is_err()
@@ -720,13 +742,15 @@ mod tests {
             .is_err()
         );
         assert!(validate_items(&[]).is_ok());
-        assert!(
-            validate_items(&[Item {
-                product_id: 1,
-                quantity: 99,
-                variant: None
-            }])
-            .is_ok()
-        );
+        for quantity in [99, 100, 70_000, i32::MAX] {
+            assert!(
+                validate_items(&[Item {
+                    product_id: 1,
+                    quantity,
+                    variant: None
+                }])
+                .is_ok()
+            );
+        }
     }
 }

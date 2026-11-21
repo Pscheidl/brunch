@@ -24,16 +24,16 @@ async function main() {
   const base = `http://127.0.0.1:${server.address().port}`
   const browser = await chromium.launch({ headless: true })
   const errors = [], checks = []
-  async function fixture({ loseResponse = false, minimum = 30, omitMinimum = false } = {}) {
+  async function fixture({ loseResponse = false, minimum = 30, omitMinimum = false, productMinimum = 10 } = {}) {
     const context = await browser.newContext({ viewport: { width: 1440, height: 1000 }, locale: 'cs-CZ' })
     const page = await context.newPage()
     await page.clock.setFixedTime(fixedNow)
-    const model = { minimum, omitMinimum, attempts: [], orders: new Map(), loseResponse }
+    const model = { minimum, omitMinimum, attempts: [], orders: new Map(), loseResponse, products: products.map(p => p.id === 1 ? { ...p, minimum_quantity: productMinimum } : p) }
     page.on('pageerror', e => errors.push(e.message))
     await context.route('**/api/**', async route => {
       const request = route.request(), url = new URL(request.url()), method = request.method()
       const reply = (json, status = 200) => route.fulfill({ json, status })
-      if (url.pathname === '/api/products') return reply(products)
+      if (url.pathname === '/api/products') return reply(model.products)
       if (url.pathname === '/api/settings') return reply({ ...(model.omitMinimum ? {} : { banquet_minimum_quantity: model.minimum }), pickup, delivery_fee_cents: 4900, free_delivery_from_cents: null, delivery_postal_codes: ['11000'], online_payment_enabled: false, hero_image: '', hero_image_alt: '' })
       if (url.pathname === '/api/delivery-options') return reply({ dates: [{ value: '2026-11-23', label: '23. 11. 2026' }], slots: ['07:00–09:00'], postal_slots: {} })
       if (url.pathname === '/api/terms') return reply({ version: 1, title: 'Testovací podmínky', content: 'Podmínky místního testu', updated_at: fixedNow.toISOString() })
@@ -48,10 +48,14 @@ async function main() {
           assert.deepEqual(payload, saved.request, 'Saved order retry must stay exact when the shared minimum changes')
           return reply(saved.order)
         }
-        const quantity = payload.items.reduce((sum, item) => sum + (products.find(p => p.id === item.product_id).banquet ? item.quantity : 0), 0)
+        const quantity = payload.items.reduce((sum, item) => sum + (model.products.find(p => p.id === item.product_id).banquet ? item.quantity : 0), 0)
         if (quantity > 0 && quantity < model.minimum) return reply({ error: `Minimální odběr banketního pečiva je ${model.minimum} ks. V košíku je ${quantity} ks.` }, 409)
-        for (const item of payload.items) assert(item.quantity >= products.find(p => p.id === item.product_id).minimum_quantity)
-        const items = payload.items.map(item => { const p = products.find(p => p.id === item.product_id); return { ...item, name: p.name, unit_price_cents: p.price_cents, total_cents: p.price_cents * item.quantity } })
+        for (const item of payload.items) {
+          const p = model.products.find(p => p.id === item.product_id)
+          assert(item.quantity >= Math.max(1, p.minimum_quantity))
+          assert(item.quantity <= (p.banquet ? 2147483647 : 99))
+        }
+        const items = payload.items.map(item => { const p = model.products.find(p => p.id === item.product_id); return { ...item, name: p.name, unit_price_cents: p.price_cents, total_cents: p.price_cents * item.quantity } })
         const isPickup = payload.fulfillment_method === 'pickup'
         const subtotal = items.reduce((sum, item) => sum + item.total_cents, 0), fee = isPickup ? 0 : 4900
         assert.equal(payload.expected_total_cents, subtotal + fee)
@@ -67,9 +71,9 @@ async function main() {
     await page.locator('.product-card').first().waitFor()
     return { page, model, context }
   }
-  const add = async (page, id) => {
+  const add = async (page, id, minimum = products.find(p => p.id === id).minimum_quantity) => {
     const p = products.find(product => product.id === id)
-    const label = p.minimum_quantity > 1 ? `Přidat ${p.minimum_quantity} ks do košíku: ${p.name}` : `Přidat ${p.name} do košíku`
+    const label = minimum > 1 ? `Přidat ${minimum} ks do košíku: ${p.name}` : `Přidat ${p.name} do košíku`
     await page.locator('.product-card').getByRole('button', { name: label, exact: true }).click()
   }
   const cart = page => page.locator('[data-checkout-step=cart]')
@@ -133,7 +137,43 @@ async function main() {
     assert.equal(await quantity(normal.page, 5).inputValue(), '5')
     assert.equal(await normal.page.locator('.banquet-minimum').count(), 0)
     assert(await next(normal.page).isEnabled())
-    checks.push('ordinary product can retain its own minimum without a shared banquet requirement')
+    await setQuantity(normal.page, 5, 70000)
+    assert.equal(await quantity(normal.page, 5).inputValue(), '99')
+    assert.equal(await quantity(normal.page, 5).getAttribute('max'), '99')
+    checks.push('ordinary product retains its own minimum and 99-piece maximum without a shared banquet requirement')
+
+    const large = await fixture({ minimum: 120, productMinimum: 120 })
+    await add(large.page, 1, 120)
+    await large.page.locator('.header-cart').click()
+    assert.equal(await quantity(large.page, 1).inputValue(), '120')
+    assert.equal(await quantity(large.page, 1).getAttribute('min'), '120')
+    assert.equal(await quantity(large.page, 1).getAttribute('max'), '2147483647')
+    await assertProgress(large.page, 120, 120)
+    await cart(large.page).getByRole('button', { name: `Přidat jeden kus: ${products[0].name}`, exact: true }).click()
+    assert.equal(await quantity(large.page, 1).inputValue(), '121')
+    await setQuantity(large.page, 1, 70000)
+    await assertProgress(large.page, 70000, 120)
+    assert.equal(await large.page.locator('.header-cart .cart-count').innerText(), '70000')
+    await large.page.waitForFunction(() => JSON.parse(localStorage.getItem('brunch-cart-v2') || '{}')['1'] === 70000)
+    await large.page.setViewportSize({ width: 320, height: 844 })
+    assert(await large.page.evaluate(() => document.documentElement.scrollWidth <= innerWidth))
+    assert(await large.page.locator('.checkout-body').evaluate(node => node.scrollWidth <= node.clientWidth), 'Large banquet quantities must fit the cart at 320 px')
+    await large.page.locator('.checkout-body').evaluate(node => { node.scrollTop = 0 })
+    await large.page.screenshot({ path: path.join(output, 'banquet-large-cart-320.png') })
+    await large.page.setViewportSize({ width: 1440, height: 1000 })
+    await large.page.reload()
+    await large.page.locator('.product-card').first().waitFor()
+    await large.page.locator('.header-cart').click()
+    assert.equal(await quantity(large.page, 1).inputValue(), '70000', 'Local storage must retain banquet quantities above 99 and 65535')
+    await assertProgress(large.page, 70000, 120)
+    assert(await next(large.page).isEnabled())
+    await contact(large.page)
+    await submit(large.page)
+    await confirmed(large.page)
+    assert.deepEqual(large.model.attempts[0].items.map(item => [item.product_id, item.quantity]), [[1, 70000]])
+    assert.equal(large.model.attempts[0].expected_total_cents, 70004900)
+    assert((await large.page.locator('.confirmation-details .checkout-review-items').innerText()).includes('70000×'))
+    checks.push('banquet minimum 120 adds 120, increments above 99, restores 70000 after reload, fits 320 px and submits the exact large quantity with its order detail')
 
     const mixed = await fixture()
     await addMixed(mixed.page)

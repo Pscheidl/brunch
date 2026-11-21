@@ -363,10 +363,10 @@ impl Shop {
     fn subtotal(self) -> i64 {
         catalog::subtotal(&self.cart.get(), &self.products.get())
     }
-    fn banquet_quantity(self) -> u32 {
+    fn banquet_quantity(self) -> u64 {
         catalog::banquet_quantity(&self.cart.get(), &self.products.get())
     }
-    fn banquet_missing(self) -> u32 {
+    fn banquet_missing(self) -> u64 {
         catalog::banquet_missing(
             &self.cart.get(),
             &self.products.get(),
@@ -384,9 +384,9 @@ impl Shop {
         }
     }
     fn total(self) -> i64 {
-        self.subtotal() + self.fee()
+        self.subtotal().saturating_add(self.fee())
     }
-    fn count(self, id: i64) -> u16 {
+    fn count(self, id: i64) -> u32 {
         self.cart.with(|c| c.get(&id).copied().unwrap_or(0))
     }
     fn open_product(self, id: i64) {
@@ -394,7 +394,7 @@ impl Shop {
         set_product_url(Some(id), true);
         open_dialog(self.product_dialog);
     }
-    fn set_quantity(self, id: i64, value: u16) {
+    fn set_quantity(self, id: i64, value: u32) {
         if self.submitting.get_untracked() {
             return;
         }
@@ -1332,7 +1332,7 @@ fn ProductCard(product: Product, shop: Shop) -> impl IntoView {
             <button class="product-photo photo-frame" aria-label=format!("Podrobnosti: {}",product.name) on:click=move |_|{shop.open_product(id);}>
                 {image}<span class="product-tag">{product.tag}</span><span class="photo-detail">"Složení a alergeny"<Icon name="plus"/></span>
             </button>
-            <FavoriteButton id shop/><div class="product-info"><div class="product-meta">{(!product.category.is_empty()).then(|| view! {<span>{product.category}</span>})}<span>{product.weight}</span>{product.banquet.then(|| view! {<span>"Banketní pečivo"</span>})}{(product.minimum_quantity>1).then(|| view! {<span>{format!("Od {} ks",product.minimum_quantity)}</span>})}</div><h3><button on:click=move |_|{shop.open_product(id);}>{product.name}</button></h3><p>{product.description}</p><div class="product-bottom"><span class="product-price">{money(product.price_cents)}<small>{if product.minimum_quantity.max(1)>1 {format!("{} ks od {}",product.minimum_quantity.max(1),money(product.price_cents*i64::from(product.minimum_quantity.max(1))))}else {" / ks".into()}}</small></span><QuantityControl id shop/></div></div>
+            <FavoriteButton id shop/><div class="product-info"><div class="product-meta">{(!product.category.is_empty()).then(|| view! {<span>{product.category}</span>})}<span>{product.weight}</span>{product.banquet.then(|| view! {<span>"Banketní pečivo"</span>})}{(product.minimum_quantity>1).then(|| view! {<span>{format!("Od {} ks",product.minimum_quantity)}</span>})}</div><h3><button on:click=move |_|{shop.open_product(id);}>{product.name}</button></h3><p>{product.description}</p><div class="product-bottom"><span class="product-price">{money(product.price_cents)}<small>{if product.minimum_quantity.max(1)>1 {format!("{} ks od {}",product.minimum_quantity.max(1),money(product.price_cents.saturating_mul(i64::from(product.minimum_quantity.max(1)))))}else {" / ks".into()}}</small></span><QuantityControl id shop/></div></div>
         </article>
     }
 }
@@ -1377,7 +1377,7 @@ fn QuantityControl(id: i64, shop: Shop) -> impl IntoView {
     };
     view! {
         <Show when={move ||shop.count(id)>0} fallback=move ||view! {<button class="add-button" disabled=move ||{let (min,max)=bounds(); max<min || shop.submitting.get()} aria-label=add_description on:click=move |_|shop.add(id)>{add_label}<Icon name="plus"/></button>}>
-            <div class="quantity-control" role="group" aria-label=move ||format!("Počet: {}",name())><button disabled=move ||shop.submitting.get() aria-label=remove_description on:click=move |_|shop.remove(id)><Icon name="minus"/></button><input type="number" inputmode="numeric" min=move ||bounds().0 max=move ||bounds().1 aria-label=move ||format!("Počet kusů: {}",name()) prop:value=move ||shop.count(id).to_string() disabled=move ||shop.submitting.get() on:change=move |ev|{if let Ok(n)=event_target_value(&ev).parse::<u16>() {shop.set_quantity(id,n);}else{event_target::<web_sys::HtmlInputElement>(&ev).set_value(&shop.count(id).to_string());shop.notice.set("Zadejte platný počet kusů.".into());}}/><button disabled={move ||shop.count(id)>=bounds().1 ||shop.submitting.get()} aria-label=move ||format!("Přidat jeden kus: {}",name()) on:click=move |_|shop.add(id)><Icon name="plus"/></button></div>
+            <div class="quantity-control" role="group" aria-label=move ||format!("Počet: {}",name())><button disabled=move ||shop.submitting.get() aria-label=remove_description on:click=move |_|shop.remove(id)><Icon name="minus"/></button><input type="number" inputmode="numeric" min=move ||bounds().0 max=move ||bounds().1 aria-label=move ||format!("Počet kusů: {}",name()) prop:value=move ||shop.count(id).to_string() disabled=move ||shop.submitting.get() on:change=move |ev|{if let Ok(n)=event_target_value(&ev).parse::<u32>() {shop.set_quantity(id,n);}else{event_target::<web_sys::HtmlInputElement>(&ev).set_value(&shop.count(id).to_string());shop.notice.set("Zadejte platný počet kusů.".into());}}/><button disabled={move ||shop.count(id)>=bounds().1 ||shop.submitting.get()} aria-label=move ||format!("Přidat jeden kus: {}",name()) on:click=move |_|shop.add(id)><Icon name="plus"/></button></div>
         </Show>
     }
 }
@@ -1535,7 +1535,7 @@ fn CheckoutAddress(shop: Shop) -> impl IntoView {
 }
 #[component]
 fn CheckoutItems(shop: Shop) -> impl IntoView {
-    view! {<div class="checkout-review-items">{move ||shop.products.get().into_iter().filter(|p|shop.count(p.id)>0).map(|p|view! {<div><span><b>{shop.count(p.id)}"×"</b>{p.name}<small>{shop.variants.get().get(&p.id).map(|v|format!(" · {v}")).unwrap_or_default()}</small></span><strong>{money(p.price_cents*i64::from(shop.count(p.id)))}</strong></div>}).collect_view()}</div>}
+    view! {<div class="checkout-review-items">{move ||shop.products.get().into_iter().filter(|p|shop.count(p.id)>0).map(|p|view! {<div><span><b>{shop.count(p.id)}"×"</b>{p.name}<small>{shop.variants.get().get(&p.id).map(|v|format!(" · {v}")).unwrap_or_default()}</small></span><strong>{money(p.price_cents.saturating_mul(i64::from(shop.count(p.id))))}</strong></div>}).collect_view()}</div>}
 }
 #[component]
 fn CheckoutStepper(shop: Shop) -> impl IntoView {
@@ -1554,8 +1554,8 @@ fn CartDialog(shop: Shop) -> impl IntoView {
                     <Show when=move ||!shop.notice.get().is_empty()><div class="api-message" role="status">{move ||shop.notice.get()}</div></Show>
                     <Show when=move ||!shop.error.get().is_empty()><div class="api-message error" role="alert"><p>{move ||shop.error.get()}</p><button class="button secondary" on:click=move |_|shop.refresh()>"Obnovit nabídku"</button></div></Show>
                     <section data-checkout-step="cart" hidden=move ||shop.step.get()!=0 aria-label="Obsah košíku">
-                        <Show when=move ||!shop.pickup.get() && shop.settings.get().free_delivery_from_cents.is_some()><div class="free-delivery"><Icon name="truck"/><p>{move ||{let limit=shop.settings.get().free_delivery_from_cents.unwrap_or(0);if shop.subtotal()>=limit {"Doručení máte od nás. Dobrou chuť!".into()} else {format!("Ještě {} a doručení máte zdarma.",money(limit-shop.subtotal()))}}}</p><progress max=move ||shop.settings.get().free_delivery_from_cents.unwrap_or(1).max(1) value=move ||shop.subtotal() aria-label="Do dopravy zdarma"/></div></Show>
-                        <FulfillmentChoice shop prefix="cart"/><PickupDetails shop/><div class="cart-items"><For each={move ||shop.products.get().into_iter().filter(|p|shop.count(p.id)>0).collect::<Vec<_>>()} key=|p|(p.id,p.version,p.price_cents) children=move |p|view! {<article class="cart-item"><div class="cart-item-photo photo-frame" role="img" aria-label=p.name.clone()>{product_image(&p)}</div><div class="cart-item-info"><h3>{p.name.clone()}</h3>{p.banquet.then(||view!{<small class="banquet-product-label">"Banketní pečivo"</small>})}<VariantSelector id=p.id shop/><p>{p.weight}" · "{money(p.price_cents)}" / ks"</p><div class="cart-item-actions"><QuantityControl id=p.id shop/><button class="text-button" aria-label=format!("Odebrat celou položku: {}",p.name) disabled=move ||shop.submitting.get() on:click=move |_|shop.set_quantity(p.id,0)>"Odebrat"</button><strong>{move ||money(p.price_cents*i64::from(shop.count(p.id)))}</strong></div></div></article>}/></div>
+                        <Show when=move ||!shop.pickup.get() && shop.settings.get().free_delivery_from_cents.is_some()><div class="free-delivery"><Icon name="truck"/><p>{move ||{let limit=shop.settings.get().free_delivery_from_cents.unwrap_or(0);if shop.subtotal()>=limit {"Doručení máte od nás. Dobrou chuť!".into()} else {format!("Ještě {} a doručení máte zdarma.",money(limit.saturating_sub(shop.subtotal())))}}}</p><progress max=move ||shop.settings.get().free_delivery_from_cents.unwrap_or(1).max(1) value=move ||shop.subtotal() aria-label="Do dopravy zdarma"/></div></Show>
+                        <FulfillmentChoice shop prefix="cart"/><PickupDetails shop/><div class="cart-items"><For each={move ||shop.products.get().into_iter().filter(|p|shop.count(p.id)>0).collect::<Vec<_>>()} key=|p|(p.id,p.version,p.price_cents) children=move |p|view! {<article class="cart-item"><div class="cart-item-photo photo-frame" role="img" aria-label=p.name.clone()>{product_image(&p)}</div><div class="cart-item-info"><h3>{p.name.clone()}</h3>{p.banquet.then(||view!{<small class="banquet-product-label">"Banketní pečivo"</small>})}<VariantSelector id=p.id shop/><p>{p.weight}" · "{money(p.price_cents)}" / ks"</p><div class="cart-item-actions"><QuantityControl id=p.id shop/><button class="text-button" aria-label=format!("Odebrat celou položku: {}",p.name) disabled=move ||shop.submitting.get() on:click=move |_|shop.set_quantity(p.id,0)>"Odebrat"</button><strong>{move ||money(p.price_cents.saturating_mul(i64::from(shop.count(p.id))))}</strong></div></div></article>}/></div>
                         <CartTotals shop/><button class="button primary full-width" disabled=move ||!shop.ready.get() ||!shop.banquet_can_continue() on:click=move |_|{if shop.banquet_can_continue(){shop.go(1);}}>{move ||if shop.pickup.get() {"Pokračovat k osobnímu odběru"}else{"Pokračovat k doručení"}}<Icon/></button><p class="checkout-reassurance"><Icon name="check"/>"Bez přihlašování. Za pár chvil hotovo."</p><CartSuggestions shop/>
                     </section>
                     <section data-checkout-step="delivery" hidden=move ||shop.step.get()!=1 aria-label="Údaje pro převzetí">
@@ -1937,7 +1937,7 @@ struct TeamImport {
 #[derive(Deserialize)]
 struct TeamImportItem {
     product_id: i64,
-    quantity: u16,
+    quantity: u32,
     #[serde(default)]
     variant: Option<String>,
 }
@@ -2063,7 +2063,11 @@ fn CartSuggestions(shop: Shop) -> impl IntoView {
         let gap = if shop.pickup.get() {
             0
         } else {
-            shop.settings.get().free_delivery_from_cents.unwrap_or(0) - shop.subtotal()
+            shop.settings
+                .get()
+                .free_delivery_from_cents
+                .unwrap_or(0)
+                .saturating_sub(shop.subtotal())
         };
         let mut products = shop
             .products
@@ -2077,10 +2081,10 @@ fn CartSuggestions(shop: Shop) -> impl IntoView {
             })
             .collect::<Vec<_>>();
         products.sort_by_key(|p| {
-            let price = p.price_cents * i64::from(p.minimum());
+            let price = p.total_price_cents(p.minimum());
             (
                 if gap > 0 {
-                    (price - gap).abs()
+                    price.abs_diff(gap)
                 } else if ["napoj", "ovoce"]
                     .iter()
                     .any(|w| catalog::search_key(&p.category).contains(w))
@@ -2094,7 +2098,7 @@ fn CartSuggestions(shop: Shop) -> impl IntoView {
         });
         products.into_iter().take(2).collect::<Vec<_>>()
     };
-    view! {<Show when=move ||!suggestions().is_empty()><aside class="cart-suggestions" aria-label="Doplnění objednávky"><h3>"Ještě něco ke svačině?"</h3>{move ||suggestions().into_iter().map(|p|{let id=p.id;view!{<div><span>{p.name.clone()}<small>{format!("{} ks · {}",p.minimum(),money(p.price_cents*i64::from(p.minimum())))}</small></span><button class="button secondary" on:click=move |_|shop.add(id)>"Přidat"</button></div>}}).collect_view()}</aside></Show>}
+    view! {<Show when=move ||!suggestions().is_empty()><aside class="cart-suggestions" aria-label="Doplnění objednávky"><h3>"Ještě něco ke svačině?"</h3>{move ||suggestions().into_iter().map(|p|{let id=p.id;view!{<div><span>{p.name.clone()}<small>{format!("{} ks · {}",p.minimum(),money(p.total_price_cents(p.minimum())))}</small></span><button class="button secondary" on:click=move |_|shop.add(id)>"Přidat"</button></div>}}).collect_view()}</aside></Show>}
 }
 fn reorder_cart(shop: Shop, order: &Order) {
     let products = shop.products.get_untracked();

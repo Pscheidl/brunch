@@ -275,8 +275,8 @@ async fn team_minimum_variants_close_and_export_never_create_an_order() {
     .execute(&app.pool)
     .await
     .unwrap();
-    for quantity in [0, 100] {
-        app.call(&guest,Method::PUT,&join,Some(json!({"name":"Jana","items":[{"product_id":product,"quantity":quantity,"variant":"Sýr"}]})),StatusCode::BAD_REQUEST).await;
+    for (quantity, status) in [(0, StatusCode::BAD_REQUEST), (100, StatusCode::CONFLICT)] {
+        app.call(&guest,Method::PUT,&join,Some(json!({"name":"Jana","items":[{"product_id":product,"quantity":quantity,"variant":"Sýr"}]})),status).await;
     }
     app.call(
         &guest,
@@ -383,6 +383,278 @@ async fn team_minimum_variants_close_and_export_never_create_an_order() {
         StatusCode::CONFLICT,
     )
     .await;
+    app.close().await;
+}
+
+#[tokio::test]
+#[ignore = "requires real PostgreSQL via TEST_DATABASE_URL"]
+async fn banquet_team_combines_partial_selections_above_99_and_checks_minima_on_close() {
+    let app = TestApp::new().await;
+    let owner = app.user().await;
+    let guest = app.client();
+    let team = app.team(&owner).await;
+    let path = format!("/api/team-orders/{}", team["id"].as_str().unwrap());
+    let join = format!("/api/team-joins/{}", team["invite_token"].as_str().unwrap());
+    let product = app.product().await;
+    sqlx::query("UPDATE products SET banquet=true,stock=NULL,minimum_quantity=120 WHERE id=$1")
+        .bind(product)
+        .execute(&app.pool)
+        .await
+        .unwrap();
+    sqlx::query("UPDATE shop_settings SET banquet_minimum_quantity=150 WHERE id=1")
+        .execute(&app.pool)
+        .await
+        .unwrap();
+
+    for (name, quantity, close_status) in [
+        ("Jana", 60, StatusCode::CONFLICT),
+        ("Pavel", 60, StatusCode::CONFLICT),
+        ("Karel", 30, StatusCode::OK),
+    ] {
+        app.call(
+            &guest,
+            Method::PUT,
+            &join,
+            Some(json!({"name":name,"items":[{"product_id":product,"quantity":quantity}]})),
+            StatusCode::OK,
+        )
+        .await;
+        let closed = app
+            .call(
+                &owner,
+                Method::POST,
+                &format!("{path}/close"),
+                Some(json!({})),
+                close_status,
+            )
+            .await;
+        if quantity == 60 && name == "Jana" {
+            assert!(closed["error"].as_str().unwrap().contains("120"));
+        } else if name == "Pavel" {
+            assert!(closed["error"].as_str().unwrap().contains("150"));
+        }
+    }
+    let exported = app
+        .call(
+            &owner,
+            Method::GET,
+            &format!("{path}/export"),
+            None,
+            StatusCode::OK,
+        )
+        .await;
+    assert_eq!(
+        exported["items"],
+        json!([{"product_id":product,"quantity":150}])
+    );
+    assert!(exported["notes"].as_str().unwrap().contains("Jana: 60×"));
+    app.close().await;
+}
+
+#[tokio::test]
+#[ignore = "requires real PostgreSQL via TEST_DATABASE_URL"]
+async fn banquet_team_preserves_large_quantities_and_observes_stock() {
+    let app = TestApp::new().await;
+    let owner = app.user().await;
+    let guest = app.client();
+    let team = app.team(&owner).await;
+    let path = format!("/api/team-orders/{}", team["id"].as_str().unwrap());
+    let join = format!("/api/team-joins/{}", team["invite_token"].as_str().unwrap());
+    let product = app.product().await;
+    sqlx::query("UPDATE products SET banquet=true,stock=70000,minimum_quantity=120 WHERE id=$1")
+        .bind(product)
+        .execute(&app.pool)
+        .await
+        .unwrap();
+    for (quantity, status) in [(70_001, StatusCode::CONFLICT), (70_000, StatusCode::OK)] {
+        app.call(
+            &guest,
+            Method::PUT,
+            &join,
+            Some(json!({"name":"Jana","items":[{"product_id":product,"quantity":quantity}]})),
+            status,
+        )
+        .await;
+    }
+    app.call(
+        &owner,
+        Method::POST,
+        &format!("{path}/close"),
+        Some(json!({})),
+        StatusCode::OK,
+    )
+    .await;
+    let exported = app
+        .call(
+            &owner,
+            Method::GET,
+            &format!("{path}/export"),
+            None,
+            StatusCode::OK,
+        )
+        .await;
+    assert_eq!(
+        exported["items"],
+        json!([{"product_id":product,"quantity":70_000}])
+    );
+    assert!(exported["notes"].as_str().unwrap().contains("Jana: 70000×"));
+    app.close().await;
+}
+
+#[tokio::test]
+#[ignore = "requires real PostgreSQL via TEST_DATABASE_URL"]
+async fn banquet_team_rejects_product_sum_overflow_and_uses_wide_shared_total() {
+    let app = TestApp::new().await;
+    let owner = app.user().await;
+    let guest = app.client();
+    let team = app.team(&owner).await;
+    let path = format!("/api/team-orders/{}", team["id"].as_str().unwrap());
+    let join = format!("/api/team-joins/{}", team["invite_token"].as_str().unwrap());
+    let ids: Vec<i64> = sqlx::query_scalar("SELECT id FROM products ORDER BY id LIMIT 2")
+        .fetch_all(&app.pool)
+        .await
+        .unwrap();
+    assert_eq!(ids.len(), 2);
+    sqlx::query("UPDATE products SET banquet=true,stock=NULL,minimum_quantity=1 WHERE id=ANY($1)")
+        .bind(&ids)
+        .execute(&app.pool)
+        .await
+        .unwrap();
+    app.call(
+        &guest,
+        Method::PUT,
+        &join,
+        Some(json!({"name":"Jana","items":[{"product_id":ids[0],"quantity":i32::MAX}]})),
+        StatusCode::OK,
+    )
+    .await;
+    let conflict = app
+        .call(
+            &guest,
+            Method::PUT,
+            &join,
+            Some(json!({"name":"Pavel","items":[{"product_id":ids[0],"quantity":1}]})),
+            StatusCode::CONFLICT,
+        )
+        .await;
+    assert!(conflict["error"].as_str().unwrap().contains("Součet kusů"));
+    let detail = app
+        .call(&owner, Method::GET, &path, None, StatusCode::OK)
+        .await;
+    assert_eq!(detail["contributions"].as_array().unwrap().len(), 1);
+    assert_eq!(detail["contributions"][0]["items"][0]["quantity"], i32::MAX);
+    app.call(
+        &guest,
+        Method::PUT,
+        &join,
+        Some(json!({"name":"Pavel","items":[{"product_id":ids[1],"quantity":1}]})),
+        StatusCode::OK,
+    )
+    .await;
+    app.call(
+        &owner,
+        Method::POST,
+        &format!("{path}/close"),
+        Some(json!({})),
+        StatusCode::OK,
+    )
+    .await;
+    let exported = app
+        .call(
+            &owner,
+            Method::GET,
+            &format!("{path}/export"),
+            None,
+            StatusCode::OK,
+        )
+        .await;
+    assert_eq!(
+        exported["items"],
+        json!([
+            {"product_id":ids[0],"quantity":i32::MAX},
+            {"product_id":ids[1],"quantity":1}
+        ])
+    );
+    app.close().await;
+}
+
+#[tokio::test]
+#[ignore = "requires real PostgreSQL via TEST_DATABASE_URL"]
+async fn ordinary_team_items_keep_99_limit_for_guest_owner_and_combined_selections() {
+    let app = TestApp::new().await;
+    let owner = app.user().await;
+    let guest = app.client();
+    let team = app.team(&owner).await;
+    let path = format!("/api/team-orders/{}", team["id"].as_str().unwrap());
+    let join = format!("/api/team-joins/{}", team["invite_token"].as_str().unwrap());
+    let product = app.product().await;
+    sqlx::query("UPDATE products SET banquet=false,stock=NULL,minimum_quantity=1 WHERE id=$1")
+        .bind(product)
+        .execute(&app.pool)
+        .await
+        .unwrap();
+    app.call(
+        &guest,
+        Method::PUT,
+        &join,
+        Some(json!({"name":"Jana","items":[{"product_id":product,"quantity":100}]})),
+        StatusCode::CONFLICT,
+    )
+    .await;
+    let first = app
+        .call(
+            &guest,
+            Method::PUT,
+            &join,
+            Some(json!({"name":"Jana","items":[{"product_id":product,"quantity":60}]})),
+            StatusCode::OK,
+        )
+        .await;
+    app.call(
+        &guest,
+        Method::PUT,
+        &join,
+        Some(json!({"name":"Pavel","items":[{"product_id":product,"quantity":40}]})),
+        StatusCode::CONFLICT,
+    )
+    .await;
+    app.call(
+        &owner,
+        Method::PUT,
+        &format!("{path}/contributions/{}", first["id"].as_str().unwrap()),
+        Some(json!({"name":"Jana","items":[{"product_id":product,"quantity":100}]})),
+        StatusCode::BAD_REQUEST,
+    )
+    .await;
+    app.call(
+        &guest,
+        Method::PUT,
+        &join,
+        Some(json!({"name":"Pavel","items":[{"product_id":product,"quantity":39}]})),
+        StatusCode::OK,
+    )
+    .await;
+    app.call(
+        &owner,
+        Method::POST,
+        &format!("{path}/close"),
+        Some(json!({})),
+        StatusCode::OK,
+    )
+    .await;
+    let exported = app
+        .call(
+            &owner,
+            Method::GET,
+            &format!("{path}/export"),
+            None,
+            StatusCode::OK,
+        )
+        .await;
+    assert_eq!(
+        exported["items"],
+        json!([{"product_id":product,"quantity":99}])
+    );
     app.close().await;
 }
 
