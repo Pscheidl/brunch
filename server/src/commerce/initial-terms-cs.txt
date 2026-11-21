@@ -21,13 +21,15 @@ Je-li u položky stanoven minimální odběr, musí jej objednané množství sp
 
 ## 3. Objednávka a uzavření smlouvy
 
-Nakupovat můžete i bez zákaznického účtu. Vložíte zboží do košíku, vyplníte jméno, e-mail, telefon a doručovací adresu, vyberete nabízený den, časové okno a způsob platby. Našeptanou adresu můžete upravit nebo napsat ručně. Před odesláním můžete zkontrolovat a opravit jednotlivé údaje, množství i celkovou cenu.
+Nakupovat můžete i bez přihlášení. Při první uložené objednávce automaticky vytvoříme zákaznický účet pro zadaný e-mail. Objednávky se stejným e-mailem se přiřazují k tomuto účtu i při nákupu bez přihlášení. Pro přístup k účtu a historii objednávek musíte potvrdit přihlášení jednorázovým odkazem zaslaným na tento e-mail. Zákaznický účet nemá heslo.
+
+Vložíte zboží do košíku, vyplníte jméno, e-mail, telefon a doručovací adresu, vyberete nabízený den, časové okno a způsob platby. Našeptanou adresu můžete upravit nebo napsat ručně. Před odesláním můžete zkontrolovat a opravit jednotlivé údaje, množství i celkovou cenu.
 
 Stisknutím tlačítka „Objednat s povinností platby“ odesíláte závaznou objednávku a přijímáte podmínky zobrazené při jejím odeslání. Prodávající potvrdí obdržení objednávky e-mailem. Smlouva vzniká doručením e-mailu, kterým prodávající objednávku přijímá ke zpracování. U online platby tento e-mail následuje až po ověření úhrady. Zpráva o uložení objednávky čekající na online platbu potvrzuje její evidenci.
 
 Součástí potvrzení jsou objednané položky, cena, kontaktní a doručovací údaje a přijaté znění podmínek. Požadovaný termín doručení následně potvrzuje obsluha. Pokud jej nelze dodržet, kontaktujeme vás a navrhneme řešení. Změnu objednávky, ceny nebo termínu provedeme po vzájemné dohodě. Nedohodneme-li se na náhradním plnění, vypořádáme zrušenou objednávku včetně případné přijaté platby.
 
-Smlouva se uzavírá v češtině a uchovává se elektronicky. Podklady dostanete e-mailem a můžete si je uložit. Registrovaný zákazník má přístup také k historii svých přihlášených objednávek. Náklady běžného internetového připojení nebo telefonního hovoru hradíte podle svého tarifu.
+Smlouva se uzavírá v češtině a uchovává se elektronicky. Podklady dostanete e-mailem a můžete si je uložit. Po ověření e-mailu přihlašovacím odkazem máte přístup také k historii objednávek přiřazených k této adrese, včetně dřívějších nákupů bez přihlášení. Náklady běžného internetového připojení nebo telefonního hovoru hradíte podle svého tarifu.
 
 ## 4. Cena a platba
 

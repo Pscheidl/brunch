@@ -6,13 +6,13 @@ Obchod s rozvozem svačin. Frontend používá Rust, Leptos CSR a Trunk. Backend
 
 - Dynamický katalog, kategorie, rostlinný filtr, složení a alergeny, dostupné množství a košík zachovaný po obnovení stránky.
 - Nabídka zboží a přidávání do košíku jsou dostupné i bez PSČ. Povolené PSČ je nutné až pro dokončení objednávky.
-- Nákup bez registrace. Povinné jsou jméno příjemce, telefon, e-mail a doručovací adresa. Návrhy adres z RÚIAN doplní ulici, město a PSČ. Všechna pole lze vyplnit i ručně. Firma a pokyny pro kurýra jsou volitelné.
+- Nákup bez přihlášení a bez samostatného registračního formuláře. Povinné jsou jméno příjemce, telefon, e-mail a doručovací adresa. Návrhy adres z RÚIAN doplní ulici, město a PSČ. Všechna pole lze vyplnit i ručně. Firma a pokyny pro kurýra jsou volitelné.
 - Kalendář umožňuje vybrat kterýkoli pracovní den od nejbližšího následujícího pracovního dne podle pražského času. Víkendy a české svátky jsou uzavřené. V administraci lze nastavit výchozí časová okna rozvozu a přepsat je u jednotlivých PSČ.
 - Platba kartou přes terminál při doručení, hotově při doručení nebo online přes Teya Hosted Checkout. Online platba se nabízí až po bezpečném nastavení brány podle `docs/teya-payments.md`.
 - Server vždy spočítá cenu z databáze. Změnu ceny nebo dopravy mezi výběrem a odesláním musí zákazník znovu potvrdit.
 - Objednávka, její položky, odečet skladu a e-mailová fronta se uloží jednou transakcí. Opakovaný požadavek se stejným klíčem nevytvoří další objednávku.
-- Registrace a přihlášení jednorázovým odkazem z e-mailu. Platnost 15 minut, potvrzení kliknutím, bez hesel. Účet vzniká až po ověření adresy.
-- Přihlášený zákazník vidí své objednávky a může zopakovat nákup za aktuální ceny. Dřívější anonymní objednávky se automaticky nepřiřazují podle shodného e-mailu.
+- Účet bez hesla vzniká automaticky s první úspěšně uloženou objednávkou nebo při prvním přihlášení. Přihlášení vyžaduje jednorázový odkaz z e-mailu s platností 15 minut a potvrzení kliknutím. Samotná objednávka zákazníka nepřihlásí.
+- Objednávky se automaticky přiřazují k účtu podle normalizovaného e-mailu, včetně dřívějších nákupů bez přihlášení. Po ověření e-mailu zákazník vidí jejich historii a může zopakovat nákup za aktuální ceny. Nákup na jiný e-mail patří účtu této adresy.
 - Potvrzení pro obchod i zákazníka a e-maily při změně stavu objednávky.
 
 ## Administrace
@@ -27,7 +27,7 @@ Sekce **Administrátoři** umožňuje přidat správce podle e-mailu a hesla, na
 - V sekci **Objednávky** lze vyhledávat a filtrovat, zobrazit kontakt a doručení, evidovat úhradu a měnit stav. Zaškrtnutím více objednávek ve stejném stavu je přesunete společně. Při hromadném dokončení dobírek potvrďte převzetí plateb. Pokud některou z vybraných objednávek mezitím někdo změnil, obnovte výběr.
 - Před vystavením první faktury vyplňte sekci **Fakturační údaje**. V detailu objednávky doplňte odběratele, datum plnění a splatnost. Plátce DPH zadá sazbu u každé položky a účtované dopravy. Vystavenou fakturu s vlastním číslem můžete kdykoli znovu otevřít, vytisknout nebo uložit jako PDF přes tiskový dialog.
 - V sekci **Doprava a nastavení** nastavíte cenu dopravy, hranici dopravy zdarma, příjemce objednávek a výchozí časová okna. V **Oblastech rozvozu** lze obsluhovaná PSČ přidávat, měnit a vypínat. U jednotlivého PSČ můžete výchozí okna nahradit vlastními. Mezery v PSČ se ignorují.
-- **Zákazníci** zobrazí ověřené účty a počty jejich objednávek. V sekci **E-maily** uvidíte frontu a stav odeslání. Tlačítko **Napsat hromadný e-mail** zobrazí počet různých adres z objednávek včetně nákupů bez registrace. Rozeslání potvrďte po vyplnění předmětu a textu. Každému příjemci přijde samostatná zpráva.
+- **Zákazníci** zobrazí účty a počty všech objednávek přiřazených podle e-mailu. Existence účtu sama nepotvrzuje ověření adresy. V sekci **E-maily** uvidíte frontu a stav odeslání. Tlačítko **Napsat hromadný e-mail** zobrazí počet různých adres z objednávek včetně nákupů bez přihlášení. Rozeslání potvrďte po vyplnění předmětu a textu. Každému příjemci přijde samostatná zpráva.
 
 Pro ranní kontrolu otevřete **Objednávky** a zvolte **Dnes**, případně **Zítra** nebo konkrétní **Den doručení**. Filtr vybírá požadovaný den doručení bez ohledu na datum vytvoření objednávky. Lze ho kombinovat se stavem a hledáním, platí i při stránkování. **Všechny dny** zruší pouze omezení na den. Rychlé volby se řídí časovým pásmem Europe/Prague. Pro kontrolu objednávek určených k přípravě sledujte jejich stav, zejména nevyřizujte objednávky čekající na online platbu, zrušené nebo vypršelé.
 

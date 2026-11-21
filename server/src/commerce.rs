@@ -843,9 +843,7 @@ async fn create_order(
 ) -> ApiResult<Json<Order>> {
     input.normalize()?;
     let user = auth::current_user(&state, &headers).await?;
-    let user_id = user
-        .filter(|u| u.email.eq_ignore_ascii_case(&input.email))
-        .map(|u| u.id);
+    let actor_id = user.map(|u| u.id);
     let payload =
         serde_json::to_value(&input).map_err(|_| ApiError::bad_request("Neplatná objednávka."))?;
     let mut tx = state.pool.begin().await?;
@@ -961,6 +959,15 @@ async fn create_order(
             ));
         }
     }
+    // The email identifies the customer, while only a verified session grants access.
+    // Keep this in the order transaction so failed checkouts cannot create accounts.
+    let user_id: Uuid = sqlx::query_scalar(
+        "INSERT INTO users(id,email) VALUES ($1,$2) ON CONFLICT(email) DO UPDATE SET email=excluded.email RETURNING id",
+    )
+    .bind(Uuid::new_v4())
+    .bind(&input.email)
+    .fetch_one(&mut *tx)
+    .await?;
     let id = Uuid::new_v4();
     let initial_status = if online { "awaiting_payment" } else { "new" };
     sqlx::query("INSERT INTO orders(id,idempotency_key,request_payload,user_id,email,name,phone,organization,street,city,postal_code,notes,delivery_date,delivery_slot,payment_method,subtotal_cents,delivery_fee_cents,total_cents,status,created_from_ip,terms_version) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20::text::inet,$21)")
@@ -986,7 +993,7 @@ async fn create_order(
         }
     }
     sqlx::query("INSERT INTO order_history(order_id,status,payment_status,changed_by) VALUES ($1,$2,'unpaid',$3)")
-        .bind(id).bind(initial_status).bind(user_id).execute(&mut *tx).await?;
+        .bind(id).bind(initial_status).bind(actor_id).execute(&mut *tx).await?;
     if online {
         crate::payments::enqueue_configured(&mut tx, id, &state).await?;
     }

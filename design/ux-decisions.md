@@ -1,6 +1,8 @@
 # Rozhodnutí pro první návrh frontendu
 
-Stav k 9. 10. 2026. První etapa ověřuje výběr svačin a podobu objednávkového toku. Jde o interaktivní návrh s ukázkovými daty, nikoli o spuštěný rozvoz.
+Historický záznam návrhu k 9. 10. 2026. První etapa ověřovala výběr svačin a podobu objednávkového toku jako interaktivní prototyp s ukázkovými daty. Níže popsaná omezení se vztahují k tomuto prototypu. Současnou implementaci popisuje [README](../README.md).
+
+Od 21. 11. 2026 nákup nevyžaduje přihlášení ani samostatný registrační formulář. První úspěšně uložená objednávka automaticky vytvoří účet bez hesla a všechny objednávky se přiřazují podle e-mailu, včetně dřívějších nákupů bez přihlášení. Přístup k historii vyžaduje ověření jednorázového odkazu z e-mailu. Samotný nákup zákazníka nepřihlásí.
 
 ## Vzhled a hlavní cesta
 

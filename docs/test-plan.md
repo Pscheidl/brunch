@@ -13,22 +13,23 @@ Při selhání testu může zůstat izolované schéma `brunch_test_<uuid>` pro 
 
 | Oblast | Co ověřuje HTTP test |
 | --- | --- |
-| Nákup bez účtu | Povinné jméno, telefon, e-mail a adresa, volitelný výběr z RÚIAN i ruční zadání, poznámka se uloží, účet se nevytváří, částky počítá server |
+| Nákup bez přihlášení | Povinné jméno, telefon, e-mail a adresa, volitelný výběr z RÚIAN i ruční zadání, poznámka se uloží, první úspěšná objednávka vytvoří účet a další se k němu přiřadí podle e-mailu, částky počítá server |
 | Opakovaný požadavek | Stejný klíč a obsah vrátí stejnou objednávku, jiný obsah skončí konfliktem, e-maily se nezdvojí |
 | Souběh | Ze dvou požadavků na poslední kus uspěje jeden, dva souběžné požadavky se stejným klíčem vytvoří jednu objednávku |
 | Cena a historie | Změna ceny má audit, původní objednávka uchová název a cenu, zastaralý součet ani zastaralá verze se nepřepíší |
 | Fotografie | Nahrání a načtení fotografie, skutečný formát obrázku, limit velikosti a rozměrů, odmítnutí SVG a poškozených dat, odstranění metadat |
 | Sklad a storno | Objednávka rezervuje kusy, storno je vrátí právě jednou, konečný stav nelze znovu otevřít |
-| Registrace | Účet vznikne až ověřením e-mailu, odkaz je jednorázový i při souběhu, prošlý odkaz nefunguje |
+| Registrace a přihlášení | Objednávka založí účet bez přihlášení, ověření e-mailu použije existující účet nebo založí nový, odkaz je jednorázový i při souběhu, prošlý odkaz nefunguje |
 | Relace a oprávnění | Odhlášení a expirace zneplatní relaci, všechny administrační cesty vyžadují správce, požadavky z cizího původu jsou odmítnuty |
-| Soukromí | Zákazník nevidí cizí objednávky, starší nákup hosta se nepřipojí podle pouhého e-mailu, odpovědi používají `no-store`, seznam e-mailů neodhaluje přihlašovací odkazy |
+| Historie a soukromí | Po ověření e-mailu zákazník vidí i dřívější objednávky bez přihlášení na stejnou adresu. Nákup na jiný e-mail patří účtu této adresy, samotné zadání e-mailu nezpřístupní historii, odpovědi používají `no-store`, seznam e-mailů neodhaluje přihlašovací odkazy |
+| Převod dřívějších objednávek | Migrace propojí nákupy bez přihlášení podle normalizovaného e-mailu, vytvoří chybějící účty a zachová existující účty i oprávnění správců |
 | Doprava | Nová cena dopravy, vypnutý a dosažený limit dopravy zdarma, změna provozního e-mailu |
 | Oblasti rozvozu | Správa pouze pro správce, normalizace všech bílých znaků, unikátní PSČ i při souběhu, konflikt starší verze, úprava a vypnutí/zapnutí oblasti, veřejný seznam pouze aktivních PSČ |
 | Kontrola PSČ objednávky | Prázdný seznam a nepovolené PSČ odmítnou nákup bez změny skladu či e-mailů, povolené PSČ projde, opakování přijaté objednávky funguje i po vypnutí oblasti a změně mezer |
 | Objednávky | Postupné stavy, oddělená platba kartou/hotovostí při doručení, audit změn, zakázané storno zaplacené objednávky, filtrování |
 | Den doručení | Výběr podle uloženého dne doručení nezávisle na vytvoření, kombinace se stavem a hledáním, shodný počet a výsledky, stránkování přes více než 50 objednávek bez opakování, všechny dny a prázdný výsledek, validace data a přístup jen správci |
-| E-mailová fronta | Potvrzení zákazníkovi a provozovateli ve stejné transakci s objednávkou, chyba při ukládání druhého e-mailu vrátí i objednávku a sklad, opakování selhané zprávy |
-| Neplatná data | Chybné kontakty, prázdná adresa, datum mimo nabídku, chybná platba a množství neuloží objednávku ani e-mail |
+| E-mailová fronta | Potvrzení zákazníkovi a provozovateli ve stejné transakci s objednávkou, chyba při ukládání druhého e-mailu vrátí i nový účet, objednávku a sklad, opakování selhané zprávy |
+| Neplatná data | Chybné kontakty, prázdná adresa, datum mimo nabídku, chybná platba a množství neuloží nový účet, objednávku ani e-mail |
 
 ## Správci a hesla
 
@@ -42,7 +43,7 @@ Nejprve v administraci povolit testovací PSČ `110 00`. V poli i při hledání
 
 1. V anonymním okně přidat zboží, změnit množství a odeslat nákup pouze s adresou a e-mailem. Vyplnit například patro, zvonek a pokyn k předání. Ověřit zobrazený součet a potvrzení.
 2. Zkontrolovat obě zprávy v místním poštovním serveru. Vypnout SMTP a ověřit, že objednávka zůstane přijatá a e-mail čeká na opakované odeslání.
-3. Vyžádat přihlašovací odkaz, otevřít ho, zkontrolovat účet, odhlásit se a zkusit stejný odkaz podruhé.
+3. Ověřit, že nákup sám zákazníka nepřihlásil. Vyžádat odkaz na e-mail objednávky, otevřít ho a zkontrolovat první objednávku v historii. Odhlásit se, objednat znovu na stejný e-mail a po dalším přihlášení ověřit obě objednávky. Zkusit použitý odkaz podruhé a přihlášení na jinou adresu, která nesmí zobrazit tuto historii.
 4. Přihlásit správce a projít všechny záložky v administraci. Založit produkt včetně fotografie, složení a alergenů, změnit cenu, zobrazit historii, vyprodat a archivovat produkt.
 5. V administraci vyhledat objednávku, zkontrolovat adresu a pokyny, otevřít mapu a vystavit a vytisknout fakturu. Zkontrolovat dodavatele, odběratele, položky a dopravu. Hromadně potvrdit dvě přijaté objednávky, následně ověřit rozvoz a doručení. Označit převzetí platby. U jiné nezaplacené objednávky ověřit storno.
 6. Otevřít stejný produkt nebo objednávku ve dvou oknech. Po uložení prvního musí druhé okno zobrazit konflikt, nikoli přepsat novější změny.
@@ -78,7 +79,7 @@ npm run test:admin
 BRUNCH_TEST_DATABASE_URL=postgres://brunch:brunch-local@127.0.0.1:55434/brunch npm run test:recovery
 ```
 
-- Obchod: nákup hosta, obě platby při doručení, skutečný potvrzovací e-mail, registrace odkazem, oddělení historie hosta, nákup s účtem, opakování nákupu, košík po obnovení, odhlášení a mobilní rozměry.
+- Obchod: nákup hosta, obě platby při doručení, skutečný potvrzovací e-mail, automatické založení účtu objednávkou, přihlášení odkazem a historie nákupů bez přihlášení na stejný e-mail, oddělení různých adres, nákup s účtem, opakování nákupu, košík po obnovení, odhlášení a mobilní rozměry.
 - Administrace: přihlášení, nahrání fotografie, vytvoření a archivace zboží, změna a historie ceny, uložení dopravy, hledání objednávky, mapa, tisk rozvozového listu, postupné doručení a přijetí platby, zákazníci a pošta, mobilní zobrazení.
 - Obnova: výpadek katalogu, ztracená odpověď po skutečně uložené objednávce a bezpečné opakování, skutečný konflikt ceny 409 a nové potvrzení.
 

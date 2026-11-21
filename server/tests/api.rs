@@ -705,7 +705,7 @@ async fn upgrade_preserves_existing_products_photos_orders_and_settings() {
         ("delivery_areas", " - 'delivery_slots'"),
         (
             "orders",
-            " - 'status' - 'version' - 'updated_at' - 'created_from_ip' - 'terms_version'",
+            " - 'status' - 'version' - 'updated_at' - 'created_from_ip' - 'terms_version' - 'user_id'",
         ),
     ];
     let mut before = Vec::new();
@@ -763,6 +763,103 @@ async fn upgrade_preserves_existing_products_photos_orders_and_settings() {
         recipients.is_empty(),
         "upgrading keeps the existing primary recipient only"
     );
+    pool.close().await;
+    sqlx::query(&format!("DROP SCHEMA {schema} CASCADE"))
+        .execute(&database)
+        .await
+        .unwrap();
+    database.close().await;
+}
+
+#[tokio::test]
+#[ignore = "requires TEST_DATABASE_URL pointing to local PostgreSQL"]
+async fn order_account_migration_backfills_emails_and_preserves_existing_identity_and_history() {
+    let database_url = std::env::var("TEST_DATABASE_URL").unwrap();
+    let database = PgPoolOptions::new()
+        .max_connections(2)
+        .connect(&database_url)
+        .await
+        .unwrap();
+    let schema = format!("brunch_account_upgrade_{}", Uuid::new_v4().simple());
+    sqlx::query(&format!("CREATE SCHEMA {schema}"))
+        .execute(&database)
+        .await
+        .unwrap();
+    let options = sqlx::postgres::PgConnectOptions::from_str(&database_url)
+        .unwrap()
+        .options([("search_path", schema.as_str())]);
+    let pool = PgPoolOptions::new()
+        .max_connections(2)
+        .connect_with(options)
+        .await
+        .unwrap();
+    let mut legacy = sqlx::migrate!();
+    legacy.migrations = legacy
+        .iter()
+        .filter(|migration| migration.version <= 19)
+        .cloned()
+        .collect::<Vec<_>>()
+        .into();
+    legacy.run(&pool).await.unwrap();
+    sqlx::raw_sql(r#"
+        INSERT INTO users(id,email,is_admin,admin_password_hash) VALUES
+            ('00000000-0000-0000-0000-000000000001','admin@example.test',true,'preserved-password-hash'),
+            ('00000000-0000-0000-0000-000000000002','existing@example.test',false,NULL);
+        INSERT INTO sessions(token_hash,user_id,expires_at,admin_authenticated) VALUES
+            ('preserved-session','00000000-0000-0000-0000-000000000001',now()+interval '1 hour',true);
+        INSERT INTO orders(id,idempotency_key,request_payload,user_id,email,street,city,postal_code,delivery_date,delivery_slot,payment_method,subtotal_cents,delivery_fee_cents,total_cents)
+        SELECT gen_random_uuid(),gen_random_uuid(),jsonb_build_object('email',email),user_id,email,'Test 1','Praha','11000','2026-12-01','07:00–09:00','cash_on_delivery',0,0,0
+        FROM (VALUES
+            ('New@Example.Test',NULL::uuid),
+            (' new@example.test ',NULL::uuid),
+            ('existing@example.test',NULL::uuid),
+            ('existing@example.test','00000000-0000-0000-0000-000000000002'::uuid),
+            ('admin@example.test',NULL::uuid),
+            ('new@example.test','00000000-0000-0000-0000-000000000002'::uuid)
+        ) AS legacy_orders(email,user_id);
+        INSERT INTO order_history(order_id,status,payment_status,changed_by)
+        SELECT id,status,payment_status,user_id FROM orders;
+    "#).execute(&pool).await.unwrap();
+    let snapshot_sql = "SELECT jsonb_build_object(
+        'orders',(SELECT jsonb_agg(to_jsonb(o)-'user_id' ORDER BY id) FROM orders o),
+        'history',(SELECT jsonb_agg(to_jsonb(h) ORDER BY id) FROM order_history h),
+        'existing_users',(SELECT jsonb_agg(to_jsonb(u) ORDER BY id) FROM users u WHERE email<>'new@example.test'),
+        'sessions',(SELECT jsonb_agg(to_jsonb(s) ORDER BY token_hash) FROM sessions s))";
+    let before: Value = sqlx::query_scalar(snapshot_sql)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    migrate(&pool).await.unwrap();
+    migrate(&pool).await.unwrap();
+    let after: Value = sqlx::query_scalar(snapshot_sql)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(
+        after, before,
+        "backfill must only change order ownership and add missing customers"
+    );
+    let owners: Vec<(String, i64)> = sqlx::query_as(
+        "SELECT u.email,count(*) FROM orders o JOIN users u ON u.id=o.user_id GROUP BY u.email ORDER BY u.email",
+    )
+    .fetch_all(&pool)
+    .await
+    .unwrap();
+    assert_eq!(
+        owners,
+        [
+            ("admin@example.test".into(), 1),
+            ("existing@example.test".into(), 2),
+            ("new@example.test".into(), 3)
+        ]
+    );
+    let customer: (bool, Option<String>) = sqlx::query_as(
+        "SELECT is_admin,admin_password_hash FROM users WHERE email='new@example.test'",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(customer, (false, None));
     pool.close().await;
     sqlx::query(&format!("DROP SCHEMA {schema} CASCADE"))
         .execute(&database)
@@ -1401,7 +1498,9 @@ async fn guest_checkout_totals_transactional_mail_idempotency_and_price_snapshot
     let guest = app.client();
     let products = app.get(&guest, "/api/products").await;
     let product = &products[0];
-    let input = app.order(&guest, "guest@example.test", product, 2).await;
+    let input = app
+        .order(&guest, " \tGUEST@Example.Test \n", product, 2)
+        .await;
     let created = app.post(&guest, "/api/orders", &input).await;
     assert_eq!(created["total_cents"], input["expected_total_cents"]);
     assert_eq!(created["payment_method"], "card_on_delivery");
@@ -1410,9 +1509,48 @@ async fn guest_checkout_totals_transactional_mail_idempotency_and_price_snapshot
     assert_eq!(app.count("outbox").await, 2);
     assert_eq!(
         app.count("users").await,
-        1,
-        "guest checkout does not create an account"
+        2,
+        "the first order creates one customer account"
     );
+    let customer: (Uuid, bool, Option<String>) = sqlx::query_as(
+        "SELECT id,is_admin,admin_password_hash FROM users WHERE email='guest@example.test'",
+    )
+    .fetch_one(&app.pool)
+    .await
+    .unwrap();
+    assert!(!customer.1);
+    assert_eq!(customer.2, None);
+    let ownership: (Uuid, Option<Uuid>) = sqlx::query_as(
+        "SELECT o.user_id,h.changed_by FROM orders o JOIN order_history h ON h.order_id=o.id",
+    )
+    .fetch_one(&app.pool)
+    .await
+    .unwrap();
+    assert_eq!(ownership, (customer.0, None));
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>("SELECT count(*) FROM sessions")
+            .fetch_one(&app.pool)
+            .await
+            .unwrap(),
+        0,
+        "checkout must not authenticate the browser"
+    );
+    app.call(
+        &guest,
+        Method::GET,
+        "/api/auth/me",
+        None,
+        StatusCode::UNAUTHORIZED,
+    )
+    .await;
+    app.call(
+        &guest,
+        Method::GET,
+        "/api/orders/mine",
+        None,
+        StatusCode::UNAUTHORIZED,
+    )
+    .await;
     let recipients: Vec<String> =
         sqlx::query_scalar("SELECT to_email FROM outbox ORDER BY to_email")
             .fetch_all(&app.pool)
@@ -1450,6 +1588,7 @@ async fn guest_checkout_totals_transactional_mail_idempotency_and_price_snapshot
     let replay = app.post(&guest, "/api/orders", &input).await;
     assert_eq!(replay["id"], created["id"]);
     assert_eq!(app.count("orders").await, 1);
+    assert_eq!(app.count("users").await, 2);
     assert_eq!(
         app.count("outbox").await,
         2,
@@ -1774,6 +1913,64 @@ async fn stock_contention_cancellation_and_concurrent_idempotency() {
 
 #[tokio::test]
 #[ignore = "requires real PostgreSQL via TEST_DATABASE_URL"]
+async fn guest_checkout_preserves_administrator_account_without_granting_access() {
+    let app = TestApp::new().await;
+    let guest = app.client();
+    let products = app.get(&guest, "/api/products").await;
+    let before: Value =
+        sqlx::query_scalar("SELECT to_jsonb(u) FROM users u WHERE email='admin@example.test'")
+            .fetch_one(&app.pool)
+            .await
+            .unwrap();
+    let input = app
+        .order(&guest, " ADMIN@Example.Test ", &products[0], 1)
+        .await;
+    let order = app.post(&guest, "/api/orders", &input).await;
+    let after: Value =
+        sqlx::query_scalar("SELECT to_jsonb(u) FROM users u WHERE email='admin@example.test'")
+            .fetch_one(&app.pool)
+            .await
+            .unwrap();
+    assert_eq!(after, before);
+    assert_eq!(app.count("users").await, 1);
+    app.call(
+        &guest,
+        Method::GET,
+        "/api/orders/mine",
+        None,
+        StatusCode::UNAUTHORIZED,
+    )
+    .await;
+    app.call(
+        &guest,
+        Method::GET,
+        "/api/admin/orders",
+        None,
+        StatusCode::UNAUTHORIZED,
+    )
+    .await;
+    let token = app.token(&guest, "admin@example.test").await;
+    app.post(&guest, "/api/auth/verify", &json!({"token":token}))
+        .await;
+    assert_eq!(
+        app.get(&guest, "/api/orders/mine").await[0]["id"],
+        order["id"]
+    );
+    app.call(
+        &guest,
+        Method::GET,
+        "/api/admin/orders",
+        None,
+        StatusCode::FORBIDDEN,
+    )
+    .await;
+    let admin = app.login("admin@example.test").await;
+    assert_eq!(app.get(&admin, "/api/admin/orders").await["total"], 1);
+    app.close().await;
+}
+
+#[tokio::test]
+#[ignore = "requires real PostgreSQL via TEST_DATABASE_URL"]
 async fn passwordless_registration_one_use_expiry_logout_and_csrf() {
     let app = TestApp::new().await;
     let client = app.client();
@@ -1898,13 +2095,37 @@ async fn customer_order_isolation_and_all_admin_routes_require_role() {
     let guest_input = app
         .order(&guest, "alice@example.test", &products[0], 1)
         .await;
-    app.post(&guest, "/api/orders", &guest_input).await;
+    let mut repeated_input = guest_input.clone();
+    repeated_input["idempotency_key"] = json!(Uuid::new_v4());
+    repeated_input["email"] = json!(" ALICE@Example.Test ");
+    let (first, second) = tokio::join!(
+        app.post(&guest, "/api/orders", &guest_input),
+        app.post(&guest, "/api/orders", &repeated_input)
+    );
+    assert_ne!(first["id"], second["id"]);
+    assert_eq!(app.count("users").await, 2);
     let alice = app.login("alice@example.test").await;
     let bob = app.login("bob@example.test").await;
+    assert_eq!(app.count("users").await, 3);
+    let history = app.get(&alice, "/api/orders/mine").await;
     assert_eq!(
-        app.get(&alice, "/api/orders/mine").await,
-        json!([]),
-        "email ownership must not reveal old guest orders"
+        history.as_array().unwrap().len(),
+        2,
+        "verified email ownership reveals all earlier orders for that email"
+    );
+    assert!(
+        history
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|order| order["id"] == first["id"])
+    );
+    assert!(
+        history
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|order| order["id"] == second["id"])
     );
     let input = app
         .order(&alice, "alice@example.test", &products[0], 1)
@@ -1916,15 +2137,28 @@ async fn customer_order_isolation_and_all_admin_routes_require_role() {
             .as_array()
             .unwrap()
             .len(),
-        1
+        3
     );
     assert_eq!(app.get(&bob, "/api/orders/mine").await, json!([]));
     let other_email = app.order(&alice, "bob@example.test", &products[0], 1).await;
-    app.post(&alice, "/api/orders", &other_email).await;
+    let other_order = app.post(&alice, "/api/orders", &other_email).await;
+    let bob_history = app.get(&bob, "/api/orders/mine").await;
     assert_eq!(
-        app.get(&bob, "/api/orders/mine").await,
-        json!([]),
-        "an order using another email remains a guest order"
+        bob_history.as_array().unwrap().len(),
+        1,
+        "an order belongs to its email account, not the current browser session"
+    );
+    assert_eq!(bob_history[0]["id"], other_order["id"]);
+    let owner_and_actor: (String, String) = sqlx::query_as(
+        "SELECT owner.email,actor.email FROM orders o JOIN users owner ON owner.id=o.user_id JOIN order_history h ON h.order_id=o.id JOIN users actor ON actor.id=h.changed_by WHERE o.id=$1",
+    )
+    .bind(Uuid::parse_str(other_order["id"].as_str().unwrap()).unwrap())
+    .fetch_one(&app.pool)
+    .await
+    .unwrap();
+    assert_eq!(
+        owner_and_actor,
+        ("bob@example.test".into(), "alice@example.test".into())
     );
     assert_eq!(
         app.get(&alice, "/api/orders/mine")
@@ -1932,7 +2166,7 @@ async fn customer_order_isolation_and_all_admin_routes_require_role() {
             .as_array()
             .unwrap()
             .len(),
-        1
+        3
     );
     app.call(
         &guest,
@@ -2442,6 +2676,7 @@ async fn checkout_rejects_invalid_input_without_order_or_email_side_effects() {
     assert_eq!(app.count("orders").await, 0);
     assert_eq!(app.count("order_items").await, 0);
     assert_eq!(app.count("outbox").await, 0);
+    assert_eq!(app.count("users").await, 1);
     app.close().await;
 }
 
@@ -2465,6 +2700,7 @@ async fn failed_outbox_insert_rolls_back_order_items_stock_and_first_email() {
         )
         .await;
     let before_mail = app.count("outbox").await;
+    let before_users = app.count("users").await;
     // Fail the second enqueue after the business email and stock update took place.
     sqlx::query("CREATE FUNCTION fail_customer_mail() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN IF NEW.to_email='rollback@example.test' THEN RAISE EXCEPTION 'Injected test outbox failure'; END IF; RETURN NEW; END $$").execute(&app.pool).await.unwrap();
     sqlx::query("CREATE TRIGGER fail_customer_mail BEFORE INSERT ON outbox FOR EACH ROW EXECUTE FUNCTION fail_customer_mail()").execute(&app.pool).await.unwrap();
@@ -2482,6 +2718,7 @@ async fn failed_outbox_insert_rolls_back_order_items_stock_and_first_email() {
     assert_eq!(app.count("orders").await, 0);
     assert_eq!(app.count("order_items").await, 0);
     assert_eq!(app.count("outbox").await, before_mail);
+    assert_eq!(app.count("users").await, before_users);
     let stock: i32 = sqlx::query_scalar("SELECT stock FROM products WHERE id=$1")
         .bind(product["id"].as_i64().unwrap())
         .fetch_one(&app.pool)
@@ -2495,6 +2732,7 @@ async fn failed_outbox_insert_rolls_back_order_items_stock_and_first_email() {
     app.post(&guest, "/api/orders", &input).await;
     assert_eq!(app.count("orders").await, 1);
     assert_eq!(app.count("outbox").await, before_mail + 2);
+    assert_eq!(app.count("users").await, before_users + 1);
     app.close().await;
 }
 
