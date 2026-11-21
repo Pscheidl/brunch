@@ -70,6 +70,12 @@ Skripty hledají Trunk v `PATH`, `target/tools/trunk/trunk` nebo v sousedním `o
 
 `docker compose down` zastaví místní služby a zachová databázový svazek. Přepínač `-v` by databázi smazal.
 
+## Dohledatelnost ve vyhledávačích
+
+Úvodní stránka a veřejné detaily `/?product=ID` vracejí aktuální nabídku přímo v HTML, včetně názvů, cen, popisů a odkazů. Detail obsahuje také složení a alergeny. Interaktivní obchod tento obsah nahradí až po načtení dat. Při vypnutém JavaScriptu nebo chybě aplikace zůstává nabídka čitelná, objednání vyžaduje JavaScript.
+
+`/sitemap.xml` se generuje z aktivních produktů v databázi a `/robots.txt` na ni odkazuje. Kanonické adresy vycházejí z `PUBLIC_URL`, nikoli z hlavičky návštěvníka. Neexistující, archivované a neplatné produktové odkazy vracejí 404. Administrace, zákaznický účet, společný košík a technický `/index.html` mají `noindex`. Samotné zpřístupnění obsahu nezaručuje indexaci. Stav konkrétní adresy lze ověřit v Google Search Console, kde lze také odeslat sitemapu.
+
 ## Testy
 
 Použijte samostatnou místní databázi. Integrační testy vytvářejí a odstraňují vlastní schémata, nepřepisují aplikační tabulky.

@@ -6,6 +6,7 @@ pub mod config;
 pub mod mail;
 pub mod media;
 pub mod payments;
+mod seo;
 
 use axum::{
     Json, Router,
@@ -83,6 +84,7 @@ pub async fn migrate(pool: &PgPool) -> Result<(), sqlx::migrate::MigrateError> {
 pub fn app(state: AppState) -> Router {
     let dist = state.config.dist_dir.clone();
     Router::new()
+        .merge(seo::routes())
         .route("/api/health", get(health))
         .merge(address::routes())
         .merge(auth::routes())

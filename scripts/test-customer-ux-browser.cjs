@@ -127,7 +127,7 @@ async function main() {
     await closeCart(page)
     checks.push('Minimum total is visible, numeric quantities clamp to stock/minimum, whole line removal')
 
-    await card(page, 'Šunka & sýr').getByRole('button', { name: 'Podrobnosti: Šunka & sýr', exact: true }).click()
+    await card(page, 'Šunka & sýr').getByRole('link', { name: 'Podrobnosti: Šunka & sýr', exact: true }).click()
     assert.equal(new URL(page.url()).searchParams.get('product'), '1')
     await page.goBack()
     await page.locator('.product-dialog').waitFor({ state: 'hidden' })
