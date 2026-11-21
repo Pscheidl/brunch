@@ -39,6 +39,7 @@ async function reviewOrder(page, email) {
   await page.locator('[name=postal-code]').fill('110 00')
   await page.locator('[name=notes]').fill('Test zotavení objednávky. 2. patro.')
   await page.getByRole('button', { name: 'Zkontrolovat objednávku', exact: true }).click()
+  await page.locator('[name=terms-accepted]').check()
 }
 async function submit(page) {
   const response = page.waitForResponse(r => r.url() === `${base}/api/orders` && r.request().method() === 'POST')

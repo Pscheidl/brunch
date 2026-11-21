@@ -2,7 +2,7 @@ use crate::{
     api,
     catalog::{
         self, Cart, DeliveryOptions, Order, OrderRequest, PaymentRecovery, PaymentResponse,
-        Product, RequestedItem, Settings, User, UserResponse, money,
+        Product, RequestedItem, Settings, Terms, User, UserResponse, money,
     },
     delivery_calendar::{
         DeliveryCalendar, date_label, earliest_date, prague_today, selectable_date,
@@ -67,6 +67,10 @@ struct Shop {
     products: RwSignal<Vec<Product>>,
     settings: RwSignal<Settings>,
     options: RwSignal<DeliveryOptions>,
+    terms: RwSignal<Option<Terms>>,
+    accepted_terms: RwSignal<Option<i64>>,
+    terms_loading: RwSignal<bool>,
+    terms_error: RwSignal<String>,
     loading: RwSignal<bool>,
     ready: RwSignal<bool>,
     error: RwSignal<String>,
@@ -249,6 +253,46 @@ fn redirect_to_payment(url: &str) -> bool {
 }
 
 impl Shop {
+    fn terms_accepted(self) -> bool {
+        !self.terms_loading.get()
+            && self.terms_error.get().is_empty()
+            && self.terms.with(|terms| {
+                terms
+                    .as_ref()
+                    .is_some_and(|terms| Some(terms.version) == self.accepted_terms.get())
+            })
+    }
+    fn load_terms(self) {
+        if self.terms_loading.get_untracked() {
+            return;
+        }
+        self.terms_loading.set(true);
+        self.terms_error.set(String::new());
+        spawn_local(async move {
+            match api::get::<Terms>("/api/terms").await {
+                Ok(terms)
+                    if terms.version > 0
+                        && !terms.title.trim().is_empty()
+                        && !terms.content.trim().is_empty() =>
+                {
+                    if self
+                        .terms
+                        .with_untracked(|previous| previous.as_ref().map(|value| value.version))
+                        != Some(terms.version)
+                    {
+                        self.accepted_terms.set(None);
+                    }
+                    self.terms.set(Some(terms));
+                }
+                _ => {
+                    self.terms.set(None);
+                    self.accepted_terms.set(None);
+                    self.terms_error.set("Obchodní podmínky se nepodařilo načíst. Před odesláním objednávky zkuste načtení znovu. Košík zůstává uložený.".into());
+                }
+            }
+            self.terms_loading.set(false);
+        });
+    }
     fn subtotal(self) -> i64 {
         catalog::subtotal(&self.cart.get(), &self.products.get())
     }
@@ -566,6 +610,13 @@ impl Shop {
         if self.submitting.get_untracked() || !self.ready.get_untracked() {
             return;
         }
+        if !self.terms_accepted() {
+            self.order_error.set(
+                "Před odesláním objednávky si přečtěte obchodní podmínky a potvrďte souhlas."
+                    .into(),
+            );
+            return;
+        }
         if !self.check_delivery_date() && self.attempt.get_untracked().is_none() {
             self.go(1);
             return;
@@ -616,24 +667,24 @@ impl Shop {
                 })
                 .collect(),
             expected_total_cents: self.total(),
+            terms_version: self.accepted_terms.get_untracked(),
         };
-        let signature = serde_json::to_string(&body).unwrap_or_default();
         let saved = self.attempt.get_untracked().or_else(|| {
             storage_get("brunch-order-attempt", true)
                 .and_then(|v| serde_json::from_str::<(String, String)>(&v).ok())
         });
-        if !self.delivery_date_valid()
-            && !saved
-                .as_ref()
-                .is_some_and(|(previous, _)| *previous == signature)
-        {
+        let retry_key = saved.as_ref().and_then(|(previous, key)| {
+            body.recover_terms_for_retry(previous).then(|| key.clone())
+        });
+        let signature = serde_json::to_string(&body).unwrap_or_default();
+        if !self.delivery_date_valid() && retry_key.is_none() {
             self.order_error
                 .set("Vyberte nový termín doručení, nejdříve následující pracovní den.".into());
             self.go(1);
             return;
         }
-        body.idempotency_key = match saved {
-            Some((previous, key)) if previous == signature => key,
+        body.idempotency_key = match retry_key {
+            Some(key) => key,
             _ => match new_key() {
                 Some(key) => key,
                 None => {
@@ -670,6 +721,7 @@ impl Shop {
                         self.attempt.set(None);
                     }
                     self.confirmation.set(Some(order));
+                    self.accepted_terms.set(None);
                     self.cart.set(Cart::new());
                     self.notice.set(String::new());
                     self.go(3);
@@ -682,13 +734,18 @@ impl Shop {
                     if err.status == 409 {
                         self.attempt.set(None);
                         storage_set("brunch-order-attempt", None, true);
+                        if body.terms_version != self.accepted_terms.get_untracked() {
+                            self.accepted_terms.set(None);
+                        }
                         self.order_error.set(format!("{} Zkontrolujte prosím aktualizovanou nabídku, cenu i termín a poté objednávku znovu potvrďte.",err.message));
                         self.refresh();
+                        self.load_terms();
                     } else if err.status == 400 {
                         self.attempt.set(None);
                         storage_set("brunch-order-attempt", None, true);
                         self.order_error.set(err.message);
                         self.refresh();
+                        self.load_terms();
                     } else {
                         self.order_error.set(format!("{} Pokud se spojení přerušilo, opakujte stejnou objednávku tímto tlačítkem. Opakované odeslání stejné objednávky ji nevytvoří podruhé.",err.message));
                     }
@@ -706,6 +763,10 @@ fn Home() -> impl IntoView {
         products: RwSignal::new(Vec::new()),
         settings: RwSignal::new(Settings::default()),
         options: RwSignal::new(DeliveryOptions::default()),
+        terms: RwSignal::new(None),
+        accepted_terms: RwSignal::new(None),
+        terms_loading: RwSignal::new(false),
+        terms_error: RwSignal::new(String::new()),
         loading: RwSignal::new(true),
         ready: RwSignal::new(false),
         error: RwSignal::new(String::new()),
@@ -778,6 +839,7 @@ fn Home() -> impl IntoView {
             shop.cart.set(catalog::parse_cart(&value));
         }
         restored.set(true);
+        shop.load_terms();
         shop.refresh();
         let payment_return = take_query_parameter("payment_return");
         let saved_payment = payment_return
@@ -833,10 +895,9 @@ fn Home() -> impl IntoView {
     };
     view! {
         <a class="skip-link" href="#nabidka">"Přejít na nabídku"</a>
-        <div class="top-note">{move ||if shop.settings.get().online_payment_enabled {"Dobrá pauza bez registrace. Online kartou nebo při doručení."} else {"Dobrá pauza bez registrace. Kartou i hotově zaplatíte při doručení."}}</div>
         <header class="site-header"><div class="header-inner page-width">
             <Brand/>
-            <nav class="desktop-nav" aria-label="Hlavní navigace"><a href="#nabidka" class="active">"Naše nabídka"</a><a href="#jak-to-funguje">"Jak to funguje"</a><a href="#do-kancelare">"Pro vaši kancelář"</a></nav>
+            <nav class="desktop-nav" aria-label="Hlavní navigace"><a href="#nabidka" class="active">"Naše nabídka"</a><a href="#jak-to-funguje">"Jak to funguje"</a></nav>
             <div class="header-actions"><button class="account-button" aria-label=move || if shop.user.get().is_some() {"Můj účet"} else {"Přihlásit"} on:click=move |_| shop.open_account()><Icon name="person"/><span>{move || if shop.user.get().is_some() {"Můj účet"} else {"Přihlásit"}}</span></button><button class="header-cart" on:click=move |_| shop.open_cart() aria-label=move || format!("Otevřít košík, {} kusů",catalog::quantity(&shop.cart.get()))><Icon name="bag"/><span class="cart-label">"Košík"</span><span class="cart-count">{move ||catalog::quantity(&shop.cart.get())}</span></button></div>
         </div></header>
         <main>
@@ -857,7 +918,7 @@ fn Home() -> impl IntoView {
             <section class="how-section page-width" id="jak-to-funguje" aria-labelledby="how-title"><div class="section-heading"><div><p class="eyebrow">"PAUZA BEZ STAROSTÍ"</p><h2 id="how-title">"Vy máte svůj den. My svačinu."</h2></div></div><div class="steps-grid"><article><span class="step-number">"01"</span><h3>"Vyberte si podle chuti"</h3><p>"Slané, sladké nebo něco do misky. Složení i alergeny najdete u každé svačiny."</p></article><article><span class="step-number">"02"</span><h3>"Řekněte nám kam a kdy"</h3><p>"Vyplníte adresu a kontakt pro kurýra. V kalendáři vyberete den a čas, který vám vyhovuje."</p></article><article><span class="step-number">"03"</span><h3>{move ||if shop.settings.get().online_payment_enabled {"Zaplaťte, jak vám to vyhovuje"} else {"Zaplaťte při doručení"}}</h3><p>{move ||if shop.settings.get().online_payment_enabled {"Online kartou přes Teya, nebo kartou či hotově při doručení. Objednávku s online platbou přijmeme po zaplacení."} else {"Kartou nebo hotově. Přijetí objednávky vám pošleme e-mailem, termín následně potvrdíme."}}</p></article></div></section>
             <section class="office-section page-width" id="do-kancelare" aria-labelledby="office-title"><div class="office-banner"><div><span class="eyebrow">"DOBRÉ VĚCI SE LÉPE SDÍLÍ"</span><h2 id="office-title">"Přiberte ke svačině kolegy."</h2><p>"Každému něco podle chuti. Jedna společná objednávka, jedna cesta k vám. "{move ||shop.delivery_info()}</p></div><a class="button secondary" href="#nabidka">"Vybrat pro celý tým"<Icon/></a></div></section>
         </main>
-        <footer class="site-footer page-width"><Brand class="brand footer-brand"/><p>"Dobrá pauza začíná tady."</p><button class="text-button" on:click=move |_|shop.open_account()>"Můj účet a objednávky"</button><a class="admin-link" href="/admin/">"Administrace"</a><span>"2026"</span></footer>
+        <footer class="site-footer page-width"><Brand class="brand footer-brand"/><p>"Dobrá pauza začíná tady."</p><button class="text-button" on:click=move |_|shop.open_account()>"Můj účet a objednávky"</button><a class="terms-link" href="/obchodni-podminky/">"Obchodní podmínky"</a><a class="admin-link" href="/admin/">"Administrace"</a><span>"2026"</span></footer>
         <div class="mobile-cart" class:has-items={move ||catalog::quantity(&shop.cart.get())>0}><button class="button primary" on:click=move |_|shop.open_cart()><span><Icon name="bag"/>"Zobrazit košík"<span class="cart-count">{move ||catalog::quantity(&shop.cart.get())}</span></span><strong>{move ||if shop.ready.get() {money(shop.total())} else {"Načítáme…".into()}}<Icon/></strong></button></div>
         <div class="sr-only" aria-live="polite" aria-atomic="true">{move ||shop.announcement.get()}</div>
         <DeliveryDialog shop/><ProductDialog shop/><CartDialog shop/><AccountDialog shop/>
@@ -1044,7 +1105,7 @@ fn CartDialog(shop: Shop) -> impl IntoView {
                         <CartTotals shop/>
                         <Show when=move ||!shop.order_error.get().is_empty()><div class="api-message error" role="alert">{move ||shop.order_error.get()}</div></Show>
                         <p class="field-hint checkout-order-info">{move ||if shop.payment.get()=="card" {"Odesláním vytvoříte objednávku s povinností platby a přejdete na platební bránu Teya. Objednávku přijmeme až po ověření platby a potvrdíme e-mailem. Požadovaný termín ještě potvrdí obsluha."} else {"Odesláním vytvoříte objednávku s povinností platby při doručení. Přijetí vám potvrdíme e-mailem. Požadovaný termín ještě potvrdí obsluha."}}</p>
-                        <button class="button primary full-width payment-submit" type="button" disabled=move ||shop.submitting.get() ||!shop.delivers_to_postal() ||shop.day.get().is_empty() ||shop.slot.get().is_empty() ||(shop.payment.get()=="card" && !shop.settings.get().online_payment_enabled) on:click=move |_|shop.submit()><Icon name="check"/>{move ||if shop.submitting.get() {"Odesíláme objednávku…".into()} else {format!("Objednat s povinností platby · {}",money(shop.total()))}}</button><button class="text-button checkout-back" type="button" disabled=move ||shop.submitting.get() on:click=move |_|shop.go(1)><Icon name="back"/>"Zpět k doručení"</button>
+                        <CheckoutTerms shop/><button class="button primary full-width payment-submit" type="button" disabled=move ||shop.submitting.get() ||!shop.terms_accepted() ||!shop.delivers_to_postal() ||shop.day.get().is_empty() ||shop.slot.get().is_empty() ||(shop.payment.get()=="card" && !shop.settings.get().online_payment_enabled) on:click=move |_|shop.submit()><Icon name="check"/>{move ||if shop.submitting.get() {"Odesíláme objednávku…".into()} else {format!("Objednat s povinností platby · {}",money(shop.total()))}}</button><button class="text-button checkout-back" type="button" disabled=move ||shop.submitting.get() on:click=move |_|shop.go(1)><Icon name="back"/>"Zpět k doručení"</button>
                     </section>
                     <section data-checkout-step="confirmation" hidden=move ||shop.step.get()!=3 class="checkout-confirmation" aria-label="Potvrzení objednávky">
                         {move ||shop.confirmation.get().map(|order|view! {<div class="confirmation-intro"><span class="confirmation-mark"><Icon name="check"/></span><p class="eyebrow">"DĚKUJEME ZA OBJEDNÁVKU"</p><h3>{if order.status=="expired" {"Lhůta pro zaplacení skončila."} else {"Dobrá pauza je na dohled."}}</h3><p>"Číslo objednávky "<strong>{order.number.clone()}</strong><br/>{match order.status.as_str() {"awaiting_payment"=>"Objednávku přijmeme po ověření platby.","cancelled"=>"Objednávka je zrušena. Podrobnosti najdete u platby.","expired"=>"Objednávka nebyla včas zaplacena a je uzavřena.",_=>"Přijetí vám potvrdíme e-mailem."}}</p></div><OrderSummary order/>})}
@@ -1053,6 +1114,26 @@ fn CartDialog(shop: Shop) -> impl IntoView {
                 </div>
             </Show>
         </dialog>
+    }
+}
+
+#[component]
+fn CheckoutTerms(shop: Shop) -> impl IntoView {
+    view! {
+        <div class="checkout-terms">
+            <Show when=move ||shop.terms_loading.get()><p class="field-hint" role="status">"Načítáme obchodní podmínky…"</p></Show>
+            <Show when=move ||!shop.terms_error.get().is_empty()>
+                <div class="api-message error" role="alert"><p>{move ||shop.terms_error.get()}</p><button type="button" class="button secondary" disabled=move ||shop.terms_loading.get() on:click=move |_|shop.load_terms()>"Načíst obchodní podmínky znovu"</button></div>
+            </Show>
+            <Show when=move ||shop.terms.get().is_some() && !shop.terms_loading.get()>
+                <label class="terms-acceptance">
+                    <input type="checkbox" name="terms-accepted" required disabled=move ||shop.submitting.get()
+                        prop:checked=move ||shop.terms_accepted()
+                        on:change=move |ev|shop.accepted_terms.set(if event_target_checked(&ev) {shop.terms.with_untracked(|terms|terms.as_ref().map(|terms|terms.version))} else {None})/>
+                    <span>"Souhlasím s "<a href=move ||shop.terms.with(|terms|terms.as_ref().map(|terms|format!("/obchodni-podminky/?version={}",terms.version)).unwrap_or_else(||"/obchodni-podminky/".into())) target="_blank" rel="noopener">"obchodními podmínkami"</a>"."</span>
+                </label>
+            </Show>
+        </div>
     }
 }
 

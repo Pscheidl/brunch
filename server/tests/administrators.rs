@@ -53,6 +53,7 @@ impl Fixture {
         let url = format!("http://{bind}");
         let config = Config {
             app_env: brunch_server::config::AppEnvironment::Development,
+            trust_caddy_client_ip: false,
             payment_timeout_minutes: 60,
             teya: None,
             database_url,

@@ -20,6 +20,12 @@
 .invoice .invoice-total {font-size:1.4rem;font-weight:650;margin:18px 0 8px;text-align:right}
 .invoice section h3 {margin-block:12px}
 .invoice .table-wrap {margin-block:12px}
+.terms-editor>.section-note{margin:0 0 18px}
+.terms-editor textarea{min-height:420px}
+.terms-preview h3{font-size:20px;line-height:1.4;overflow-wrap:anywhere}
+.terms-text{white-space:pre-wrap;overflow-wrap:anywhere;font-size:16px;line-height:1.75}
+.order-origin{margin-top:8px;overflow-wrap:anywhere}
+@media(max-width:760px){.terms-editor .actions>.button{white-space:normal}.terms-editor textarea{min-height:340px}}
 @media print {
   body:has(.invoice) {overflow:visible}
   dialog:has(.invoice) .dialog-head {position:static}

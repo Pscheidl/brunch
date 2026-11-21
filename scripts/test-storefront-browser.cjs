@@ -30,6 +30,7 @@ async function checkout(page, address, payment) {
   await page.locator('[name=postal-code]').fill('110 00')
   await page.locator('[name=notes]').fill('3. patro, zvonek Test, předat na recepci.')
   await page.getByRole('button', { name: 'Zkontrolovat objednávku', exact: true }).click()
+  await page.locator('[name=terms-accepted]').check()
   await page.locator(`[name=payment-method][value=${payment}]`).check()
   await page.screenshot({ path: `${out}/${payment}-checkout.png`, fullPage: false })
   const response = page.waitForResponse(r => r.url() === `${base}/api/orders` && r.request().method() === 'POST')

@@ -1,11 +1,12 @@
 mod categories;
 
 mod invoices;
+mod terms;
 
-use crate::{ApiError, ApiResult, AppState, auth, mail};
+use crate::{ApiError, ApiResult, AppState, auth, client_ip, mail};
 use axum::{
-    Json, Router,
-    extract::{Path, Query, State},
+    Extension, Json, Router,
+    extract::{ConnectInfo, Path, Query, State},
     http::{HeaderMap, StatusCode},
     routing::{get, post, put},
 };
@@ -36,6 +37,7 @@ pub fn routes() -> Router<AppState> {
     Router::new()
         .merge(invoices::routes())
         .merge(categories::routes())
+        .merge(terms::routes())
         .route("/api/products", get(products))
         .route("/api/settings", get(settings))
         .route("/api/delivery-options", get(delivery_options))
@@ -556,6 +558,8 @@ struct CartItem {
 #[serde(deny_unknown_fields)]
 struct OrderInput {
     idempotency_key: Uuid,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    terms_version: Option<i64>,
     email: String,
     #[serde(default)]
     name: String,
@@ -651,6 +655,7 @@ impl OrderInput {
 #[derive(Serialize, FromRow)]
 struct Order {
     id: Uuid,
+    terms_version: Option<i64>,
     number: String,
     email: String,
     name: String,
@@ -671,6 +676,10 @@ struct Order {
     version: i64,
     created_at: DateTime<Utc>,
     updated_at: DateTime<Utc>,
+    // Populate only in authenticated administrator detail, never public replies.
+    #[sqlx(skip)]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    created_from_ip: Option<Option<String>>,
     #[sqlx(skip)]
     items: Vec<OrderItem>,
     #[sqlx(skip)]
@@ -769,6 +778,12 @@ async fn read_order(conn: &mut PgConnection, id: Uuid, history: bool) -> ApiResu
         .ok_or_else(|| ApiError::not_found("Objednávka neexistuje."))?;
     attach_items(conn, std::slice::from_mut(&mut order)).await?;
     if history {
+        order.created_from_ip = Some(
+            sqlx::query_scalar("SELECT host(created_from_ip) FROM orders WHERE id=$1")
+                .bind(id)
+                .fetch_one(&mut *conn)
+                .await?,
+        );
         order.history = Some(sqlx::query_as("SELECT status,payment_status,created_at,changed_by FROM order_history WHERE order_id=$1 ORDER BY id")
             .bind(id).fetch_all(&mut *conn).await?);
         if order.payment_method == "card" {
@@ -797,6 +812,7 @@ fn delivery_fee(subtotal: i64, settings: &Settings) -> i64 {
 async fn create_order(
     State(state): State<AppState>,
     headers: HeaderMap,
+    peer: Option<Extension<ConnectInfo<std::net::SocketAddr>>>,
     Json(mut input): Json<OrderInput>,
 ) -> ApiResult<Json<Order>> {
     input.normalize()?;
@@ -829,6 +845,12 @@ async fn create_order(
         return Ok(Json(order));
     }
     input.validate_contact()?;
+    let accepted_terms = terms::accepted_for_checkout(&mut tx, input.terms_version).await?;
+    let created_from_ip = client_ip::from_request(
+        &headers,
+        peer.map(|Extension(ConnectInfo(address))| address.ip()),
+        state.config.trust_caddy_client_ip,
+    )?;
     let online = input.payment_method == "card";
     if online && state.config.teya.is_none() {
         return Err(ApiError::conflict(
@@ -915,12 +937,12 @@ async fn create_order(
     }
     let id = Uuid::new_v4();
     let initial_status = if online { "awaiting_payment" } else { "new" };
-    sqlx::query("INSERT INTO orders(id,idempotency_key,request_payload,user_id,email,name,phone,organization,street,city,postal_code,notes,delivery_date,delivery_slot,payment_method,subtotal_cents,delivery_fee_cents,total_cents,status) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19)")
+    sqlx::query("INSERT INTO orders(id,idempotency_key,request_payload,user_id,email,name,phone,organization,street,city,postal_code,notes,delivery_date,delivery_slot,payment_method,subtotal_cents,delivery_fee_cents,total_cents,status,created_from_ip,terms_version) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20::text::inet,$21)")
         .bind(id).bind(input.idempotency_key).bind(payload).bind(user_id).bind(&input.email)
         .bind(&input.name).bind(&input.phone).bind(&input.organization).bind(&input.street)
         .bind(&input.city).bind(&input.postal_code).bind(&input.notes).bind(input.delivery_date)
         .bind(&input.delivery_slot).bind(&input.payment_method).bind(subtotal).bind(fee).bind(total)
-        .bind(initial_status)
+        .bind(initial_status).bind(created_from_ip).bind(accepted_terms.version)
         .execute(&mut *tx).await?;
     for item in &input.items {
         let product = &by_id[&item.product_id];
@@ -944,9 +966,10 @@ async fn create_order(
     }
     let order = read_order(&mut tx, id, false).await?;
     let summary = order_summary(&order);
+    let terms_copy = accepted_terms.email_copy();
     if online {
         mail::enqueue(&mut tx, &order.email, &format!("Objednávka {} čeká na zaplacení", order.number),
-            &format!("Objednávku jsme uložili a čekáme na potvrzení online platby. K vyřízení ji přijmeme až po úspěšné úhradě. Platbu dokončete v platební bráně otevřené z objednávky.\n\n{summary}\n\nPokud už jste zaplatili, další platbu neprovádějte a vyčkejte na potvrzení. S dotazy napište na {} a uveďte číslo objednávky.", settings.order_email)).await?;
+            &format!("Objednávku jsme uložili a čekáme na potvrzení online platby. K vyřízení ji přijmeme až po úspěšné úhradě. Platbu dokončete v platební bráně otevřené z objednávky.\n\n{summary}\n\nPokud už jste zaplatili, další platbu neprovádějte a vyčkejte na potvrzení. S dotazy napište na {} a uveďte číslo objednávky.{terms_copy}", settings.order_email)).await?;
     } else {
         mail::enqueue(
             &mut tx,
@@ -959,7 +982,7 @@ async fn create_order(
         )
         .await?;
         mail::enqueue(&mut tx, &order.email, &format!("Přijali jsme objednávku {}", order.number),
-            &format!("Děkujeme za objednávku. Přijali jsme ji ke zpracování.\nZvolený čas doručení je požadované okno, které potvrdíme při vyřízení.\n\n{summary}\n\nPotřebujete něco změnit? Napište nám na {} a uveďte číslo objednávky.", settings.order_email)).await?;
+            &format!("Děkujeme za objednávku. Přijali jsme ji ke zpracování.\nZvolený čas doručení je požadované okno, které potvrdíme při vyřízení.\n\n{summary}\n\nPotřebujete něco změnit? Napište nám na {} a uveďte číslo objednávky.{terms_copy}", settings.order_email)).await?;
     }
     // A checkout may wait on stock or rate-limit locks across Prague midnight.
     // Roll back the whole new order if its day became unavailable while waiting.
@@ -1106,10 +1129,11 @@ pub(crate) async fn payment_received(conn: &mut PgConnection, id: Uuid) -> ApiRe
             .fetch_one(&mut *conn)
             .await?;
     let summary = order_summary(&order);
+    let terms_copy = terms::order_email_copy(conn, order.terms_version).await?;
     mail::enqueue(conn, &order_email, &format!("Zaplacená objednávka {} k vyřízení", order.number),
         &format!("Online platba byla ověřena. Objednávka je přijata k vyřízení. Při doručení již nic nevybírejte.\n\n{summary}")).await?;
     mail::enqueue(conn, &order.email, &format!("Přijali jsme platbu a objednávku {}", order.number),
-        &format!("Děkujeme, online platba byla přijata a objednávku jsme přijali ke zpracování. Při doručení již nic neplatíte.\nZvolený čas doručení je požadované okno, které potvrdíme při vyřízení.\n\n{summary}\n\nPotřebujete něco změnit? Napište nám na {order_email} a uveďte číslo objednávky.")).await?;
+        &format!("Děkujeme, online platba byla přijata a objednávku jsme přijali ke zpracování. Při doručení již nic neplatíte.\nZvolený čas doručení je požadované okno, které potvrdíme při vyřízení.\n\n{summary}\n\nPotřebujete něco změnit? Napište nám na {order_email} a uveďte číslo objednávky.{terms_copy}")).await?;
     Ok(())
 }
 
@@ -1536,6 +1560,7 @@ pub async fn initialize(pool: &PgPool, order_email: &str, seed_demo: bool) -> Ap
         .await?;
     sqlx::query("INSERT INTO shop_settings(id,delivery_fee_cents,free_delivery_from_cents,order_email) VALUES (1,4900,35000,$1) ON CONFLICT (id) DO NOTHING")
         .bind(order_email).execute(&mut *tx).await?;
+    terms::initialize(&mut tx).await?;
     let count: i64 = sqlx::query_scalar("SELECT count(*) FROM products")
         .fetch_one(&mut *tx)
         .await?;

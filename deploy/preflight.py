@@ -90,6 +90,10 @@ def validate(config, skip_secret_files=False):
         raise ValueError("Set a real ACME_EMAIL")
     if str(env["SMTP_TLS"]).lower() != "true":
         raise ValueError("SMTP_TLS must be true")
+    if str(env.get("TRUST_CADDY_CLIENT_IP", "false")).lower() != "true":
+        raise ValueError("TRUST_CADDY_CLIENT_IP must be true behind the dedicated Caddy proxy")
+    if app.get("ports") or app.get("network_mode"):
+        raise ValueError("Trusted Caddy client IP requires an unpublished app port on its private Docker network")
     if env.get("TEYA_ENVIRONMENT", "") not in ("", mode):
         raise ValueError("TEYA_ENVIRONMENT must match APP_ENV or stay empty")
     # Database backups and diagnostics must still work if an application key is lost.

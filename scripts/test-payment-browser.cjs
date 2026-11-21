@@ -53,6 +53,7 @@ async function setup(browser, base, options = {}) {
         ? json([{ label: 'Pod sídlištěm 1800/9, Kobylisy, 18200 Praha 8', street: 'Pod sídlištěm 1800/9, Kobylisy', city: 'Praha 8', postal_code: '18200' }])
         : json({ error: 'Registry temporarily unavailable' }, 503)
     }
+    if (pathname === '/api/terms') return json({ version: 1, title: 'Obchodní podmínky', content: '## Testovací podmínky\n\nPodmínky pro místní test.', updated_at: '2026-11-21T12:00:00Z' })
     if (pathname === '/api/products') return json([product])
     if (pathname === '/api/settings') return json({ delivery_fee_cents: 0, free_delivery_from_cents: null, delivery_postal_codes: ['11000'], ...(options.enabled === false ? {} : { online_payment_enabled: true }) })
     if (pathname === '/api/delivery-options') return json({ dates: [{ value: '2026-10-26', label: 'Pondělí 26. října' }], slots: ['09:00–10:00'], postal_slots: options.postalSlots || {} })
@@ -87,6 +88,7 @@ async function review(page, base) {
   await page.locator('[name=city]').fill(order.city)
   await page.locator('[name=postal-code]').fill('11000')
   await page.getByRole('button', { name: 'Zkontrolovat objednávku', exact: true }).click()
+  await page.locator('[name=terms-accepted]').check()
 }
 async function seed(page, base) {
   await page.goto(base)

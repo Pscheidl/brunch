@@ -1,0 +1,8 @@
+.checkout-terms { margin: 18px 0; }
+.terms-acceptance { display: flex; align-items: flex-start; gap: 11px; font-size: 14px; line-height: 1.65; cursor: pointer; }
+.terms-acceptance input { flex: 0 0 18px; width: 18px; height: 18px; margin: 3px 0 0; padding: 0; accent-color: var(--accent); }
+.terms-acceptance a { color: var(--accent-hover); text-decoration: underline; text-underline-offset: 3px; }
+.terms-acceptance a:hover { color: var(--ink); }
+.site-footer { flex-wrap: wrap; }
+.site-footer .terms-link { color: var(--muted); font-size: 11px; }
+.site-footer .terms-link:hover { color: var(--accent); }

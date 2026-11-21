@@ -47,6 +47,8 @@ services:
     environment:
       APP_ENV: ${APP_ENV:?Set APP_ENV}
       ALLOW_PUBLIC_IP: ${ALLOW_PUBLIC_IP:-false}
+      # Safe only while app has no published ports and Caddy replaces this header.
+      TRUST_CADDY_CLIENT_IP: "true"
       BIND_ADDR: 0.0.0.0:3100
       PUBLIC_URL: https://${DOMAIN:?Set DOMAIN}
       DATABASE_URL: postgres://brunch:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD}@db:5432/brunch

@@ -141,6 +141,7 @@ def configuration(secrets):
                 "image": "brunch:0123456789ab",
                 "environment": {
                     "APP_ENV": "production", "PUBLIC_URL": "https://snackshop.cz",
+                    "TRUST_CADDY_CLIENT_IP": "true",
                     "DATABASE_URL": "postgres://brunch:" + "b" * 64 + "@db:5432/brunch",
                     "ORDER_EMAIL": "orders@snackshop.cz",
                     "SMTP_FROM": "Brunch <shop@snackshop.cz>", "SMTP_HOST": "smtp.snackshop.cz",
@@ -188,6 +189,21 @@ class PreflightTests(unittest.TestCase):
             "DOMAIN": host, "ACME_PROFILE": "shortlived",
         })
         return config
+
+    def test_trusted_client_ip_requires_explicit_proxy_mode_and_unpublished_app(self):
+        for key, value in (("ports", ["3100:3100"]), ("network_mode", "host")):
+            with self.subTest(key=key):
+                changed = deepcopy(self.config)
+                changed["services"]["app"][key] = value
+                result = self.run_preflight(changed)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("unpublished app port", result.stderr)
+                self.assert_no_credentials(result)
+        changed = deepcopy(self.config)
+        changed["services"]["app"]["environment"]["TRUST_CADDY_CLIENT_IP"] = "false"
+        result = self.run_preflight(changed)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("TRUST_CADDY_CLIENT_IP", result.stderr)
 
     def test_public_ipv4_requires_opt_in_and_shortlived_certificate_profile(self):
         config = self.public_ip_configuration()

@@ -118,9 +118,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     });
     tracing::info!(address=%config.bind,"Brunch Era server ready");
-    axum::serve(listener, app(state))
-        .with_graceful_shutdown(shutdown_signal())
-        .await?;
+    axum::serve(
+        listener,
+        app(state).into_make_service_with_connect_info::<std::net::SocketAddr>(),
+    )
+    .with_graceful_shutdown(shutdown_signal())
+    .await?;
     worker.abort();
     payment_worker.abort();
     expiry_worker.abort();

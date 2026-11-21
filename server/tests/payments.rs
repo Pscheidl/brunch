@@ -281,6 +281,7 @@ impl TestApp {
         let url = format!("http://{address}");
         let config = Config {
             app_env: brunch_server::config::AppEnvironment::Development,
+            trust_caddy_client_ip: false,
             payment_timeout_minutes: 60,
             teya,
             database_url,
@@ -301,7 +302,14 @@ impl TestApp {
             config: Arc::new(config),
         };
         let router = app(state.clone());
-        let task = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
+        let task = tokio::spawn(async move {
+            axum::serve(
+                listener,
+                router.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+            )
+            .await
+            .unwrap()
+        });
         Self {
             state,
             url,
@@ -361,6 +369,7 @@ impl TestApp {
             settings["delivery_fee_cents"].as_i64().unwrap()
         };
         json!({
+            "terms_version":1,
             "idempotency_key": Uuid::new_v4(), "email": "customer@example.test",
             "name": "Anna Testerová", "phone": "+420 777 123 456",
             "street": "Testovací 12", "city": "Praha", "postal_code": "11000",
@@ -430,7 +439,14 @@ impl TestApp {
             .await
             .unwrap();
         let router = app(self.state.clone());
-        self.task = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
+        self.task = tokio::spawn(async move {
+            axum::serve(
+                listener,
+                router.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+            )
+            .await
+            .unwrap()
+        });
     }
 
     async fn run_due(&self) {

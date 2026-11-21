@@ -89,6 +89,25 @@ fn rejected(command: &mut Command, setting: &str) {
 }
 
 #[test]
+fn caddy_client_ip_trust_is_explicit_and_strict() {
+    let fixture = Fixture::new();
+    for value in ["false", "true"] {
+        let output = fixture
+            .command()
+            .env("TRUST_CADDY_CLIENT_IP", value)
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "{}", output_text(&output));
+    }
+    for value in ["", "1", "TRUE", "yes"] {
+        rejected(
+            fixture.command().env("TRUST_CADDY_CLIENT_IP", value),
+            "TRUST_CADDY_CLIENT_IP",
+        );
+    }
+}
+
+#[test]
 fn deployment_check_accepts_valid_settings_without_connecting_to_any_service() {
     let fixture = Fixture::new();
     for environment in ["production", "staging"] {

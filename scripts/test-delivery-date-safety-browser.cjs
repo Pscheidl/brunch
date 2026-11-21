@@ -38,6 +38,7 @@ async function setup(browser, base, options = {}) {
   await page.route('**/api/**', async route => {
     const pathname = new URL(route.request().url()).pathname
     const json = (body, status = 200) => route.fulfill({ status, contentType: 'application/json', body: JSON.stringify(body) })
+    if (pathname === '/api/terms') return json({ version: 1, title: 'Obchodní podmínky', content: '## Testovací podmínky\n\nPodmínky pro místní test.', updated_at: '2026-11-21T12:00:00Z' })
     if (pathname === '/api/products') return json([product])
     if (pathname === '/api/settings') return json({ delivery_fee_cents: 0, free_delivery_from_cents: null, delivery_postal_codes: ['11000'], online_payment_enabled: false })
     if (pathname === '/api/delivery-options') return json({ dates: [{ value: '2026-11-23', label: 'Pondělí 23. listopadu' }], slots: ['09:00–10:00'] })
@@ -70,6 +71,7 @@ async function review(test) {
   await form.locator('[name=city]').fill('Praha')
   await form.locator('[name=postal-code]').fill('11000')
   await form.getByRole('button', { name: 'Zkontrolovat objednávku', exact: true }).click()
+  await page.locator('[name=terms-accepted]').check()
   await page.getByRole('heading', { name: 'Už jen poslední krok.', exact: true }).waitFor()
 }
 

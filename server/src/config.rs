@@ -46,6 +46,7 @@ impl AppEnvironment {
 #[derive(Clone)]
 pub struct Config {
     pub app_env: AppEnvironment,
+    pub trust_caddy_client_ip: bool,
     pub payment_timeout_minutes: u32,
     pub teya: Option<crate::payments::TeyaConfig>,
     pub database_url: String,
@@ -64,6 +65,11 @@ pub struct Config {
 impl Config {
     pub fn from_env() -> Result<Self, String> {
         let app_env = AppEnvironment::from_env()?;
+        let trust_caddy_client_ip = match env::var("TRUST_CADDY_CLIENT_IP").as_deref() {
+            Err(env::VarError::NotPresent) | Ok("false") => false,
+            Ok("true") => true,
+            _ => return Err("TRUST_CADDY_CLIENT_IP musí být true nebo false".into()),
+        };
         let allow_public_ip = match env::var("ALLOW_PUBLIC_IP") {
             Err(env::VarError::NotPresent) => false,
             Ok(value) if value == "false" => false,
@@ -191,6 +197,7 @@ impl Config {
         }
         Ok(Self {
             app_env,
+            trust_caddy_client_ip,
             payment_timeout_minutes: payment_timeout(
                 env::var("ONLINE_PAYMENT_TIMEOUT_MINUTES").ok().as_deref(),
             )?,

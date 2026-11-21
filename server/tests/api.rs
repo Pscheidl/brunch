@@ -18,6 +18,408 @@ struct TestApp {
 
 #[tokio::test]
 #[ignore = "requires real PostgreSQL via TEST_DATABASE_URL"]
+async fn terms_publication_is_authorized_versioned_and_preserves_accepted_text() {
+    let app = TestApp::new().await;
+    let guest = app.client();
+    let admin = app.login("admin@example.test").await;
+    let initial = app.get(&guest, "/api/terms").await;
+    assert_eq!(initial["version"], 1);
+    assert!(!initial["content"].as_str().unwrap().trim().is_empty());
+    let response = guest
+        .get(format!("{}/api/terms", app.url))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.headers()["cache-control"], "no-store");
+    app.call(
+        &guest,
+        Method::GET,
+        "/api/admin/terms",
+        None,
+        StatusCode::UNAUTHORIZED,
+    )
+    .await;
+    let update = json!({"version":1,"title":"Nové obchodní podmínky","content":"## Smlouva\n\nDohodnuté znění. <script>alert(1)</script>"});
+    app.call(
+        &guest,
+        Method::PUT,
+        "/api/admin/terms",
+        Some(&update),
+        StatusCode::UNAUTHORIZED,
+    )
+    .await;
+
+    let product = &app.get(&guest, "/api/products").await[0];
+    let mut input = app.order(&guest, "terms@example.test", product, 1).await;
+    input["terms_version"] = json!(1);
+    let order = app.post(&guest, "/api/orders", &input).await;
+    assert_eq!(order["terms_version"], 1);
+    let mail: String =
+        sqlx::query_scalar("SELECT body FROM outbox WHERE to_email='terms@example.test'")
+            .fetch_one(&app.pool)
+            .await
+            .unwrap();
+    assert!(mail.contains(initial["content"].as_str().unwrap()));
+    assert!(mail.contains("Verze 1"));
+    let published = app
+        .call(
+            &admin,
+            Method::PUT,
+            "/api/admin/terms",
+            Some(&update),
+            StatusCode::OK,
+        )
+        .await;
+    assert_eq!(published["version"], 2);
+    assert_eq!(published["content"], update["content"]);
+    assert_eq!(app.get(&guest, "/api/terms?version=1").await, initial);
+    assert_eq!(app.get(&guest, "/api/terms").await, published);
+    app.call(
+        &admin,
+        Method::PUT,
+        "/api/admin/terms",
+        Some(&update),
+        StatusCode::CONFLICT,
+    )
+    .await;
+    assert_eq!(
+        app.post(&guest, "/api/orders", &input).await["id"],
+        order["id"],
+        "a retry must preserve its already accepted version"
+    );
+    let detail = app
+        .get(
+            &admin,
+            &format!("/api/admin/orders/{}", order["id"].as_str().unwrap()),
+        )
+        .await;
+    assert_eq!(detail["terms_version"], 1);
+    commerce::initialize(&app.pool, "unchanged@example.test", false)
+        .await
+        .unwrap();
+    assert_eq!(
+        app.get(&guest, "/api/terms").await,
+        published,
+        "restart must not overwrite edited terms"
+    );
+
+    let next = json!({"version":2,"title":"Podmínky potřetí","content":"Aktuální text."});
+    let (a, b) = tokio::join!(
+        admin
+            .put(format!("{}/api/admin/terms", app.url))
+            .json(&next)
+            .send(),
+        admin
+            .put(format!("{}/api/admin/terms", app.url))
+            .json(&next)
+            .send()
+    );
+    let statuses = [a.unwrap().status(), b.unwrap().status()];
+    assert_eq!(
+        statuses
+            .iter()
+            .filter(|&&status| status == StatusCode::OK)
+            .count(),
+        1
+    );
+    assert_eq!(
+        statuses
+            .iter()
+            .filter(|&&status| status == StatusCode::CONFLICT)
+            .count(),
+        1
+    );
+    let versions: i64 = sqlx::query_scalar("SELECT count(*) FROM terms_versions")
+        .fetch_one(&app.pool)
+        .await
+        .unwrap();
+    assert_eq!(versions, 3);
+    app.close().await;
+}
+
+#[tokio::test]
+#[ignore = "requires real PostgreSQL via TEST_DATABASE_URL"]
+async fn checkout_requires_current_terms_without_stock_or_mail_side_effects() {
+    let app = TestApp::new().await;
+    let guest = app.client();
+    let admin = app.login("admin@example.test").await;
+    let product = &app.get(&guest, "/api/products").await[0];
+    let mut input = app
+        .order(&guest, "terms-reject@example.test", product, 1)
+        .await;
+    input.as_object_mut().unwrap().remove("terms_version");
+    let before_stock: Option<i32> = sqlx::query_scalar("SELECT stock FROM products WHERE id=$1")
+        .bind(product["id"].as_i64().unwrap())
+        .fetch_one(&app.pool)
+        .await
+        .unwrap();
+    let before_mail = app.count("outbox").await;
+    let response = guest
+        .post(format!("{}/api/orders", app.url))
+        .json(&input)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    for version in [0, -1, 2] {
+        input["terms_version"] = json!(version);
+        app.call(
+            &guest,
+            Method::POST,
+            "/api/orders",
+            Some(&input),
+            if version <= 0 {
+                StatusCode::BAD_REQUEST
+            } else {
+                StatusCode::CONFLICT
+            },
+        )
+        .await;
+    }
+    assert_eq!(app.count("orders").await, 0);
+    assert_eq!(app.count("outbox").await, before_mail);
+    let after_stock: Option<i32> = sqlx::query_scalar("SELECT stock FROM products WHERE id=$1")
+        .bind(product["id"].as_i64().unwrap())
+        .fetch_one(&app.pool)
+        .await
+        .unwrap();
+    assert_eq!(after_stock, before_stock);
+    for patch in [
+        json!({"version":1,"title":" ","content":"Text"}),
+        json!({"version":1,"title":"Název","content":"\n\t"}),
+        json!({"version":1,"title":"x".repeat(161),"content":"Text"}),
+        json!({"version":1,"title":"Název","content":"ž".repeat(100_001)}),
+    ] {
+        app.call(
+            &admin,
+            Method::PUT,
+            "/api/admin/terms",
+            Some(&patch),
+            StatusCode::BAD_REQUEST,
+        )
+        .await;
+    }
+    let long_content = "ž".repeat(40_000);
+    app.call(
+        &admin,
+        Method::PUT,
+        "/api/admin/terms",
+        Some(&json!({"version":1,"title":"Delší podmínky","content":long_content})),
+        StatusCode::OK,
+    )
+    .await;
+    input["terms_version"] = json!(1);
+    app.call(
+        &guest,
+        Method::POST,
+        "/api/orders",
+        Some(&input),
+        StatusCode::CONFLICT,
+    )
+    .await;
+    input["terms_version"] = json!(2);
+    assert_eq!(
+        app.post(&guest, "/api/orders", &input).await["terms_version"],
+        2
+    );
+    app.call(
+        &guest,
+        Method::GET,
+        "/api/terms?version=0",
+        None,
+        StatusCode::BAD_REQUEST,
+    )
+    .await;
+    app.call(
+        &guest,
+        Method::GET,
+        "/api/terms?version=999",
+        None,
+        StatusCode::NOT_FOUND,
+    )
+    .await;
+    app.close().await;
+}
+
+#[tokio::test]
+#[ignore = "requires real PostgreSQL via TEST_DATABASE_URL"]
+async fn order_ip_uses_socket_peer_without_proxy_trust_and_stays_private() {
+    let app = TestApp::new().await;
+    let customer = app.login("client-ip@example.test").await;
+    let admin = app.login("admin@example.test").await;
+    let product = &app.get(&customer, "/api/products").await[0];
+    let input = app
+        .order(&customer, "client-ip@example.test", product, 1)
+        .await;
+    let response = customer
+        .post(format!("{}/api/orders", app.url))
+        .header("x-brunch-client-ip", "198.51.100.99")
+        .header("x-forwarded-for", "203.0.113.99")
+        .header("x-real-ip", "203.0.113.98")
+        .header("forwarded", "for=203.0.113.97")
+        .json(&input)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let order: Value = response.json().await.unwrap();
+    assert!(order.get("created_from_ip").is_none());
+    let id: Uuid = order["id"].as_str().unwrap().parse().unwrap();
+    let saved: Option<String> =
+        sqlx::query_scalar("SELECT host(created_from_ip) FROM orders WHERE id=$1")
+            .bind(id)
+            .fetch_one(&app.pool)
+            .await
+            .unwrap();
+    assert_eq!(saved.as_deref(), Some("127.0.0.1"));
+    let path = format!("/api/admin/orders/{id}");
+    assert_eq!(app.get(&admin, &path).await["created_from_ip"], "127.0.0.1");
+    app.call(&customer, Method::GET, &path, None, StatusCode::FORBIDDEN)
+        .await;
+    assert!(
+        app.get(&customer, "/api/orders/mine")
+            .await
+            .to_string()
+            .find("created_from_ip")
+            .is_none()
+    );
+    assert!(
+        app.get(&admin, "/api/admin/orders")
+            .await
+            .to_string()
+            .find("created_from_ip")
+            .is_none()
+    );
+    assert!(
+        app.post(&customer, "/api/orders", &input)
+            .await
+            .get("created_from_ip")
+            .is_none()
+    );
+    sqlx::query("UPDATE orders SET created_from_ip=NULL WHERE id=$1")
+        .bind(id)
+        .execute(&app.pool)
+        .await
+        .unwrap();
+    assert!(app.get(&admin, &path).await["created_from_ip"].is_null());
+    app.close().await;
+}
+
+#[tokio::test]
+#[ignore = "requires real PostgreSQL via TEST_DATABASE_URL"]
+async fn trusted_proxy_order_ip_supports_ipv4_ipv6_and_preserves_original_on_replay() {
+    let app = TestApp::configured(true, true).await;
+    let guest = app.client();
+    let admin = app.login("admin@example.test").await;
+    let product = &app.get(&guest, "/api/products").await[0];
+    let mut input = app.order(&guest, "proxy-ip@example.test", product, 1).await;
+    app.call(
+        &guest,
+        Method::POST,
+        "/api/orders",
+        Some(&input),
+        StatusCode::BAD_REQUEST,
+    )
+    .await;
+    for address in [
+        "198.51.100.20, 198.51.100.21",
+        "198.51.100.0/24",
+        "not-an-ip",
+    ] {
+        let response = guest
+            .post(format!("{}/api/orders", app.url))
+            .header("x-brunch-client-ip", address)
+            .json(&input)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    }
+    assert_eq!(app.count("orders").await, 0);
+    let mut first_id = None;
+    for (provided, canonical) in [
+        ("198.51.100.20", "198.51.100.20"),
+        ("2001:0db8:0:0:0:0:0:42", "2001:db8::42"),
+    ] {
+        input["idempotency_key"] = json!(Uuid::new_v4());
+        let response = guest
+            .post(format!("{}/api/orders", app.url))
+            .header("x-brunch-client-ip", provided)
+            .header("x-forwarded-for", "203.0.113.99")
+            .json(&input)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let order: Value = response.json().await.unwrap();
+        assert!(order.get("created_from_ip").is_none());
+        let id: Uuid = order["id"].as_str().unwrap().parse().unwrap();
+        first_id.get_or_insert(id);
+        let saved: Option<String> =
+            sqlx::query_scalar("SELECT host(created_from_ip) FROM orders WHERE id=$1")
+                .bind(id)
+                .fetch_one(&app.pool)
+                .await
+                .unwrap();
+        assert_eq!(saved.as_deref(), Some(canonical));
+        assert_eq!(
+            app.get(&admin, &format!("/api/admin/orders/{id}")).await["created_from_ip"],
+            canonical
+        );
+        let replay: Value = guest
+            .post(format!("{}/api/orders", app.url))
+            .header("x-brunch-client-ip", "203.0.113.77")
+            .json(&input)
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        assert_eq!(replay["id"], order["id"]);
+        assert!(replay.get("created_from_ip").is_none());
+        // A retry of an already saved request does not depend on today's proxy configuration.
+        assert_eq!(
+            app.post(&guest, "/api/orders", &input).await["id"],
+            order["id"]
+        );
+        let saved: Option<String> =
+            sqlx::query_scalar("SELECT host(created_from_ip) FROM orders WHERE id=$1")
+                .bind(id)
+                .fetch_one(&app.pool)
+                .await
+                .unwrap();
+        assert_eq!(saved.as_deref(), Some(canonical));
+        let leaked: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM outbox WHERE body LIKE '%' || $1 || '%' OR subject LIKE '%' || $1 || '%')")
+            .bind(canonical).fetch_one(&app.pool).await.unwrap();
+        assert!(!leaked, "IP must not be copied into customer or shop mail");
+    }
+    let mut supplier = app.get(&admin, "/api/admin/invoice-supplier").await;
+    supplier["name"] = json!("Testovací dodavatel");
+    supplier["address"] = json!("Praha 1");
+    supplier["company_id"] = json!("12345678");
+    let supplier = app
+        .call(
+            &admin,
+            Method::PUT,
+            "/api/admin/invoice-supplier",
+            Some(&supplier),
+            StatusCode::OK,
+        )
+        .await;
+    let invoice = app.post(&admin, &format!("/api/admin/orders/{}/invoice", first_id.unwrap()), &json!({
+        "supplier_version":supplier["version"], "customer_name":"Eva", "customer_address":"Praha",
+        "customer_company_id":"", "customer_tax_id":"", "supply_date":input["delivery_date"],
+        "due_date":input["delivery_date"], "vat_rates":{}
+    })).await;
+    assert!(!invoice.to_string().contains("198.51.100.20"));
+    assert!(!invoice.to_string().contains("created_from_ip"));
+    assert_eq!(app.count("orders").await, 2);
+    app.close().await;
+}
+
+#[tokio::test]
+#[ignore = "requires real PostgreSQL via TEST_DATABASE_URL"]
 async fn upgrade_preserves_existing_products_photos_orders_and_settings() {
     let database_url = std::env::var("TEST_DATABASE_URL").unwrap();
     let database = PgPoolOptions::new()
@@ -72,7 +474,10 @@ async fn upgrade_preserves_existing_products_photos_orders_and_settings() {
         ("order_items", ""),
         ("shop_settings", " - 'delivery_slots'"),
         ("delivery_areas", " - 'delivery_slots'"),
-        ("orders", " - 'status' - 'version' - 'updated_at'"),
+        (
+            "orders",
+            " - 'status' - 'version' - 'updated_at' - 'created_from_ip' - 'terms_version'",
+        ),
     ];
     let mut before = Vec::new();
     for (table, exclusions) in comparisons {
@@ -270,6 +675,9 @@ impl TestApp {
         Self::with_delivery_area(true).await
     }
     async fn with_delivery_area(allow_delivery: bool) -> Self {
+        Self::configured(allow_delivery, false).await
+    }
+    async fn configured(allow_delivery: bool, trust_caddy_client_ip: bool) -> Self {
         let database_url = std::env::var("TEST_DATABASE_URL")
             .expect("Set TEST_DATABASE_URL to a disposable local PostgreSQL database before running integration tests");
         let database = PgPoolOptions::new()
@@ -306,6 +714,7 @@ impl TestApp {
         let url = format!("http://{address}");
         let config = Config {
             app_env: brunch_server::config::AppEnvironment::Development,
+            trust_caddy_client_ip,
             payment_timeout_minutes: 60,
             teya: None,
             database_url,
@@ -325,7 +734,14 @@ impl TestApp {
             pool: pool.clone(),
             config: Arc::new(config),
         });
-        let task = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
+        let task = tokio::spawn(async move {
+            axum::serve(
+                listener,
+                router.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+            )
+            .await
+            .unwrap()
+        });
         Self {
             url,
             pool,
@@ -353,7 +769,14 @@ impl TestApp {
     ) -> Value {
         let mut request = client.request(method.clone(), format!("{}{path}", self.url));
         if let Some(body) = body {
-            request = request.json(body);
+            let mut body = body.clone();
+            if method == Method::POST && path == "/api/orders" {
+                body.as_object_mut()
+                    .unwrap()
+                    .entry("terms_version")
+                    .or_insert(json!(1));
+            }
+            request = request.json(&body);
         }
         let response = request.send().await.unwrap();
         let status = response.status();
@@ -413,6 +836,7 @@ impl TestApp {
             settings["delivery_fee_cents"].as_i64().unwrap()
         };
         json!({
+            "terms_version":1,
             "idempotency_key":Uuid::new_v4(),"email":email,"name":"Anna Testerová","phone":"+420 777 123 456","street":"Testovací 12",
             "city":"Praha","postal_code":"110 00","notes":"3. patro, výtah vlevo. Zvoňte Novák.",
             "delivery_date":options["dates"][0]["value"],"delivery_slot":options["slots"][0],
@@ -2136,5 +2560,54 @@ async fn issued_invoice_is_private_and_preserves_original_supplier_recipient_and
         StatusCode::UNAUTHORIZED,
     )
     .await;
+    app.close().await;
+}
+
+#[tokio::test]
+#[ignore = "requires real PostgreSQL via TEST_DATABASE_URL"]
+async fn terms_changed_while_checkout_waits_returns_conflict_without_creating_order() {
+    let app = TestApp::new().await;
+    let guest = app.client();
+    let product = &app.get(&guest, "/api/products").await[0];
+    let mut input = app
+        .order(&guest, "terms-race@example.test", product, 1)
+        .await;
+    input["terms_version"] = json!(1);
+    let mut publisher = app.pool.begin().await.unwrap();
+    sqlx::query("SELECT version FROM terms_publication WHERE id=1 FOR UPDATE")
+        .execute(&mut *publisher)
+        .await
+        .unwrap();
+    sqlx::query(
+        "INSERT INTO terms_versions(version,title,content) VALUES (2,'Nové podmínky','Nové znění')",
+    )
+    .execute(&mut *publisher)
+    .await
+    .unwrap();
+    sqlx::query("UPDATE terms_publication SET version=2 WHERE id=1")
+        .execute(&mut *publisher)
+        .await
+        .unwrap();
+    let url = format!("{}/api/orders", app.url);
+    let request = tokio::spawn(async move { guest.post(url).json(&input).send().await.unwrap() });
+    tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        loop {
+            let waiting: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM pg_stat_activity WHERE wait_event_type='Lock' AND query LIKE '%terms_publication%' AND pid<>pg_backend_pid())")
+                .fetch_one(&app.pool).await.unwrap();
+            if waiting { break; }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    }).await.expect("checkout must wait on the publisher's row lock");
+    publisher.commit().await.unwrap();
+    let response = request.await.unwrap();
+    assert_eq!(response.status(), StatusCode::CONFLICT);
+    assert!(
+        response
+            .text()
+            .await
+            .unwrap()
+            .contains("podmínky se změnily")
+    );
+    assert_eq!(app.count("orders").await, 0);
     app.close().await;
 }

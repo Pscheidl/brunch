@@ -12,7 +12,7 @@ const statuses = { awaiting_payment: 'Čeká na zaplacení', new: 'Přijatá', c
 const payments = { unpaid: 'Nezaplaceno', paid: 'Zaplaceno' }
 const onlinePaymentStates = { pending: 'Čeká na přípravu nebo ověření', ready: 'Platební brána je připravena, platba čeká', paid: 'Platba ověřena', failed: 'Platba neproběhla', expired: 'Platnost platby skončila', review: 'Vyžaduje kontrolu obsluhy' }
 const mailStates = { pending: 'Čeká na odeslání', sent: 'Odesláno', failed: 'Odeslání selhalo' }
-const routes = [['orders', 'Objednávky'], ['products', 'Zboží a ceny'], ['categories', 'Kategorie'], ['customers', 'Zákazníci'], ['delivery-areas', 'Oblasti rozvozu'], ['settings', 'Doprava a nastavení'], ['invoice-settings', 'Fakturační údaje'], ['administrators', 'Administrátoři'], ['mail', 'E-maily']]
+const routes = [['orders', 'Objednávky'], ['products', 'Zboží a ceny'], ['categories', 'Kategorie'], ['customers', 'Zákazníci'], ['delivery-areas', 'Oblasti rozvozu'], ['settings', 'Doprava a nastavení'], ['invoice-settings', 'Fakturační údaje'], ['terms', 'Obchodní podmínky'], ['administrators', 'Administrátoři'], ['mail', 'E-maily']]
 const normalizePostalCode = value => String(value ?? '').replace(/[\s\u0085]/g, '')
 const formatPostalCode = value => normalizePostalCode(value).replace(/^([0-9]{3})([0-9]{2})$/, '$1 $2')
 
@@ -51,7 +51,8 @@ async function api(path, options = {}) {
   const data = await response.json().catch(() => ({}))
   if (!response.ok) {
     const conflictHint = response.status === 409 && !path.startsWith('/api/admin/administrators')
-    const error = new Error(conflictHint ? `${data.error || 'Záznam se mezitím změnil.'} Zavřete okno a načtěte aktuální data tlačítkem Obnovit.` : data.error || `Požadavek se nepodařil (${response.status}).`)
+    const conflictAction = path === '/api/admin/terms' ? 'Načtěte aktuální znění tlačítkem Obnovit. Váš rozepsaný text zatím zůstává ve formuláři.' : 'Zavřete okno a načtěte aktuální data tlačítkem Obnovit.'
+    const error = new Error(conflictHint ? `${data.error || 'Záznam se mezitím změnil.'} ${conflictAction}` : data.error || `Požadavek se nepodařil (${response.status}).`)
     error.status = response.status
     if (path.startsWith('/api/admin/') && path !== '/api/admin/auth/login' && [401, 403].includes(response.status)) {
       state.generation++
@@ -180,7 +181,7 @@ async function renderPage() {
   }
   content.replaceChildren(el('p', { class: 'loading', role: 'status' }, 'Načítám data…'))
   try {
-    const page = await ({ orders: ordersPage, products: productsPage, categories: categoriesPage, customers: customersPage, 'delivery-areas': deliveryAreasPage, settings: settingsPage, 'invoice-settings': invoiceSettingsPage, administrators: administratorsPage, mail: mailPage })[state.page]()
+    const page = await ({ orders: ordersPage, products: productsPage, categories: categoriesPage, customers: customersPage, 'delivery-areas': deliveryAreasPage, settings: settingsPage, 'invoice-settings': invoiceSettingsPage, terms: termsPage, administrators: administratorsPage, mail: mailPage })[state.page]()
     if (generation === state.generation) content.replaceChildren(...page)
   } catch (error) {
     if (generation !== state.generation) return
@@ -293,6 +294,10 @@ async function orderDialog(id) {
     if (order.notes) body.append(el('div', { class: 'note' }, el('strong', {}, 'Pokyny pro doručení\n'), order.notes))
     body.append(el('h3', {}, 'Položky objednávky'), table(['Zboží', 'Množství', 'Cena za kus', 'Celkem'], order.items.map(item => el('tr', {}, el('td', {}, item.name), el('td', {}, `${item.quantity} ks`), el('td', { class: 'number' }, money(item.unit_price_cents)), el('td', { class: 'number' }, money(item.total_cents)))), true), el('div', { class: 'totals' }, el('div', {}, el('span', {}, 'Zboží'), money(order.subtotal_cents)), el('div', {}, el('span', {}, 'Doprava'), money(order.delivery_fee_cents)), el('div', {}, el('span', {}, 'Celkem'), money(order.total_cents))))
     body.append(el('p', { class: 'hint' }, `${order.payment_method === 'card' ? 'Online platba kartou přes Teya' : `Platba ${order.payment_method === 'card_on_delivery' ? 'kartou' : 'hotově'} při doručení`}. ${payments[order.payment_status]}. Stav: ${statuses[order.status]}. Vytvořeno ${dateTime(order.created_at)}.`))
+    body.append(el('p', { class: 'hint order-origin' }, el('strong', {}, 'IP adresa při objednání: '), order.created_from_ip || 'U starších objednávek neevidována'))
+    if (Number.isSafeInteger(order.terms_version) && order.terms_version > 0) body.append(el('p', { class: 'hint order-origin' }, el('a', {
+      href: `/obchodni-podminky/?version=${order.terms_version}`, target: '_blank', rel: 'noopener noreferrer'
+    }, `Obchodní podmínky přijaté při objednání, verze ${order.terms_version}`)))
     const sequence = ['new', 'confirmed', 'out_for_delivery', 'delivered']
     const terminal = ['delivered', 'cancelled', 'expired'].includes(order.status)
     const online = order.payment_method === 'card'

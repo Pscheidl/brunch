@@ -17,5 +17,8 @@
 	# No access log: login URLs contain one-time tokens.
 	@static not path /api/*
 	header @static Cache-Control "no-cache"
-	reverse_proxy app:3100
+	reverse_proxy app:3100 {
+		# Replace any client-supplied value with the direct TCP peer, never XFF.
+		header_up X-Brunch-Client-IP {remote_host}
+	}
 }

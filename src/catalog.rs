@@ -46,6 +46,14 @@ pub struct Settings {
     pub online_payment_enabled: bool,
 }
 
+#[derive(Clone, Debug, Deserialize)]
+pub struct Terms {
+    pub version: i64,
+    pub title: String,
+    pub content: String,
+    pub updated_at: String,
+}
+
 #[derive(Clone, Debug, Default, Deserialize)]
 pub struct DeliveryOptions {
     pub dates: Vec<DeliveryDate>,
@@ -151,6 +159,34 @@ pub struct OrderRequest {
     pub payment_method: String,
     pub items: Vec<RequestedItem>,
     pub expected_total_cents: i64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub terms_version: Option<i64>,
+}
+
+impl OrderRequest {
+    /// Recover an unresolved attempt when only the displayed terms changed.
+    /// Every other field must match, including the cart, price, address and date.
+    pub fn recover_terms_for_retry(&mut self, signature: &str) -> bool {
+        let Ok(serde_json::Value::Object(mut previous)) = serde_json::from_str(signature) else {
+            return false;
+        };
+        let previous_terms = match previous.remove("terms_version") {
+            None | Some(serde_json::Value::Null) => None,
+            Some(value) => match value.as_i64().filter(|version| *version > 0) {
+                Some(version) => Some(version),
+                None => return false,
+            },
+        };
+        let Ok(serde_json::Value::Object(mut current)) = serde_json::to_value(&*self) else {
+            return false;
+        };
+        current.remove("terms_version");
+        if previous != current {
+            return false;
+        }
+        self.terms_version = previous_terms;
+        true
+    }
 }
 
 pub type Cart = BTreeMap<i64, u16>;
@@ -236,6 +272,62 @@ pub fn status_label(value: &str) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+    fn order_request() -> OrderRequest {
+        OrderRequest {
+            idempotency_key: String::new(),
+            email: "test@example.test".into(),
+            name: "Jana Testovací".into(),
+            phone: "+420 777 123 456".into(),
+            organization: String::new(),
+            street: "Testovací 12".into(),
+            city: "Praha".into(),
+            postal_code: "11000".into(),
+            notes: String::new(),
+            delivery_date: "2026-11-23".into(),
+            delivery_slot: "09:00–10:00".into(),
+            payment_method: "cash_on_delivery".into(),
+            items: vec![RequestedItem {
+                product_id: 1,
+                quantity: 1,
+            }],
+            expected_total_cents: 12000,
+            terms_version: Some(2),
+        }
+    }
+
+    #[test]
+    fn terms_only_changes_recover_the_original_request_including_legacy_payloads() {
+        let mut original = order_request();
+        original.terms_version = Some(1);
+        let mut retry = order_request();
+        assert!(retry.recover_terms_for_retry(&serde_json::to_string(&original).unwrap()));
+        assert_eq!(retry.terms_version, Some(1));
+        original.terms_version = None;
+        let signature = serde_json::to_string(&original).unwrap();
+        let mut retry = order_request();
+        assert!(retry.recover_terms_for_retry(&signature));
+        assert_eq!(serde_json::to_string(&retry).unwrap(), signature);
+        assert!(!signature.contains("terms_version"));
+    }
+
+    #[test]
+    fn other_order_changes_do_not_recover_an_unrelated_attempt() {
+        let original = serde_json::to_string(&order_request()).unwrap();
+        for change in ["cart", "price", "contact", "date"] {
+            let mut current = order_request();
+            match change {
+                "cart" => current.items[0].quantity = 2,
+                "price" => current.expected_total_cents = 13000,
+                "contact" => current.phone = "+420 777 000 000".into(),
+                "date" => current.delivery_date = "2026-11-24".into(),
+                _ => unreachable!(),
+            }
+            assert!(!current.recover_terms_for_retry(&original), "{change}");
+            assert_eq!(current.terms_version, Some(2));
+        }
+        assert!(!order_request().recover_terms_for_retry("broken"));
+    }
+
     fn product(id: i64, cents: i64, stock: Option<i32>) -> Product {
         Product {
             id,

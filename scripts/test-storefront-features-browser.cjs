@@ -45,6 +45,7 @@ async function main() {
     await page.route('**/api/**', async route => {
       const url = new URL(route.request().url())
       const json = (body, status = 200) => route.fulfill({ status, contentType: 'application/json', body: JSON.stringify(body) })
+      if (url.pathname === '/api/terms') return json({ version: 1, title: 'Obchodní podmínky', content: '## Testovací podmínky\n\nPodmínky pro místní test.', updated_at: '2026-11-21T12:00:00Z' })
       if (url.pathname === '/api/products') return json(products)
       if (url.pathname === '/api/settings') return json({ delivery_fee_cents: 5000, free_delivery_from_cents: null, delivery_postal_codes: ['11000', '12000'], online_payment_enabled: false })
       if (url.pathname === '/api/delivery-options') return json({ dates: [{ value: '2026-11-23', label: 'Pondělí 23. 11.' }], slots: ['09:00–10:00', '10:00–11:00'], postal_slots: { '12000': ['12:00–13:00'] } })
