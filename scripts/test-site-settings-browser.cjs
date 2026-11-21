@@ -73,7 +73,7 @@ async function run(browser, base, name, options = {}) {
     await page.evaluate(() => document.fonts.ready)
     assert.equal(await page.locator('.hero-visual > img').count(), 1, 'one hero image')
     assert.equal(await page.locator('.hero-copy').getByText('Z PEKÁRNY MYSTERIUM GAUDI', { exact: true }).count(), 1)
-    assert.match(await page.locator('.hero-copy > p:not(.hero-delivery)').innerText(), /houstičky.*Mysterium Gaudi.*originální domácí receptury/)
+    assert.match(await page.locator('.hero-copy > p').innerText(), /houstičky.*Mysterium Gaudi.*originální domácí receptury/)
     const geometry = await page.evaluate(() => {
       const box = selector => {
         const rect = document.querySelector(selector).getBoundingClientRect()
