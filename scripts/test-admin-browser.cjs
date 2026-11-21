@@ -38,7 +38,7 @@ async function main() {
     const name = `Test administrace ${Date.now()}`
     await page.getByLabel('Název', { exact: true }).fill(name)
     await page.getByLabel('Popis', { exact: true }).fill('Ověření administračního formuláře a dostupnosti.')
-    await page.getByLabel('Kategorie', { exact: true }).fill(categoryName)
+    await page.getByLabel('Kategorie', { exact: true }).selectOption(categoryName)
     await page.getByLabel('Cena v Kč', { exact: true }).fill('118,50')
     await page.getByLabel('Hmotnost / objem', { exact: true }).fill('150 g')
     await page.getByLabel('Minimální odběr v kusech', { exact: true }).fill('2')
@@ -97,13 +97,14 @@ async function main() {
 
     const delivery = await json(guest.request, 'get', '/api/delivery-options')
     const settings = await json(guest.request, 'get', '/api/settings')
+    const terms = await json(guest.request, 'get', '/api/terms')
     const fee = settings.free_delivery_from_cents !== null && product.price_cents * 2 >= settings.free_delivery_from_cents ? 0 : settings.delivery_fee_cents
     const orderEmail = `admin-ui-${Date.now()}@example.test`
     const orderInput = {
       idempotency_key: require('node:crypto').randomUUID(), email: orderEmail, name: 'Test rozvozu',
       phone: '+420 777 123 456', street: 'Testovací 12', city: 'Praha', postal_code: '110 00',
       notes: '3. patro, výtah vlevo. Zvoňte Novák.', delivery_date: delivery.dates[0].value,
-      delivery_slot: delivery.slots[0], payment_method: 'card_on_delivery',
+      delivery_slot: delivery.slots[0], payment_method: 'card_on_delivery', terms_version: terms.version,
       items: [{ product_id: product.id, quantity: 2 }], expected_total_cents: product.price_cents * 2 + fee
     }
     const order = await json(guest.request, 'post', '/api/orders', orderInput)

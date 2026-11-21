@@ -36,9 +36,10 @@ async function siteSettingsPage() {
     updateControls()
     try {
       await api('/api/admin/site-settings', { method: 'PUT', body: JSON.stringify({
-        hero_image: selectedImage, hero_image_alt: alt, version: settings.version
+        hero_image: selectedImage, hero_image_alt: alt, version: settings.version,
+        ...Object.fromEntries(['public_contact_email', 'public_contact_phone', 'seller_name', 'seller_address', 'seller_ico', 'delivery_area_label'].map(key => [key, String(data.get(key) || '').trim()]))
       }) })
-      notify('Hlavní fotografie webu byla zveřejněna.')
+      notify('Nastavení webu bylo zveřejněno.')
       await renderPage()
     } finally {
       saving = false
@@ -49,7 +50,17 @@ async function siteSettingsPage() {
   el('p', { class: 'section-note' }, 'Vyberte fotografii na šířku, ideálně v poměru 3 : 2. Nová fotografie se na webu zobrazí po uložení.'),
   preview,
   el('div', { class: 'field' }, el('label', {}, el('span', {}, 'Nahrát hlavní fotografii'), upload), uploadStatus),
-  description, el('div', { class: 'actions' }, reset, submit))
+  description,
+  el('section', { class: 'contact-fields' }, el('h2', {}, 'Veřejné kontakty a provozovatel'),
+    el('p', { class: 'section-note' }, 'Tyto údaje se zobrazí zákazníkům na webu. Vyplňte skutečné ověřené údaje. Znění obchodních podmínek upravte zvlášť v jejich sekci, aby zůstala zachována historie přijatých verzí.'),
+    el('div', { class: 'form-grid' },
+      field('Název provozovatele', 'seller_name', settings.seller_name || '', { maxlength: 200 }),
+      field('IČO provozovatele', 'seller_ico', settings.seller_ico || '', { maxlength: 8, inputmode: 'numeric', pattern: '[0-9]{8}' }),
+      field('Sídlo provozovatele', 'seller_address', settings.seller_address || '', { kind: 'textarea', maxlength: 500, full: true }),
+      field('Veřejný kontaktní e-mail', 'public_contact_email', settings.public_contact_email || '', { type: 'email', maxlength: 254 }),
+      field('Veřejný kontaktní telefon', 'public_contact_phone', settings.public_contact_phone || '', { type: 'tel', maxlength: 40 }),
+      field('Oblast rozvozu pro zákazníky', 'delivery_area_label', settings.delivery_area_label || '', { maxlength: 200, full: true, placeholder: 'Například Praha 1 až 5', hint: 'Krátký srozumitelný popis. Skutečnou dostupnost stále určují povolená PSČ v sekci Oblasti rozvozu.' })
+    )), el('div', { class: 'actions' }, reset, submit))
 
   function updatePreview() {
     image.src = selectedImage || defaultImage
@@ -101,5 +112,5 @@ async function siteSettingsPage() {
       upload.value = ''
     }
   })
-  return [header('Obecné nastavení webu', 'Vzhled hlavní části úvodní stránky.', button('Obnovit', renderPage)), form]
+  return [header('Obecné nastavení webu', 'Hlavní fotografie, veřejné kontakty a informace o rozvozu.', button('Obnovit', renderPage)), form]
 }

@@ -1,4 +1,6 @@
 mod categories;
+mod customer;
+mod team_orders;
 
 mod invoices;
 mod site_settings;
@@ -37,6 +39,8 @@ const STATUSES: [&str; 7] = [
 pub fn routes() -> Router<AppState> {
     Router::new()
         .merge(invoices::routes())
+        .merge(customer::routes())
+        .merge(team_orders::routes())
         .merge(categories::routes())
         .merge(site_settings::routes())
         .merge(terms::routes())
@@ -85,6 +89,7 @@ struct Product {
     active: bool,
     stock: Option<i32>,
     minimum_quantity: i32,
+    variants: Vec<String>,
     version: i64,
 }
 
@@ -117,6 +122,8 @@ struct ProductInput {
     active: bool,
     stock: Option<i32>,
     minimum_quantity: Option<i32>,
+    #[serde(default)]
+    variants: Option<Vec<String>>,
     version: Option<i64>,
 }
 
@@ -139,6 +146,18 @@ fn email(value: &str) -> ApiResult<String> {
 
 impl ProductInput {
     fn validate(&mut self) -> ApiResult<()> {
+        if let Some(variants) = &mut self.variants {
+            if variants.len() > 30 {
+                return Err(ApiError::bad_request("Nejvýše 30 variant produktu."));
+            }
+            let mut seen = HashSet::new();
+            for value in variants.iter_mut() {
+                *value = clean(value, "varianta", 120, true)?;
+                if !seen.insert(value.clone()) {
+                    return Err(ApiError::bad_request("Varianty se nesmějí opakovat."));
+                }
+            }
+        }
         self.name = clean(&self.name, "název", 200, true)?;
         self.description = clean(&self.description, "popis", 5000, false)?;
         self.category = clean(&self.category, "kategorie", 80, false)?;
@@ -205,11 +224,11 @@ async fn create_product(
     let mut tx = state.pool.begin().await?;
     categories::ensure(&mut tx, &input.category).await?;
     let product: Product = sqlx::query_as(
-        "INSERT INTO products(name,description,category,tag,weight,price_cents,vegan,ingredients,allergens,image,active,stock,minimum_quantity) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13) RETURNING *",
+        "INSERT INTO products(name,description,category,tag,weight,price_cents,vegan,ingredients,allergens,image,active,stock,minimum_quantity,variants) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14) RETURNING *",
     ).bind(&input.name).bind(&input.description).bind(&input.category).bind(&input.tag)
         .bind(&input.weight).bind(input.price_cents).bind(input.vegan).bind(&input.ingredients)
         .bind(&input.allergens).bind(&input.image).bind(input.active).bind(input.stock)
-        .bind(input.minimum_quantity.unwrap_or(0)).fetch_one(&mut *tx).await?;
+        .bind(input.minimum_quantity.unwrap_or(0)).bind(input.variants.as_deref().unwrap_or(&[])).fetch_one(&mut *tx).await?;
     sqlx::query("INSERT INTO product_prices(product_id,price_cents,changed_by) VALUES ($1,$2,$3)")
         .bind(product.id)
         .bind(product.price_cents)
@@ -245,11 +264,11 @@ async fn update_product(
         ));
     }
     let product = sqlx::query_as(
-        "UPDATE products SET name=$2,description=$3,category=$4,tag=$5,weight=$6,price_cents=$7,vegan=$8,ingredients=$9,allergens=$10,image=$11,active=$12,stock=$13,minimum_quantity=COALESCE($14,minimum_quantity),version=version+1,updated_at=now() WHERE id=$1 RETURNING *",
+        "UPDATE products SET name=$2,description=$3,category=$4,tag=$5,weight=$6,price_cents=$7,vegan=$8,ingredients=$9,allergens=$10,image=$11,active=$12,stock=$13,minimum_quantity=COALESCE($14,minimum_quantity),variants=COALESCE($15,variants),version=version+1,updated_at=now() WHERE id=$1 RETURNING *",
     ).bind(id).bind(&input.name).bind(&input.description).bind(&input.category).bind(&input.tag)
         .bind(&input.weight).bind(input.price_cents).bind(input.vegan).bind(&input.ingredients)
         .bind(&input.allergens).bind(&input.image).bind(input.active).bind(input.stock)
-        .bind(input.minimum_quantity).fetch_one(&mut *tx).await?;
+        .bind(input.minimum_quantity).bind(input.variants).fetch_one(&mut *tx).await?;
     if old.price_cents != input.price_cents {
         sqlx::query(
             "INSERT INTO product_prices(product_id,price_cents,changed_by) VALUES ($1,$2,$3)",
@@ -307,7 +326,7 @@ async fn settings(State(state): State<AppState>) -> ApiResult<Json<Value>> {
         ).fetch_one(&state.pool).await?;
     let site = site_settings::read(&state.pool).await?;
     Ok(Json(
-        json!({"delivery_fee_cents":delivery_fee_cents,"free_delivery_from_cents":free_delivery_from_cents,"delivery_postal_codes":delivery_postal_codes,"online_payment_enabled":state.config.teya.is_some(),"hero_image":site.hero_image,"hero_image_alt":site.hero_image_alt}),
+        json!({"delivery_fee_cents":delivery_fee_cents,"free_delivery_from_cents":free_delivery_from_cents,"delivery_postal_codes":delivery_postal_codes,"online_payment_enabled":state.config.teya.is_some(),"hero_image":site.hero_image,"hero_image_alt":site.hero_image_alt,"public_contact_email":site.public_contact_email,"public_contact_phone":site.public_contact_phone,"seller_name":site.seller_name,"seller_address":site.seller_address,"seller_ico":site.seller_ico,"delivery_area_label":site.delivery_area_label}),
     ))
 }
 
@@ -576,6 +595,8 @@ async fn delivery_options(State(state): State<AppState>) -> ApiResult<Json<Value
 #[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 struct CartItem {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    variant: Option<String>,
     product_id: i64,
     quantity: i32,
 }
@@ -583,6 +604,12 @@ struct CartItem {
 #[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 struct OrderInput {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    team_order_id: Option<Uuid>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    team_revision: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    billing: Option<customer::BillingInput>,
     idempotency_key: Uuid,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     terms_version: Option<i64>,
@@ -744,6 +771,7 @@ struct PaymentReceipt {
 
 #[derive(Serialize, FromRow)]
 struct OrderItem {
+    variant: Option<String>,
     #[serde(skip)]
     order_id: Uuid,
     product_id: i64,
@@ -766,7 +794,7 @@ async fn attach_items(conn: &mut PgConnection, orders: &mut [Order]) -> ApiResul
         return Ok(());
     }
     let ids: Vec<_> = orders.iter().map(|o| o.id).collect();
-    let items: Vec<OrderItem> = sqlx::query_as("SELECT order_id,product_id,name,quantity,unit_price_cents,total_cents FROM order_items WHERE order_id=ANY($1) ORDER BY id")
+    let items: Vec<OrderItem> = sqlx::query_as("SELECT order_id,product_id,name,quantity,unit_price_cents,total_cents,variant FROM order_items WHERE order_id=ANY($1) ORDER BY id")
         .bind(&ids).fetch_all(&mut *conn).await?;
     let online_ids: Vec<_> = orders
         .iter()
@@ -843,7 +871,7 @@ async fn create_order(
 ) -> ApiResult<Json<Order>> {
     input.normalize()?;
     let user = auth::current_user(&state, &headers).await?;
-    let actor_id = user.map(|u| u.id);
+    let actor_id = user.as_ref().map(|u| u.id);
     let payload =
         serde_json::to_value(&input).map_err(|_| ApiError::bad_request("Neplatná objednávka."))?;
     let mut tx = state.pool.begin().await?;
@@ -869,6 +897,45 @@ async fn create_order(
         return Ok(Json(order));
     }
     input.validate_contact()?;
+    // The email identifies the customer, while only a verified session grants access.
+    // Keep this in the order transaction so failed checkouts cannot create accounts.
+    let created_user: Option<Uuid> = sqlx::query_scalar(
+        "INSERT INTO users(id,email) VALUES ($1,$2) ON CONFLICT(email) DO NOTHING RETURNING id",
+    )
+    .bind(Uuid::new_v4())
+    .bind(&input.email)
+    .fetch_optional(&mut *tx)
+    .await?;
+    // Use a new READ COMMITTED snapshot after a concurrent insert finishes.
+    // Updating the unique email here would block foreign-key checks in catalog edits.
+    let user_id = match created_user {
+        Some(id) => id,
+        None => {
+            sqlx::query_scalar::<_, Uuid>("SELECT id FROM users WHERE email=$1")
+                .bind(&input.email)
+                .fetch_one(&mut *tx)
+                .await?
+        }
+    };
+
+    if input.team_order_id.is_some() != input.team_revision.is_some() {
+        return Err(ApiError::bad_request(
+            "Přeneste týmovou objednávku znovu v aktuální verzi.",
+        ));
+    }
+    if let Some(team_id) = input.team_order_id {
+        let organizer = user.as_ref().ok_or_else(|| {
+            ApiError::unauthorized("Přihlaste se jako organizátor týmové objednávky.")
+        })?;
+        if organizer.email != input.email {
+            return Err(ApiError::bad_request(
+                "Týmovou objednávku odešlete pod e-mailem přihlášeného organizátora.",
+            ));
+        }
+        team_orders::lock_checkout(&mut tx, team_id, actor_id, input.team_revision.unwrap_or(0))
+            .await?;
+    }
+
     let accepted_terms = terms::accepted_for_checkout(&mut tx, input.terms_version).await?;
     let created_from_ip = client_ip::from_request(
         &headers,
@@ -913,6 +980,18 @@ async fn create_order(
             .ok_or_else(|| {
                 ApiError::conflict("Některý produkt již není v nabídce. Aktualizujte košík.")
             })?;
+        if (!product.variants.is_empty()
+            && !item
+                .variant
+                .as_ref()
+                .is_some_and(|v| product.variants.contains(v)))
+            || (product.variants.is_empty() && item.variant.is_some())
+        {
+            return Err(ApiError::conflict(format!(
+                "Vyberte dostupnou variantu produktu {}.",
+                product.name
+            )));
+        }
         if item.quantity < product.minimum_quantity {
             return Err(ApiError::conflict(format!(
                 "Minimální odběr u položky {} je {} ks.",
@@ -959,15 +1038,6 @@ async fn create_order(
             ));
         }
     }
-    // The email identifies the customer, while only a verified session grants access.
-    // Keep this in the order transaction so failed checkouts cannot create accounts.
-    let user_id: Uuid = sqlx::query_scalar(
-        "INSERT INTO users(id,email) VALUES ($1,$2) ON CONFLICT(email) DO UPDATE SET email=excluded.email RETURNING id",
-    )
-    .bind(Uuid::new_v4())
-    .bind(&input.email)
-    .fetch_one(&mut *tx)
-    .await?;
     let id = Uuid::new_v4();
     let initial_status = if online { "awaiting_payment" } else { "new" };
     sqlx::query("INSERT INTO orders(id,idempotency_key,request_payload,user_id,email,name,phone,organization,street,city,postal_code,notes,delivery_date,delivery_slot,payment_method,subtotal_cents,delivery_fee_cents,total_cents,status,created_from_ip,terms_version) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20::text::inet,$21)")
@@ -977,11 +1047,27 @@ async fn create_order(
         .bind(&input.delivery_slot).bind(&input.payment_method).bind(subtotal).bind(fee).bind(total)
         .bind(initial_status).bind(created_from_ip).bind(accepted_terms.version)
         .execute(&mut *tx).await?;
+    if let Some(team_id) = input.team_order_id {
+        team_orders::claim_checkout(
+            &mut tx,
+            team_id,
+            actor_id,
+            id,
+            input.team_revision.unwrap_or(0),
+        )
+        .await?;
+    }
+    customer::save_checkout_billing(&mut tx, id, input.billing.as_ref()).await?;
     for item in &input.items {
         let product = &by_id[&item.product_id];
-        sqlx::query("INSERT INTO order_items(order_id,product_id,name,quantity,unit_price_cents,total_cents,tracked_stock) VALUES ($1,$2,$3,$4,$5,$6,$7)")
-            .bind(id).bind(product.id).bind(&product.name).bind(item.quantity).bind(product.price_cents)
-            .bind(product.price_cents * i64::from(item.quantity)).bind(product.stock.is_some()).execute(&mut *tx).await?;
+        let item_name = item
+            .variant
+            .as_ref()
+            .map(|v| format!("{} ({v})", product.name))
+            .unwrap_or_else(|| product.name.clone());
+        sqlx::query("INSERT INTO order_items(order_id,product_id,name,quantity,unit_price_cents,total_cents,tracked_stock,variant) VALUES ($1,$2,$3,$4,$5,$6,$7,$8)")
+            .bind(id).bind(product.id).bind(&item_name).bind(item.quantity).bind(product.price_cents)
+            .bind(product.price_cents * i64::from(item.quantity)).bind(product.stock.is_some()).bind(&item.variant).execute(&mut *tx).await?;
         if product.stock.is_some() {
             sqlx::query(
                 "UPDATE products SET stock=stock-$2,version=version+1,updated_at=now() WHERE id=$1",
@@ -2037,6 +2123,7 @@ mod tests {
         input.payment_method = "card".to_owned();
         assert!(input.normalize().is_ok());
         input.items.push(CartItem {
+            variant: None,
             product_id: 1,
             quantity: 1,
         });

@@ -29,7 +29,7 @@ async function invoiceDialog(order) {
     const existing = await api(path)
     if (!body.isConnected) return
     if (existing) { showInvoice(existing, order.id); return }
-    const supplier = await api('/api/admin/invoice-supplier')
+    const [supplier, billing] = await Promise.all([api('/api/admin/invoice-supplier'), api(`/api/admin/orders/${order.id}/billing`)])
     if (!body.isConnected) return
     if (!supplier.name) {
       body.replaceChildren(el('p', {}, 'Před vystavením první faktury vyplňte údaje dodavatele.'),
@@ -52,10 +52,10 @@ async function invoiceDialog(order) {
     }, 'Vystavuji…') },
     el('p', { class: 'section-note' }, `Dodavatel: ${supplier.name} · IČO ${supplier.company_id}. Objednávka ${order.number} · ${money(order.total_cents)}.`),
     el('div', { class: 'form-grid' },
-      field('Odběratel', 'customer_name', order.organization || order.name, { maxlength: 250, required: true, full: true }),
-      field('Adresa odběratele', 'customer_address', `${order.street}\n${order.postal_code} ${order.city}`, { kind: 'textarea', maxlength: 500, required: true, full: true }),
-      field('IČO odběratele', 'customer_company_id', '', { maxlength: 24 }),
-      field('DIČ odběratele', 'customer_tax_id', '', { maxlength: 30 }),
+      field('Odběratel', 'customer_name', billing?.name || order.organization || order.name, { maxlength: 250, required: true, full: true }),
+      field('Adresa odběratele', 'customer_address', billing?.address || `${order.street}\n${order.postal_code} ${order.city}`, { kind: 'textarea', maxlength: 500, required: true, full: true }),
+      field('IČO odběratele', 'customer_company_id', billing?.company_id || '', { maxlength: 24 }),
+      field('DIČ odběratele', 'customer_tax_id', billing?.tax_id || '', { maxlength: 30 }),
       field('Datum plnění', 'supply_date', order.delivery_date, { type: 'date', required: true }),
       field('Datum splatnosti', 'due_date', order.delivery_date, { type: 'date', required: true })),
     supplier.vat_payer ? el('section', {}, el('h3', {}, 'Sazby DPH'), el('div', { class: 'form-grid' }, taxItems.map(([key, name]) =>
