@@ -128,7 +128,7 @@ button { border: 0; background: none; }
 .catalog { padding-block: 40px 70px; scroll-margin-top: 35px; }
 .section-heading { display: flex; align-items: end; justify-content: space-between; gap: 25px; margin-bottom: 29px; }
 .section-heading .eyebrow { margin-bottom: 12px; }
-.section-heading h2, .how-section h2, .office-banner h2 { font-size: 36px; line-height: 1.15; font-weight: 550; letter-spacing: -.035em; }
+.section-heading h2, .how-section h2 { font-size: 36px; line-height: 1.15; font-weight: 550; letter-spacing: -.035em; }
 .section-heading p:not(.eyebrow) { color: var(--muted); font-size: 13px; line-height: 1.6; }
 .filter-bar { display: flex; align-items: center; justify-content: space-between; gap: 20px; margin-bottom: 28px; }
 .categories { display: flex; align-items: center; flex-wrap: wrap; gap: 7px; }
@@ -196,11 +196,6 @@ button { border: 0; background: none; }
 .step-number { display: block; margin-bottom: 17px; color: var(--accent); font-family: 'Geist Mono', monospace; font-size: 12px; }
 .steps-grid article h3 { margin-bottom: 9px; font-size: 17px; font-weight: 550; letter-spacing: -.025em; }
 .steps-grid article p { max-width: 325px; color: var(--muted); font-size: 13px; line-height: 1.75; }
-.office-banner { display: flex; align-items: center; justify-content: space-between; gap: 35px; margin-bottom: 74px; padding: 40px 44px; background: var(--fresh-gradient); border: 1px solid var(--line); border-radius: 16px; }
-.office-banner .eyebrow { display: block; margin-bottom: 11px; }
-.office-banner h2 { font-size: 31px; }
-.office-banner p:not(.eyebrow) { max-width: 600px; margin-top: 12px; color: var(--muted); font-size: 13px; line-height: 1.7; }
-.office-banner .button, .office-banner .primary-button, .office-banner .secondary-button { flex-shrink: 0; }
 .site-footer { display: flex; align-items: center; gap: 28px; padding-block: 30px; border-top: 1px solid var(--line); }
 .site-footer > span { margin-left: auto; color: var(--muted); font-family: 'Geist Mono', monospace; font-size: 10px; }
 .footer-inner { display: flex; align-items: center; justify-content: space-between; gap: 30px; }
@@ -413,10 +408,6 @@ legend { margin-bottom: 9px; padding: 0; font-size: 12px; font-weight: 500; }
   .steps-grid article h3 { font-size: 16px; }
   .steps-grid article p { font-size: 12px; }
   .how-section { padding-block: 43px 50px; }
-  .office-banner { padding: 30px; margin-bottom: 50px; }
-  .office-banner h2 { font-size: 27px; }
-  .office-banner p:not(.eyebrow) { font-size: 12px; }
-  .office-banner .button, .office-banner .primary-button, .office-banner .secondary-button { padding-inline: 15px; font-size: 11px; }
   .footer-inner { flex-wrap: wrap; }
 }
 
@@ -473,9 +464,6 @@ legend { margin-bottom: 9px; padding: 0; font-size: 12px; font-weight: 500; }
   .steps-grid article { position: relative; padding-left: 42px; }
   .step-number { position: absolute; left: 0; top: 2px; }
   .steps-grid article p { max-width: none; }
-  .office-banner { align-items: start; flex-direction: column; gap: 23px; padding: 26px; margin-bottom: 35px; border-radius: 12px; }
-  .office-banner h2 { font-size: 28px; }
-  .office-banner .button, .office-banner .primary-button, .office-banner .secondary-button { font-size: 12px; }
   .site-footer { flex-wrap: wrap; gap: 16px 20px; padding-block: 25px 95px; }
   .site-footer > p { flex-basis: calc(100% - 115px); }
   .site-footer > span { margin-left: 0; }

@@ -84,7 +84,11 @@ async function review(page, base, addToCart = true) {
   await page.locator('.product-card').first().waitFor()
   if (addToCart) await page.locator('.product-card').first().getByRole('button', { name: /Přidat .* do košíku/ }).click()
   await page.locator('.header-cart').click()
-  await page.getByRole('button', { name: 'Pokračovat k doručení', exact: true }).click()
+  if (await page.locator('[data-checkout-step=payment]').isVisible()) {
+    await page.locator('[name=terms-accepted]').waitFor()
+    return
+  }
+  if (await page.locator('[data-checkout-step=cart]').isVisible()) await page.getByRole('button', { name: 'Pokračovat k doručení', exact: true }).click()
   await page.locator('[name=name]').fill('Jana Testovací')
   await page.locator('[name=tel]').fill('+420 777 123 456')
   await page.locator('[name=email]').fill('test@example.test')
@@ -245,12 +249,13 @@ async function main() {
       assert(await page.getByRole('alert').isHidden())
     })
 
-    await run(browser, base, 'Homepage keeps the office panel and exposes terms without the removed top bar or navigation link', {}, async ({ page }) => {
+    await run(browser, base, 'Homepage exposes the shared cart above products and terms in the footer without removed promotional panels', {}, async ({ page }) => {
       await page.goto(base)
       await page.locator('.product-card').waitFor()
       assert.equal(await page.locator('.top-note').count(), 0)
       assert.equal(await page.locator('.desktop-nav').getByRole('link', { name: 'Pro vaši kancelář', exact: true }).count(), 0)
-      assert.equal(await page.locator('#do-kancelare').count(), 1)
+      assert.equal(await page.locator('#do-kancelare, .office-banner, .team-packs').count(), 0)
+      assert.equal(await page.locator('.catalog-team').getByRole('link', { name: 'Společný košík', exact: true }).getAttribute('href'), '/team/')
       assert.equal(await page.locator('footer').getByRole('link', { name: 'Obchodní podmínky', exact: true }).getAttribute('href'), '/obchodni-podminky/')
     })
     assert.deepEqual(errors, [])

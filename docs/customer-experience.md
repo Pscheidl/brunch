@@ -8,7 +8,7 @@ Rozšíření z 21. listopadu 2026 doplňuje běžný nákup, zákaznický úče
 - Kartu produktu lze otevřít přímým odkazem `/?product=ID`. Detail ukazuje složení, čitelný význam čísel alergenů, případný minimální odběr a výběr varianty.
 - Množství lze zadat přímo. Minimum, dostupné kusy a limit 99 kusů kontroluje rozhraní i server. U minimálního odběru je vidět také cena tohoto množství.
 - Dostupnost rozvozu lze ověřit podle PSČ už před výběrem. Zobrazují se dostupné termíny, cena dopravy a částka zbývající do dopravy zdarma.
-- Košík nabízí vhodné doplnění a rychlý výběr stejné svačiny pro 5, 10 nebo 20 lidí. Počet a obsah lze před odesláním upravit.
+- Košík nabízí vhodné doplnění objednávky. Nad filtry produktů je nenápadný odkaz na společný košík pro kolegy.
 - Rozepsané doručovací a fakturační údaje se obnovují v dané relaci prohlížeče. Po úspěšném nákupu se koncept odstraní. Před odesláním zákazník vidí adresu, položky, varianty, platbu a konečný součet.
 - Fakturační údaje může zadat také nepřihlášený zákazník. Ukládají se s konkrétní objednávkou v jedné transakci.
 - Opakované odeslání stejného požadavku vrací stejnou objednávku. Změněný obsah se stejným klíčem vrací konflikt. Ceny, sklad a termín znovu kontroluje server.
@@ -30,7 +30,7 @@ Přihlášení jednorázovým odkazem z e-mailu zpřístupní stránku `/custome
 
 ## Společné objednávky
 
-Na `/team/` vytvoří přihlášený organizátor košík a nastaví uzávěrku v českém čase. Odkaz pro kolegy umožní vložit jméno a vlastní výběr bez založení účtu. Každý účastník upravuje svůj výběr, organizátor vidí všechny a může je upravit do uzavření košíku.
+Odkaz **Společný košík** nad nabídkou produktů vede na `/team/`. Zde přihlášený organizátor vytvoří košík a nastaví uzávěrku v českém čase. Odkaz pro kolegy umožní vložit jméno a vlastní výběr bez založení účtu. Každý účastník upravuje svůj výběr, organizátor vidí všechny a může je upravit do uzavření košíku.
 
 - Jeden organizátor může mít nejvýše 10 otevřených košíků. Košík podporuje 50 účastníků a 50 různých produktů, každý v celkovém množství nejvýše 99 kusů.
 - Uzávěrku lze založit 5 minut až 31 dní dopředu. Po uzávěrce či ručním uzavření již účastníci výběr nemění. Organizátor může dosud neobjednaný košík znovu otevřít s novou uzávěrkou.
