@@ -21,7 +21,7 @@ async function customerRequestsPage() {
   }
   filter.querySelector('select').addEventListener('change', event => { state.customerRequestStatus = event.target.value; renderRequests() })
   renderRequests()
-  return [header('Žádosti zákazníků', 'Požadavky na změnu nebo zrušení objednávky. Zákazník dostane odpověď e-mailem.'), el('p', { class: 'note' }, 'Nejdříve vyřešte změnu nebo storno v detailu objednávky a případné vrácení platby. Označení žádosti za vyřízenou samo objednávku nemění ani nevrací peníze.'), el('div', { class: 'filters' }, filter, button('Obnovit', renderPage)), count, results]
+  return [header('Žádosti zákazníků', 'Požadavky na změnu nebo zrušení objednávky. Zákazník dostane odpověď e-mailem.'), el('p', { class: 'note' }, 'Nejdříve vyřešte změnu nebo storno v detailu objednávky a případné vrácení platby.'), el('div', { class: 'filters' }, filter, button('Obnovit', renderPage)), count, results]
 }
 
 function customerRequestDialog(request) {
