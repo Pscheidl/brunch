@@ -48,3 +48,4 @@
 
 .pickup-settings{margin-top:28px}.pickup-settings h2{font-size:22px;margin-bottom:14px}.pickup-settings .form-grid{gap:0 18px}.pickup-settings .actions{flex-wrap:wrap}.pickup-parking{font-weight:650;color:var(--green)}.pickup-instructions{white-space:pre-wrap;overflow-wrap:anywhere}@media(max-width:760px){.pickup-settings .actions .button{white-space:normal}}
 .pickup-settings .field:has(input[type=checkbox]){flex-wrap:wrap}.pickup-settings .field:has(input[type=checkbox])>.hint{flex-basis:100%}
+.banquet-settings h2{margin-bottom:14px}.banquet-settings .actions .button{white-space:normal}.field:has(input[name=banquet]){flex-wrap:wrap}.field:has(input[name=banquet])>.hint{flex-basis:100%}.field input[name=banquet]{flex-shrink:0}.banquet-label{font-weight:650;color:var(--green)}

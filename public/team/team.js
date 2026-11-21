@@ -3,6 +3,7 @@ const content = document.querySelector('#content')
 const params = new URLSearchParams(location.hash.slice(1))
 const invite = params.get('join')
 let products = []
+let banquetMinimum = 30
 let selectedId = params.get('team')
 let loadSequence = 0
 let editing = false
@@ -81,8 +82,9 @@ async function loadTeam() {
   const requestedId = selectedId
   const sequence = ++loadSequence
   try {
-    const data = await api(`/api/team-orders/${requestedId}`)
+    const [data, settings] = await Promise.all([api(`/api/team-orders/${requestedId}`), api('/api/settings')])
     if (editing || requestedId !== selectedId || sequence !== loadSequence) return
+    banquetMinimum = settings.banquet_minimum_quantity ?? 30
     for (const product of data.products || []) { const index = products.findIndex(p => p.id === product.id); if (index < 0) products.push(product); else products[index] = product }
     const { team, contributions } = data
     document.querySelectorAll('[data-team-id]').forEach(button => { if (button.dataset.teamId === team.id) button.textContent = teamCaption(team) })
@@ -97,16 +99,19 @@ async function loadTeam() {
     }
     if (!team.order_id) card.append(notice('Zboží zatím není rezervované. Ceny a dostupnost se znovu ověří při dokončení objednávky.'))
     let total = 0
+    let banquetQuantity = 0
     for (const entry of contributions) {
       const items = node('ul')
       for (const item of entry.items) {
         const product = products.find(p => p.id === item.product_id)
         total += (product?.price_cents || 0) * item.quantity
+        if (product?.banquet) banquetQuantity += item.quantity
         items.append(node('li', {}, `${item.quantity}× ${product?.name || 'Nedostupná položka'}${item.variant ? ` (${item.variant})` : ''}`))
       }
       const allocation = node('div', { class: 'allocation' }, node('div', { class: 'row' }, node('h3', {}, entry.name), !team.closed_at ? button('Upravit výběr', () => editEntry(card, team, entry), true) : null), entry.items.length ? items : node('p', { class: 'muted' }, 'Výběr odebrán.'))
       card.append(allocation)
     }
+    if (banquetQuantity > 0 && !team.order_id) card.append(notice(`Banketní pečivo za celý tým: ${banquetQuantity} z ${banquetMinimum} ks. ${banquetQuantity < banquetMinimum ? `Do společného minima přidejte ještě ${banquetMinimum - banquetQuantity} ks banketního pečiva. Druhy můžete kombinovat.` : 'Společné minimum je splněno.'}`, banquetQuantity < banquetMinimum ? '' : 'success'))
     if (!contributions.length) card.append(node('p', { class: 'empty' }, 'Zatím nikdo neodeslal svůj výběr. Pošlete kolegům odkaz.'))
     card.append(node('p', { class: 'total' }, `Zboží podle aktuálních cen: ${money(total)}`), node('p', { class: 'muted' }, 'Cenu dopravy uvidíte při dokončení objednávky.'))
     const actions = node('div', { class: 'actions' }, button('Obnovit výběry', loadTeam, true), button('Vytisknout rozpis', () => window.print(), true))
@@ -159,6 +164,7 @@ function selectionForm(initial, save, cancel) {
   const total = node('span', { class: 'total' })
   const updateTotal = () => { total.textContent = `Vaše svačiny: ${money([...selected.values()].reduce((sum, item) => sum + (products.find(p => p.id === item.product_id)?.price_cents || 0) * item.quantity, 0))}` }
   form.append(field('Vaše jméno pro organizátora', name), node('p', { class: 'muted' }, 'Počet 0 znamená, že položku nechcete. Minimální odběr se počítá za celý tým.'), node('div', { class: 'products' }))
+  if (products.some(product => product.banquet)) form.insertBefore(notice(`Banketní pečivo má společný minimální odběr ${banquetMinimum} ks za celý tým. Druhy lze kombinovat. Svůj díl můžete uložit i v menším množství.`), form.querySelector('.products'))
   const grid = form.querySelector('.products')
   const available = [...products]
   for (const old of initial?.items || []) {
@@ -180,7 +186,7 @@ function selectionForm(initial, save, cancel) {
     }
     input.addEventListener('input', change)
     variant?.addEventListener('change', change)
-    const info = node('div', {}, node('h3', {}, product.name), node('span', {}, `${money(product.price_cents)} / ks`), node('small', {}, ` · ${product.stock == null ? `max. ${max} ks v objednávce` : `${max} ks dostupných`}${product.minimum_quantity > 1 ? ` · minimum za tým ${product.minimum_quantity} ks` : ''}`), field('Počet kusů', input), variant ? field('Varianta', variant) : null)
+    const info = node('div', {}, node('h3', {}, product.name), product.banquet ? node('small', { class: 'banquet-label' }, 'Banketní pečivo · ') : null, node('span', {}, `${money(product.price_cents)} / ks`), node('small', {}, ` · ${product.stock == null ? `max. ${max} ks v objednávce` : `${max} ks dostupných`}${product.minimum_quantity > 1 ? ` · minimum za tým ${product.minimum_quantity} ks` : ''}`), field('Počet kusů', input), variant ? field('Varianta', variant) : null)
     grid.append(node('div', { class: 'product' }, product.image ? node('img', { src: product.image.startsWith('/') ? product.image : `/${product.image}`, alt: '', loading: 'lazy', width: 80, height: 80 }) : node('span'), info))
   }
   updateTotal()
@@ -236,7 +242,9 @@ async function contributor() {
 }
 async function start() {
   try {
-    products = await api('/api/products')
+    const [catalog, settings] = await Promise.all([api('/api/products'), api('/api/settings')])
+    products = catalog
+    banquetMinimum = settings.banquet_minimum_quantity ?? 30
     if (invite) await contributor()
     else {
       try { await api('/api/auth/me') } catch (e) { if (e.status === 401) { login(); return } throw e }

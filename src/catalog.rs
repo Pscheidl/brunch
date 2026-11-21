@@ -20,6 +20,8 @@ pub struct Product {
     #[serde(default)]
     pub minimum_quantity: u16,
     #[serde(default)]
+    pub banquet: bool,
+    #[serde(default)]
     pub variants: Vec<String>,
     pub version: i64,
 }
@@ -39,8 +41,10 @@ impl Product {
     }
 }
 
-#[derive(Clone, Debug, Default, Deserialize)]
+#[derive(Clone, Debug, Deserialize)]
 pub struct Settings {
+    #[serde(default = "default_banquet_minimum")]
+    pub banquet_minimum_quantity: u32,
     #[serde(default)]
     pub pickup: PickupSettings,
     pub delivery_fee_cents: i64,
@@ -64,6 +68,31 @@ pub struct Settings {
     pub seller_ico: String,
     #[serde(default)]
     pub delivery_area_label: String,
+}
+
+fn default_banquet_minimum() -> u32 {
+    30
+}
+
+impl Default for Settings {
+    fn default() -> Self {
+        Self {
+            banquet_minimum_quantity: default_banquet_minimum(),
+            pickup: PickupSettings::default(),
+            delivery_fee_cents: 0,
+            free_delivery_from_cents: None,
+            delivery_postal_codes: Vec::new(),
+            online_payment_enabled: false,
+            hero_image: String::new(),
+            hero_image_alt: String::new(),
+            public_contact_email: String::new(),
+            public_contact_phone: String::new(),
+            seller_name: String::new(),
+            seller_address: String::new(),
+            seller_ico: String::new(),
+            delivery_area_label: String::new(),
+        }
+    }
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq)]
@@ -312,6 +341,21 @@ pub fn delivery_fee(amount: i64, settings: &Settings) -> i64 {
 pub fn quantity(cart: &Cart) -> u32 {
     cart.values().map(|n| u32::from(*n)).sum()
 }
+pub fn banquet_quantity(cart: &Cart, products: &[Product]) -> u32 {
+    products
+        .iter()
+        .filter(|product| product.banquet)
+        .map(|product| u32::from(cart.get(&product.id).copied().unwrap_or(0)))
+        .sum()
+}
+pub fn banquet_missing(cart: &Cart, products: &[Product], minimum: u32) -> u32 {
+    let quantity = banquet_quantity(cart, products);
+    if quantity == 0 {
+        0
+    } else {
+        minimum.saturating_sub(quantity)
+    }
+}
 pub fn parse_cart(value: &str) -> Cart {
     serde_json::from_str::<Cart>(value)
         .unwrap_or_default()
@@ -438,6 +482,7 @@ mod tests {
             active: true,
             stock,
             minimum_quantity: 0,
+            banquet: false,
             version: 1,
         }
     }
@@ -448,6 +493,41 @@ mod tests {
         assert_eq!(subtotal(&cart, &products), 24950);
         assert_eq!(quantity(&cart), 3);
         assert_eq!(money(24950), "249,50 Kč");
+    }
+    #[test]
+    fn banquet_minimum_combines_only_banquet_products() {
+        let mut products = vec![
+            product(1, 100, None),
+            product(2, 100, None),
+            product(3, 100, None),
+            product(4, 100, None),
+        ];
+        for item in &mut products[..3] {
+            item.banquet = true;
+            item.minimum_quantity = 10;
+        }
+        let mut cart = Cart::from([(1, 10), (2, 10), (4, 99)]);
+        assert_eq!(banquet_quantity(&cart, &products), 20);
+        assert_eq!(banquet_missing(&cart, &products, 30), 10);
+        cart.insert(3, 10);
+        assert_eq!(banquet_quantity(&cart, &products), 30);
+        assert_eq!(banquet_missing(&cart, &products, 30), 0);
+        assert_eq!(banquet_missing(&cart, &products, 31), 1);
+        cart.insert(3, 11);
+        assert_eq!(banquet_missing(&cart, &products, 30), 0);
+        assert_eq!(banquet_missing(&Cart::from([(4, 1)]), &products, 30), 0);
+        assert_eq!(banquet_missing(&Cart::new(), &products, 30), 0);
+    }
+    #[test]
+    fn old_api_payload_defaults_to_non_banquet_and_thirty_piece_minimum() {
+        let mut value = serde_json::to_value(product(1, 100, None)).unwrap();
+        value.as_object_mut().unwrap().remove("banquet");
+        assert!(!serde_json::from_value::<Product>(value).unwrap().banquet);
+        let settings: Settings = serde_json::from_value(serde_json::json!({
+            "delivery_fee_cents":4900,"free_delivery_from_cents":null,"delivery_postal_codes":[]
+        }))
+        .unwrap();
+        assert_eq!(settings.banquet_minimum_quantity, 30);
     }
     #[test]
     fn delivery_respects_optional_threshold_and_exact_boundary() {

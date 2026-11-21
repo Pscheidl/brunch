@@ -381,7 +381,7 @@ async function productsPage() {
   const [products, categories] = await Promise.all([api('/api/admin/products'), api('/api/admin/categories')])
   const results = el('div', { class: 'product-results' })
   const count = el('p', { class: 'hint product-result-count', role: 'status', 'aria-live': 'polite' })
-  const search = field('Vyhledat zboží', 'product-search', state.productQuery, { type: 'search', placeholder: 'Název, kategorie nebo popis', autocomplete: 'off' })
+  const search = field('Vyhledat zboží', 'product-search', state.productQuery, { type: 'search', placeholder: 'Název, kategorie, popis nebo banketní pečivo', autocomplete: 'off' })
   search.classList.add('search')
   const clear = button('Vymazat hledání', () => {
     state.productQuery = ''
@@ -393,14 +393,14 @@ async function productsPage() {
     const query = normalizedProductSearch(state.productQuery)
     const words = query.split(' ').filter(Boolean)
     const filtered = products.filter(product => {
-      const text = normalizedProductSearch([product.name, product.category, product.description].join(' '))
+      const text = normalizedProductSearch([product.name, product.category, product.description, product.banquet ? 'banketní pečivo' : ''].join(' '))
       return words.every(word => text.includes(word))
     })
     count.textContent = `Zobrazeno ${filtered.length} z ${products.length} položek`
     clear.hidden = !state.productQuery
     const rows = filtered.map(product => {
       const warnings = productWarnings(product)
-      return el('tr', {}, el('td', {}, el('strong', {}, product.name), el('small', {}, `${product.category || 'Bez kategorie'} · ${product.weight || 'Bez uvedené hmotnosti'}`), warnings.length ? el('small', { class: 'product-warning-label', title: warnings.join(' ') }, `Ke kontrole: ${warnings.length} ${warnings.length === 1 ? 'údaj' : warnings.length < 5 ? 'údaje' : 'údajů'}`) : null), el('td', { class: 'number' }, money(product.price_cents)), el('td', {}, product.stock === null ? 'Bez omezení' : `${product.stock} ks`, product.minimum_quantity ? el('small', {}, `Min. odběr ${product.minimum_quantity} ks`) : null), el('td', {}, badge(product.active ? 'V prodeji' : 'Archivováno', product.active ? '' : 'archived')), el('td', {}, el('div', { class: 'cell-actions' }, button('Upravit', () => productDialog(product, categories), 'small'), button('Ceny', () => priceDialog(product), 'small'))))
+      return el('tr', {}, el('td', {}, el('strong', {}, product.name), el('small', {}, `${product.category || 'Bez kategorie'} · ${product.weight || 'Bez uvedené hmotnosti'}`), product.banquet ? el('small', { class: 'banquet-label' }, 'Banketní pečivo') : null, warnings.length ? el('small', { class: 'product-warning-label', title: warnings.join(' ') }, `Ke kontrole: ${warnings.length} ${warnings.length === 1 ? 'údaj' : warnings.length < 5 ? 'údaje' : 'údajů'}`) : null), el('td', { class: 'number' }, money(product.price_cents)), el('td', {}, product.stock === null ? 'Bez omezení' : `${product.stock} ks`, product.minimum_quantity ? el('small', {}, `Min. odběr ${product.minimum_quantity} ks`) : null), el('td', {}, badge(product.active ? 'V prodeji' : 'Archivováno', product.active ? '' : 'archived')), el('td', {}, el('div', { class: 'cell-actions' }, button('Upravit', () => productDialog(product, categories), 'small'), button('Ceny', () => priceDialog(product), 'small'))))
     })
     results.replaceChildren(rows.length ? table(['Zboží', 'Cena', 'Sklad', 'Dostupnost', 'Akce'], rows) : products.length ? empty('Žádné odpovídající zboží', 'Zkuste jiný název, kategorii nebo vymažte hledání.') : empty('Zatím žádné zboží', 'Přidejte první produkt do nabídky.'))
   }
@@ -410,7 +410,7 @@ async function productsPage() {
 }
 function productDialog(product, categories) {
   const body = openDialog(product ? 'Upravit zboží' : 'Přidat zboží')
-  const data = product || { name: '', description: '', category: '', minimum_quantity: 0, tag: '', weight: '', price_cents: 0, vegan: false, ingredients: '', allergens: '', image: '', active: true, stock: null }
+  const data = product || { name: '', description: '', category: '', minimum_quantity: 0, banquet: false, tag: '', weight: '', price_cents: 0, vegan: false, ingredients: '', allergens: '', image: '', active: true, stock: null }
   const form = el('form', { onsubmit: event => saveForm(event, async values => {
     const payload = Object.fromEntries(['name', 'description', 'category', 'tag', 'weight', 'ingredients', 'allergens', 'image'].map(key => [key, String(values.get(key)).trim()]))
     payload.variants = String(values.get('variants') || '').split('\n').map(value => value.trim()).filter(Boolean)
@@ -418,6 +418,8 @@ function productDialog(product, categories) {
     payload.price_cents = cents(values.get('price'))
     payload.stock = String(values.get('stock')).trim() === '' ? null : Number(values.get('stock'))
     payload.minimum_quantity = Number(values.get('minimum_quantity') || 0)
+    payload.banquet = values.has('banquet')
+    if (!Number.isInteger(payload.minimum_quantity) || payload.minimum_quantity < (payload.banquet ? 1 : 0) || payload.minimum_quantity > 99) throw new Error(payload.banquet ? 'U banketního pečiva vyplňte minimální odběr od 1 do 99 kusů.' : 'Minimální odběr musí být celé číslo od 0 do 99 kusů.')
     payload.vegan = values.has('vegan')
     payload.active = values.has('active')
     if (product) payload.version = product.version
@@ -425,7 +427,21 @@ function productDialog(product, categories) {
     dialog.close()
     notify(product ? 'Zboží bylo upraveno.' : 'Nové zboží bylo přidáno.')
     renderPage()
-  }) }, el('div', { class: 'form-grid' }, field('Název', 'name', data.name, { required: true, maxlength: 150, full: true }), field('Popis', 'description', data.description, { kind: 'textarea', maxlength: 2000, full: true }), selectField('Kategorie', 'category', [['', 'Bez kategorie'], ...categories.slice().sort((a, b) => a.name.localeCompare(b.name, 'cs')).map(category => [category.name, category.name])], data.category), field('Štítek', 'tag', data.tag, { maxlength: 80, placeholder: 'Např. Z naší pece' }), field('Cena v Kč', 'price', (data.price_cents / 100).toFixed(2), { required: true, inputmode: 'decimal', placeholder: '119,00' }), field('Hmotnost / objem', 'weight', data.weight, { maxlength: 80, placeholder: 'Např. 180 g' }), field('Minimální odběr v kusech', 'minimum_quantity', data.minimum_quantity ?? 0, { type: 'number', min: 0, max: 99, step: 1, hint: 'Nula znamená bez minima. Při prvním přidání do košíku se nastaví zadaný počet.' }), field('Počet dostupných kusů', 'stock', data.stock, { type: 'number', min: 0, max: 1000000, step: 1, hint: 'Prázdné pole znamená neomezené množství. Nula znamená vyprodáno.' }), field('Obrázek', 'image', data.image, { maxlength: 500, placeholder: '/images/produkt.webp', hint: 'Cesta k obrázku na tomto webu. Pro výchozí vzhled ponechte prázdné.' }), field('Složení', 'ingredients', data.ingredients, { kind: 'textarea', maxlength: 2000, full: true }), field('Alergeny', 'allergens', data.allergens, { kind: 'textarea', maxlength: 1000, full: true }), field('Varianty (jedna na řádek)', 'variants', (data.variants || []).join('\n'), { kind: 'textarea', maxlength: 3630, full: true, hint: 'Nejvýše 30 variant, každá do 120 znaků. Zákazník si musí jednu vybrat. Prázdné pole znamená pevný produkt. Všechny varianty mají stejnou cenu. Cenově odlišné varianty založte jako samostatné produkty.' }), field('Vegan', 'vegan', data.vegan, { type: 'checkbox' }), field('Zobrazovat v nabídce', 'active', data.active, { type: 'checkbox' })), el('p', { class: 'hint' }, 'Kategorie spravujete v sekci ', el('a', { href: '#categories', onclick: () => dialog.close() }, 'Kategorie'), '. Zde vybíráte z již vytvořených kategorií.'), el('p', { class: 'hint' }, 'Odškrtnutím nabídky zboží archivujete. Historie cen i dřívější objednávky zůstanou zachovány.'), el('div', { class: 'actions' }, button('Zrušit', () => dialog.close()), el('button', { type: 'submit', class: 'button primary' }, 'Uložit zboží')))
+  }) }, el('div', { class: 'form-grid' }, field('Název', 'name', data.name, { required: true, maxlength: 150, full: true }), field('Popis', 'description', data.description, { kind: 'textarea', maxlength: 2000, full: true }), selectField('Kategorie', 'category', [['', 'Bez kategorie'], ...categories.slice().sort((a, b) => a.name.localeCompare(b.name, 'cs')).map(category => [category.name, category.name])], data.category), field('Štítek', 'tag', data.tag, { maxlength: 80, placeholder: 'Např. Z naší pece' }), field('Cena v Kč', 'price', (data.price_cents / 100).toFixed(2), { required: true, inputmode: 'decimal', placeholder: '119,00' }), field('Hmotnost / objem', 'weight', data.weight, { maxlength: 80, placeholder: 'Např. 180 g' }), field('Banketní pečivo', 'banquet', data.banquet, { type: 'checkbox', hint: 'Kusy se započítávají do společného minima banketního pečiva v objednávce.' }), field('Minimální odběr v kusech', 'minimum_quantity', data.minimum_quantity || '', { type: 'number', min: 0, max: 99, step: 1, hint: 'Prázdné pole nebo nula znamená bez minima. Při prvním přidání do košíku se nastaví zadaný počet.' }), field('Počet dostupných kusů', 'stock', data.stock, { type: 'number', min: 0, max: 1000000, step: 1, hint: 'Prázdné pole znamená neomezené množství. Nula znamená vyprodáno.' }), field('Obrázek', 'image', data.image, { maxlength: 500, placeholder: '/images/produkt.webp', hint: 'Cesta k obrázku na tomto webu. Pro výchozí vzhled ponechte prázdné.' }), field('Složení', 'ingredients', data.ingredients, { kind: 'textarea', maxlength: 2000, full: true }), field('Alergeny', 'allergens', data.allergens, { kind: 'textarea', maxlength: 1000, full: true }), field('Varianty (jedna na řádek)', 'variants', (data.variants || []).join('\n'), { kind: 'textarea', maxlength: 3630, full: true, hint: 'Nejvýše 30 variant, každá do 120 znaků. Zákazník si musí jednu vybrat. Prázdné pole znamená pevný produkt. Všechny varianty mají stejnou cenu. Cenově odlišné varianty založte jako samostatné produkty.' }), field('Vegan', 'vegan', data.vegan, { type: 'checkbox' }), field('Zobrazovat v nabídce', 'active', data.active, { type: 'checkbox' })), el('p', { class: 'hint' }, 'Kategorie spravujete v sekci ', el('a', { href: '#categories', onclick: () => dialog.close() }, 'Kategorie'), '. Zde vybíráte z již vytvořených kategorií.'), el('p', { class: 'hint' }, 'Odškrtnutím nabídky zboží archivujete. Historie cen i dřívější objednávky zůstanou zachovány.'), el('div', { class: 'actions' }, button('Zrušit', () => dialog.close()), el('button', { type: 'submit', class: 'button primary' }, 'Uložit zboží')))
+  const banquet = form.elements.banquet
+  const minimum = form.elements.minimum_quantity
+  const minimumHint = minimum.closest('label').querySelector('.hint')
+  minimumHint.id = 'product-minimum-hint'
+  minimum.setAttribute('aria-describedby', minimumHint.id)
+  function updateBanquetMinimum() {
+    minimum.required = banquet.checked
+    minimum.min = banquet.checked ? '1' : '0'
+    minimumHint.textContent = banquet.checked
+      ? 'Povinné pro banketní pečivo: 1 až 99 kusů tohoto výrobku. Navíc musí objednávka splnit společné minimum všech banketních výrobků nastavené v obecném nastavení.'
+      : 'Nepovinné. Prázdné pole nebo nula znamená bez minima. Při prvním přidání do košíku se nastaví zadaný počet.'
+  }
+  banquet.addEventListener('change', updateBanquetMinimum)
+  updateBanquetMinimum()
   const warnings = el('section', { class: 'product-completeness', role: 'status', 'aria-live': 'polite', 'aria-label': 'Kontrola údajů zboží' })
   function refreshWarnings() {
     const values = new FormData(form)

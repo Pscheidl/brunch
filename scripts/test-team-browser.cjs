@@ -16,8 +16,8 @@ const server = http.createServer((req, res) => {
   res.setHeader('content-type', types[path.extname(file)] || 'application/octet-stream')
   fs.readFile(file, (error, bytes) => { if (error) { res.writeHead(404); res.end() } else res.end(bytes) })
 })
-const products = [{ id: 1, name: 'Sendvič', active: true, variants: ['Sýr', 'Šunka'], stock: 50, minimum_quantity: 1, price_cents: 3500, image: '' }, { id: 2, name: 'Fresh', active: true, variants: [], stock: null, minimum_quantity: 0, price_cents: 9000, image: '' }]
-const state = { team: null, contributions: [], token: null, savedKeys: [] }
+const products = [{ id: 1, name: 'Sendvič', active: true, variants: ['Sýr', 'Šunka'], stock: 50, minimum_quantity: 1, banquet: true, price_cents: 3500, image: '' }, { id: 2, name: 'Fresh', active: true, variants: [], stock: null, minimum_quantity: 0, price_cents: 9000, image: '' }]
+const state = { team: null, contributions: [], token: null, savedKeys: [], banquetMinimum: 30 }
 async function mock(context, authenticated) {
   await context.route('**/api/**', async route => {
     const request = route.request()
@@ -27,6 +27,7 @@ async function mock(context, authenticated) {
     if (method !== 'GET') body = request.postDataJSON()
     let result
     if (pathname === '/api/products') result = products
+    else if (pathname === '/api/settings') result = { banquet_minimum_quantity: state.banquetMinimum }
     else if (pathname === '/api/auth/me') {
       if (!authenticated) { await route.fulfill({ status: 401, json: { error: 'Přihlaste se.' } }); return }
       result = { user: { id: 'owner', email: 'owner@example.test' } }
@@ -75,6 +76,8 @@ async function mock(context, authenticated) {
     page.on('pageerror', e => errors.push(e.message))
     await page.goto(joinUrl)
     await page.getByLabel('Vaše jméno pro organizátora', { exact: true }).fill('Jana <test>')
+    await page.getByText('Banketní pečivo má společný minimální odběr 30 ks za celý tým. Druhy lze kombinovat. Svůj díl můžete uložit i v menším množství.', { exact: true }).waitFor()
+    assert.equal(await page.locator('.banquet-label').count(), 1)
     await page.getByRole('spinbutton', { name: 'Počet: Sendvič', exact: true }).fill('2')
     await page.getByRole('button', { name: 'Uložit výběr', exact: true }).click()
     await page.getByRole('alert').getByText('U vybraných položek prosím zvolte variantu.', { exact: true }).waitFor()
@@ -93,11 +96,16 @@ async function mock(context, authenticated) {
     await page.screenshot({ path: `${output}/contributor-mobile.png`, fullPage: true })
     await organizer.getByRole('button', { name: 'Obnovit výběry', exact: true }).click()
     await organizer.getByRole('heading', { name: 'Jana <test>', exact: true }).waitFor()
+    await organizer.getByText('Banketní pečivo za celý tým: 3 z 30 ks. Do společného minima přidejte ještě 27 ks banketního pečiva. Druhy můžete kombinovat.', { exact: true }).waitFor()
+    state.banquetMinimum = 4
+    await organizer.getByRole('button', { name: 'Obnovit výběry', exact: true }).click()
+    await organizer.getByText('Banketní pečivo za celý tým: 3 z 4 ks. Do společného minima přidejte ještě 1 ks banketního pečiva. Druhy můžete kombinovat.', { exact: true }).waitFor()
     assert.equal(await organizer.locator('test').count(), 0, 'Participant name is rendered as text')
     await organizer.getByRole('button', { name: 'Upravit výběr', exact: true }).click()
     await organizer.getByRole('spinbutton', { name: 'Počet: Sendvič', exact: true }).fill('4')
     await organizer.getByRole('button', { name: 'Uložit výběr', exact: true }).click()
     await organizer.getByText('4× Sendvič (Sýr)', { exact: true }).waitFor()
+    await organizer.getByText('Banketní pečivo za celý tým: 4 z 4 ks. Společné minimum je splněno.', { exact: true }).waitFor()
     organizer.once('dialog', dialog => dialog.accept())
     await organizer.getByRole('button', { name: 'Uzavřít výběr kolegů', exact: true }).click()
     await organizer.getByRole('button', { name: 'Přenést do objednávky', exact: true }).waitFor()
@@ -114,6 +122,6 @@ async function mock(context, authenticated) {
     await page.getByRole('link', { name: 'Přihlásit se a pokračovat', exact: true }).waitFor()
     assert.equal(await page.getByRole('link', { name: 'Přihlásit se a pokračovat', exact: true }).getAttribute('href'), '/?signin=team')
     assert.deepEqual(errors, [])
-    console.log(JSON.stringify({ passed: ['organizer creates and shares cart', 'guest selects and validates variant', 'contribution persists and updates', 'private edit key reused', 'mobile without overflow', 'organizer edits named allocation', 'safe text rendering', 'closing locks participant UI', 'transfer to checkout with variant', 'unauthenticated organizer sign-in'], screenshots: output }, null, 2))
+    console.log(JSON.stringify({ passed: ['organizer creates and shares cart', 'guest selects and validates variant', 'contribution persists and updates', 'private edit key reused', 'mobile without overflow', 'organizer edits named allocation', 'safe text rendering', 'closing locks participant UI', 'transfer to checkout with variant', 'unauthenticated organizer sign-in', 'banquet labels and partial participant selections', 'organizer banquet total and refreshed threshold'], screenshots: output }, null, 2))
   } finally { await browser.close(); await new Promise(resolve => server.close(resolve)) }
 })().catch(error => { console.error(error); server.close(); process.exitCode = 1 })

@@ -91,6 +91,7 @@ struct Product {
     active: bool,
     stock: Option<i32>,
     minimum_quantity: i32,
+    banquet: bool,
     variants: Vec<String>,
     version: i64,
 }
@@ -124,6 +125,7 @@ struct ProductInput {
     active: bool,
     stock: Option<i32>,
     minimum_quantity: Option<i32>,
+    banquet: Option<bool>,
     #[serde(default)]
     variants: Option<Vec<String>>,
     version: Option<i64>,
@@ -196,6 +198,25 @@ impl ProductInput {
     }
 }
 
+fn validate_banquet_product(banquet: bool, minimum_quantity: i32) -> ApiResult<()> {
+    if banquet && minimum_quantity < 1 {
+        return Err(ApiError::bad_request(
+            "U banketního pečiva vyplňte minimální odběr od 1 do 99 kusů.",
+        ));
+    }
+    Ok(())
+}
+
+fn validate_banquet_quantity(quantity: i32, minimum: i32) -> ApiResult<()> {
+    if quantity > 0 && quantity < minimum {
+        return Err(ApiError::conflict(format!(
+            "Minimální odběr banketního pečiva je celkem {minimum} ks. V košíku máte {quantity} ks, doplňte ještě {} ks banketního pečiva. Různé druhy můžete kombinovat.",
+            minimum - quantity
+        )));
+    }
+    Ok(())
+}
+
 async fn products(State(state): State<AppState>) -> ApiResult<Json<Vec<Product>>> {
     Ok(Json(
         sqlx::query_as("SELECT * FROM products WHERE active ORDER BY id")
@@ -223,14 +244,18 @@ async fn create_product(
 ) -> ApiResult<Json<Product>> {
     let admin = auth::require_admin(&state, &headers).await?;
     input.validate()?;
+    validate_banquet_product(
+        input.banquet.unwrap_or(false),
+        input.minimum_quantity.unwrap_or(0),
+    )?;
     let mut tx = state.pool.begin().await?;
     categories::ensure(&mut tx, &input.category).await?;
     let product: Product = sqlx::query_as(
-        "INSERT INTO products(name,description,category,tag,weight,price_cents,vegan,ingredients,allergens,image,active,stock,minimum_quantity,variants) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14) RETURNING *",
+        "INSERT INTO products(name,description,category,tag,weight,price_cents,vegan,ingredients,allergens,image,active,stock,minimum_quantity,variants,banquet) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15) RETURNING *",
     ).bind(&input.name).bind(&input.description).bind(&input.category).bind(&input.tag)
         .bind(&input.weight).bind(input.price_cents).bind(input.vegan).bind(&input.ingredients)
         .bind(&input.allergens).bind(&input.image).bind(input.active).bind(input.stock)
-        .bind(input.minimum_quantity.unwrap_or(0)).bind(input.variants.as_deref().unwrap_or(&[])).fetch_one(&mut *tx).await?;
+        .bind(input.minimum_quantity.unwrap_or(0)).bind(input.variants.as_deref().unwrap_or(&[])).bind(input.banquet.unwrap_or(false)).fetch_one(&mut *tx).await?;
     sqlx::query("INSERT INTO product_prices(product_id,price_cents,changed_by) VALUES ($1,$2,$3)")
         .bind(product.id)
         .bind(product.price_cents)
@@ -265,12 +290,16 @@ async fn update_product(
             "Produkt se mezitím změnil. Načtěte aktuální údaje.",
         ));
     }
+    validate_banquet_product(
+        input.banquet.unwrap_or(old.banquet),
+        input.minimum_quantity.unwrap_or(old.minimum_quantity),
+    )?;
     let product = sqlx::query_as(
-        "UPDATE products SET name=$2,description=$3,category=$4,tag=$5,weight=$6,price_cents=$7,vegan=$8,ingredients=$9,allergens=$10,image=$11,active=$12,stock=$13,minimum_quantity=COALESCE($14,minimum_quantity),variants=COALESCE($15,variants),version=version+1,updated_at=now() WHERE id=$1 RETURNING *",
+        "UPDATE products SET name=$2,description=$3,category=$4,tag=$5,weight=$6,price_cents=$7,vegan=$8,ingredients=$9,allergens=$10,image=$11,active=$12,stock=$13,minimum_quantity=COALESCE($14,minimum_quantity),variants=COALESCE($15,variants),banquet=COALESCE($16,banquet),version=version+1,updated_at=now() WHERE id=$1 RETURNING *",
     ).bind(id).bind(&input.name).bind(&input.description).bind(&input.category).bind(&input.tag)
         .bind(&input.weight).bind(input.price_cents).bind(input.vegan).bind(&input.ingredients)
         .bind(&input.allergens).bind(&input.image).bind(input.active).bind(input.stock)
-        .bind(input.minimum_quantity).bind(input.variants).fetch_one(&mut *tx).await?;
+        .bind(input.minimum_quantity).bind(input.variants).bind(input.banquet).fetch_one(&mut *tx).await?;
     if old.price_cents != input.price_cents {
         sqlx::query(
             "INSERT INTO product_prices(product_id,price_cents,changed_by) VALUES ($1,$2,$3)",
@@ -318,18 +347,19 @@ struct Settings {
     order_email: String,
     additional_order_emails: Option<Vec<String>>,
     delivery_slots: Option<Vec<String>>,
+    banquet_minimum_quantity: Option<i32>,
     version: i64,
 }
 
 async fn settings(State(state): State<AppState>) -> ApiResult<Json<Value>> {
-    let (delivery_fee_cents, free_delivery_from_cents, delivery_postal_codes):
-        (i64, Option<i64>, Vec<String>) = sqlx::query_as(
-            "SELECT delivery_fee_cents,free_delivery_from_cents,ARRAY(SELECT postal_code FROM delivery_areas WHERE active ORDER BY postal_code) AS delivery_postal_codes FROM shop_settings WHERE id=1",
+    let (delivery_fee_cents, free_delivery_from_cents, delivery_postal_codes, banquet_minimum_quantity):
+        (i64, Option<i64>, Vec<String>, i32) = sqlx::query_as(
+            "SELECT delivery_fee_cents,free_delivery_from_cents,ARRAY(SELECT postal_code FROM delivery_areas WHERE active ORDER BY postal_code) AS delivery_postal_codes,banquet_minimum_quantity FROM shop_settings WHERE id=1",
         ).fetch_one(&state.pool).await?;
     let site = site_settings::read(&state.pool).await?;
     let pickup = pickup::read(&state.pool).await?;
     Ok(Json(
-        json!({"delivery_fee_cents":delivery_fee_cents,"free_delivery_from_cents":free_delivery_from_cents,"delivery_postal_codes":delivery_postal_codes,"online_payment_enabled":state.config.teya.is_some(),"hero_image":site.hero_image,"hero_image_alt":site.hero_image_alt,"public_contact_email":site.public_contact_email,"public_contact_phone":site.public_contact_phone,"seller_name":site.seller_name,"seller_address":site.seller_address,"seller_ico":site.seller_ico,"delivery_area_label":site.delivery_area_label,"pickup":pickup}),
+        json!({"delivery_fee_cents":delivery_fee_cents,"free_delivery_from_cents":free_delivery_from_cents,"delivery_postal_codes":delivery_postal_codes,"online_payment_enabled":state.config.teya.is_some(),"hero_image":site.hero_image,"hero_image_alt":site.hero_image_alt,"public_contact_email":site.public_contact_email,"public_contact_phone":site.public_contact_phone,"seller_name":site.seller_name,"seller_address":site.seller_address,"seller_ico":site.seller_ico,"delivery_area_label":site.delivery_area_label,"pickup":pickup,"banquet_minimum_quantity":banquet_minimum_quantity}),
     ))
 }
 
@@ -521,6 +551,14 @@ async fn update_settings(
     if let Some(slots) = &mut input.delivery_slots {
         normalize_slots(slots)?;
     }
+    if input
+        .banquet_minimum_quantity
+        .is_some_and(|n| !(1..=4950).contains(&n))
+    {
+        return Err(ApiError::bad_request(
+            "Celkový minimální odběr banketního pečiva musí být od 1 do 4950 kusů.",
+        ));
+    }
     if !(0..=MAX_PRICE).contains(&input.delivery_fee_cents)
         || input
             .free_delivery_from_cents
@@ -552,8 +590,8 @@ async fn update_settings(
     if input.additional_order_emails.is_some() {
         input.additional_order_emails = Some(recipients.into_iter().skip(1).collect());
     }
-    let updated = sqlx::query_as("UPDATE shop_settings SET delivery_fee_cents=$1,free_delivery_from_cents=$2,order_email=$3,delivery_slots=COALESCE($5,delivery_slots),additional_order_emails=COALESCE($6,additional_order_emails),version=version+1,updated_at=now() WHERE id=1 AND version=$4 RETURNING *")
-        .bind(input.delivery_fee_cents).bind(input.free_delivery_from_cents).bind(input.order_email).bind(input.version).bind(input.delivery_slots).bind(input.additional_order_emails)
+    let updated = sqlx::query_as("UPDATE shop_settings SET delivery_fee_cents=$1,free_delivery_from_cents=$2,order_email=$3,delivery_slots=COALESCE($5,delivery_slots),additional_order_emails=COALESCE($6,additional_order_emails),banquet_minimum_quantity=COALESCE($7,banquet_minimum_quantity),version=version+1,updated_at=now() WHERE id=1 AND version=$4 RETURNING *")
+        .bind(input.delivery_fee_cents).bind(input.free_delivery_from_cents).bind(input.order_email).bind(input.version).bind(input.delivery_slots).bind(input.additional_order_emails).bind(input.banquet_minimum_quantity)
         .fetch_optional(&mut *tx).await?.ok_or_else(|| ApiError::conflict("Nastavení se mezitím změnilo. Načtěte aktuální údaje."))?;
     tx.commit().await?;
     Ok(Json(updated))
@@ -1019,6 +1057,7 @@ async fn create_order(
             .await?;
     let by_id: BTreeMap<i64, Product> = products.into_iter().map(|p| (p.id, p)).collect();
     let mut subtotal: i64 = 0;
+    let mut banquet_quantity = 0;
     for item in &input.items {
         let product = by_id
             .get(&item.product_id)
@@ -1050,11 +1089,18 @@ async fn create_order(
                 product.name
             )));
         }
+        if product.banquet {
+            banquet_quantity += item.quantity;
+        }
         subtotal = subtotal
             .checked_add(product.price_cents * i64::from(item.quantity))
             .filter(|sum| *sum <= MAX_TOTAL)
             .ok_or_else(|| ApiError::bad_request("Objednávka překračuje maximální částku."))?;
     }
+    validate_banquet_quantity(
+        banquet_quantity,
+        settings.banquet_minimum_quantity.unwrap_or(30),
+    )?;
     let fee = if input.is_pickup() {
         0
     } else {
@@ -1996,6 +2042,7 @@ mod tests {
             order_email: String::new(),
             additional_order_emails: None,
             delivery_slots: None,
+            banquet_minimum_quantity: Some(30),
             version: 1,
         };
         assert_eq!(delivery_fee(34999, &settings), 4900);
