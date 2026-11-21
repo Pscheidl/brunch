@@ -36,6 +36,7 @@ async function main() {
     const url = new URL(request.url())
     const reply = (json, status = 200) => route.fulfill({ status, json })
     if (url.pathname === '/api/auth/me') return reply({ user: { id: 'admin', email: 'admin@example.test', is_admin: true } })
+    if (url.pathname === '/api/admin/pickup-settings') return reply({ enabled: false, name: '', street: '', city: '', postal_code: '', instructions: '', parking_free: true, slots: [], version: 1 })
     if (url.pathname === '/api/admin/settings') {
       if (request.method() === 'GET') return reply(settings)
       const payload = request.postDataJSON()
@@ -82,11 +83,11 @@ async function main() {
     const started = new Promise(resolve => { saveStarted = resolve })
     const pending = save()
     await started
-    assert.equal(await page.locator('form button[type=submit]').isDisabled(), true)
+    assert.equal(await page.locator('form:not(.pickup-settings) button[type=submit]').isDisabled(), true)
     assert.equal(await mainEmail().isDisabled(), true)
     assert.equal(await extraEmails().isDisabled(), true)
     assert.equal(await page.locator('[data-form-error]').count(), 0, 'A valid save clears old validation errors')
-    await page.locator('form').evaluate(form => form.requestSubmit())
+    await page.locator('form:not(.pickup-settings)').evaluate(form => form.requestSubmit())
     assert.equal(saves.length, 1, 'An in-flight save cannot be submitted twice')
     releaseSave()
     assert.equal((await pending).status(), 200)

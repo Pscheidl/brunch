@@ -497,6 +497,117 @@ async fn checkout_billing_and_issued_invoice_follow_order_owner_and_remain_immut
 
 #[tokio::test]
 #[ignore = "requires PostgreSQL via TEST_DATABASE_URL"]
+async fn pickup_invoice_preserves_location_snapshot_and_separate_customer_address() {
+    let app = TestApp::new().await;
+    let admin = app.login("admin@example.test").await;
+    let buyer = app.login("pickup-buyer@example.test").await;
+    let pickup = json!({"enabled":true,"name":"Pekárna při objednání","street":"Odběrná 88","city":"Liberec","postal_code":"46001","instructions":"Vchod ze dvora","parking_free":true,"slots":["10:00–12:00"],"version":1});
+    let pickup = app
+        .call(
+            &admin,
+            Method::PUT,
+            "/api/admin/pickup-settings",
+            Some(&pickup),
+            StatusCode::OK,
+        )
+        .await;
+    let mut input = app
+        .order_input(&buyer, "pickup-buyer@example.test", None)
+        .await;
+    input["fulfillment_method"] = json!("pickup");
+    input["pickup_version"] = pickup["version"].clone();
+    input["delivery_slot"] = pickup["slots"][0].clone();
+    input["expected_total_cents"] =
+        app.get(&buyer, "/api/products").await[0]["price_cents"].clone();
+    for key in ["street", "city", "postal_code"] {
+        input.as_object_mut().unwrap().remove(key);
+    }
+    let order = app.post(&buyer, "/api/orders", &input).await;
+    assert_eq!(order["delivery_fee_cents"], 0);
+    assert_eq!(order["street"], "Odběrná 88");
+    let id = order["id"].as_str().unwrap();
+    let customer_base = format!("/api/customer/orders/{id}");
+    assert_eq!(
+        app.get(&buyer, &format!("{customer_base}/billing")).await,
+        Value::Null
+    );
+    let listed = app.get(&buyer, "/api/customer/orders").await;
+    assert_eq!(
+        listed["active"][0]["pickup_location"],
+        order["pickup_location"]
+    );
+    assert_eq!(listed["items"][0]["fulfillment_method"], "pickup");
+    let supplier = json!({"name":"Pekárna Test","address":"Sídlo 1","company_id":"87654321","tax_id":"","registration":"","vat_payer":false,"version":1});
+    app.call(
+        &admin,
+        Method::PUT,
+        "/api/admin/invoice-supplier",
+        Some(&supplier),
+        StatusCode::OK,
+    )
+    .await;
+    let invoice_path = format!("/api/admin/orders/{id}/invoice");
+    let mut issue = json!({"supplier_version":2,"customer_name":"Kupující","customer_address":"","customer_company_id":"","customer_tax_id":"","supply_date":order["delivery_date"],"due_date":order["delivery_date"],"vat_rates":{}});
+    app.call(
+        &admin,
+        Method::POST,
+        &invoice_path,
+        Some(&issue),
+        StatusCode::BAD_REQUEST,
+    )
+    .await;
+    issue["customer_address"] = json!("Vlastní adresa zákazníka 15, Praha");
+    let mut moved = pickup.clone();
+    moved["name"] = json!("Nové odběrné místo");
+    moved["street"] = json!("Nová výdejna 200");
+    moved["parking_free"] = json!(false);
+    let moved = app
+        .call(
+            &admin,
+            Method::PUT,
+            "/api/admin/pickup-settings",
+            Some(&moved),
+            StatusCode::OK,
+        )
+        .await;
+    let invoice = app.post(&admin, &invoice_path, &issue).await;
+    assert_eq!(invoice["fulfillment_method"], "pickup");
+    assert_eq!(invoice["pickup_location"], order["pickup_location"]);
+    assert_eq!(invoice["pickup_location"]["parking_free"], true);
+    assert_eq!(invoice["customer"]["address"], issue["customer_address"]);
+    assert!(
+        invoice["lines"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|line| line["name"] != "Doprava")
+    );
+    assert_eq!(invoice["total_cents"], order["subtotal_cents"]);
+    assert_eq!(
+        app.get(&buyer, &format!("{customer_base}/invoice")).await,
+        invoice
+    );
+    let mut disabled = moved;
+    disabled["enabled"] = json!(false);
+    app.call(
+        &admin,
+        Method::PUT,
+        "/api/admin/pickup-settings",
+        Some(&disabled),
+        StatusCode::OK,
+    )
+    .await;
+    issue["customer_address"] = json!("Jiná adresa nesmí přepsat vystavený doklad");
+    assert_eq!(app.post(&admin, &invoice_path, &issue).await, invoice);
+    assert_eq!(
+        app.get(&buyer, &format!("{customer_base}/invoice")).await,
+        invoice
+    );
+    app.close().await;
+}
+
+#[tokio::test]
+#[ignore = "requires PostgreSQL via TEST_DATABASE_URL"]
 async fn customer_requests_are_atomic_idempotent_private_and_require_admin_resolution() {
     let app = TestApp::new().await;
     let buyer = app.login("buyer@example.test").await;

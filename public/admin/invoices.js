@@ -53,7 +53,7 @@ async function invoiceDialog(order) {
     el('p', { class: 'section-note' }, `Dodavatel: ${supplier.name} · IČO ${supplier.company_id}. Objednávka ${order.number} · ${money(order.total_cents)}.`),
     el('div', { class: 'form-grid' },
       field('Odběratel', 'customer_name', billing?.name || order.organization || order.name, { maxlength: 250, required: true, full: true }),
-      field('Adresa odběratele', 'customer_address', billing?.address || `${order.street}\n${order.postal_code} ${order.city}`, { kind: 'textarea', maxlength: 500, required: true, full: true }),
+      field('Adresa odběratele', 'customer_address', billing?.address || (order.fulfillment_method === 'pickup' ? '' : `${order.street}\n${order.postal_code} ${order.city}`), { kind: 'textarea', maxlength: 500, required: true, full: true, hint: order.fulfillment_method === 'pickup' && !billing?.address ? 'Doplňte fakturační adresu zákazníka. Adresa odběrného místa není adresou odběratele.' : null }),
       field('IČO odběratele', 'customer_company_id', billing?.company_id || '', { maxlength: 24 }),
       field('DIČ odběratele', 'customer_tax_id', billing?.tax_id || '', { maxlength: 30 }),
       field('Datum plnění', 'supply_date', order.delivery_date, { type: 'date', required: true }),
@@ -93,7 +93,8 @@ function showInvoice(invoice, orderId) {
   })
   const taxRows = [...taxes.entries()].sort(([a], [b]) => a - b).map(([rate, group]) =>
     el('tr', {}, el('td', {}, `${rate / 100} %`), el('td', {}, money(group.net)), el('td', {}, money(group.tax)), el('td', {}, money(group.net + group.tax))))
-  const method = { card: 'Online kartou', cash_on_delivery: 'Hotově při doručení', card_on_delivery: 'Kartou při doručení' }
+  const pickup = invoice.fulfillment_method === 'pickup'
+  const method = { card: 'Online kartou', cash_on_delivery: `Hotově při ${pickup ? 'vyzvednutí' : 'doručení'}`, card_on_delivery: `Kartou při ${pickup ? 'vyzvednutí' : 'doručení'}` }
   body.append(el('article', { class: 'invoice' },
     el('p', { class: 'section-note' }, `Objednávka ${invoice.order_number}`),
     el('div', { class: 'summary-grid' }, party('Dodavatel', issuer), party('Odběratel', invoice.customer)),
@@ -105,6 +106,10 @@ function showInvoice(invoice, orderId) {
     vat ? el('section', {}, el('h3', {}, 'Rekapitulace DPH'), table(['Sazba', 'Základ', 'DPH', 'Celkem'], taxRows, true)) : el('p', {}, 'Dodavatel není plátcem DPH.'),
     el('p', { class: 'invoice-total' }, `Celkem ${money(invoice.total_cents)}`),
     el('p', {}, `Způsob úhrady: ${method[invoice.payment_method]}.`),
+    pickup ? el('section', { class: 'invoice-pickup' }, el('h3', {}, 'Osobní odběr'),
+      invoice.pickup_location ? el('p', {}, `${invoice.pickup_location.name}\n${invoice.pickup_location.street}\n${invoice.pickup_location.postal_code} ${invoice.pickup_location.city}`) : null,
+      invoice.pickup_location?.parking_free ? el('p', {}, 'Parkování zdarma') : null,
+      invoice.pickup_location?.instructions ? el('p', {}, invoice.pickup_location.instructions) : null) : null,
     el('p', {}, `Stav při vystavení: ${payments[invoice.payment_status]}.`)),
     el('div', { class: 'actions no-print' }, button('Zpět k objednávce', () => orderDialog(orderId)),
       button('Vytisknout / uložit PDF', () => window.print(), 'primary')))

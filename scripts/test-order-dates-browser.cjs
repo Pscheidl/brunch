@@ -134,7 +134,7 @@ async function main() {
     await run(browser, base, 'Combined delivery day, search and status survive pagination, refresh and navigation', async test => {
       const { page, api } = test
       assert.deepEqual(api.requests.at(-1), { page: '1', status: '', q: '', delivery_date: '' })
-      await listAction(test, () => page.getByLabel('Den doručení', { exact: true }).fill('2026-11-02'), { page: '1', status: '', q: '', delivery_date: '2026-11-02' })
+      await listAction(test, () => page.getByLabel('Den doručení / odběru', { exact: true }).fill('2026-11-02'), { page: '1', status: '', q: '', delivery_date: '2026-11-02' })
       await page.getByLabel('Vyhledat objednávku', { exact: true }).fill(' MATCH ')
       await page.getByLabel('Stav objednávky', { exact: true }).selectOption('new')
       const expected = { page: '1', status: 'new', q: 'MATCH', delivery_date: '2026-11-02' }
@@ -147,10 +147,10 @@ async function main() {
       await page.getByRole('link', { name: 'E-maily', exact: true }).click()
       await page.getByRole('heading', { name: 'E-maily', exact: true }).waitFor()
       await listAction(test, () => page.getByRole('link', { name: 'Objednávky', exact: true }).click(), { ...expected, page: '2' })
-      assert.equal(await page.getByLabel('Den doručení', { exact: true }).inputValue(), '2026-11-02')
+      assert.equal(await page.getByLabel('Den doručení / odběru', { exact: true }).inputValue(), '2026-11-02')
       assert.equal(await page.getByLabel('Stav objednávky', { exact: true }).inputValue(), 'new')
       assert.equal(await page.getByLabel('Vyhledat objednávku', { exact: true }).inputValue(), 'MATCH')
-      await listAction(test, () => page.getByLabel('Den doručení', { exact: true }).fill('2026-11-03'), { ...expected, delivery_date: '2026-11-03' })
+      await listAction(test, () => page.getByLabel('Den doručení / odběru', { exact: true }).fill('2026-11-03'), { ...expected, delivery_date: '2026-11-03' })
       assert.equal(await page.locator('tbody tr').count(), 1)
       await page.getByText('BR-MATCH-056', { exact: true }).waitFor()
       await page.screenshot({ path: path.join(output, 'filtered-orders-desktop.png'), fullPage: true })
@@ -180,7 +180,7 @@ async function main() {
       await page.getByLabel('Vyhledat objednávku', { exact: true }).fill('MATCH')
       await page.getByLabel('Stav objednávky', { exact: true }).selectOption('new')
       const expected = { page: '1', status: 'new', q: 'MATCH', delivery_date: '2026-11-02' }
-      await listAction(test, () => page.getByLabel('Den doručení', { exact: true }).fill('2026-11-02'), expected)
+      await listAction(test, () => page.getByLabel('Den doručení / odběru', { exact: true }).fill('2026-11-02'), expected)
       await listAction(test, () => page.getByRole('button', { name: 'Další →', exact: true }).click(), { ...expected, page: '2' })
       await listAction(test, () => page.getByRole('button', { name: 'Zítra', exact: true }).click(), { ...expected, delivery_date: '2026-10-26' })
       await page.getByText('Žádné objednávky', { exact: true }).waitFor()
@@ -188,23 +188,23 @@ async function main() {
       assert(await page.getByRole('button', { name: 'Další →', exact: true }).isDisabled())
       assert.equal(await page.getByRole('button', { name: 'Zítra', exact: true }).getAttribute('aria-pressed'), 'true')
       await listAction(test, () => page.getByRole('button', { name: 'Všechny dny', exact: true }).click(), { ...expected, delivery_date: '' })
-      assert.equal(await page.getByLabel('Den doručení', { exact: true }).inputValue(), '')
+      assert.equal(await page.getByLabel('Den doručení / odběru', { exact: true }).inputValue(), '')
       assert.match(await page.locator('.pagination').innerText(), /Celkem 56/)
       assert.equal(await page.getByRole('button', { name: 'Všechny dny', exact: true }).getAttribute('aria-pressed'), 'true')
-      await listAction(test, () => page.getByLabel('Den doručení', { exact: true }).fill('2026-11-03'), { ...expected, delivery_date: '2026-11-03' })
-      await listAction(test, () => page.getByLabel('Den doručení', { exact: true }).fill(''), { ...expected, delivery_date: '' })
+      await listAction(test, () => page.getByLabel('Den doručení / odběru', { exact: true }).fill('2026-11-03'), { ...expected, delivery_date: '2026-11-03' })
+      await listAction(test, () => page.getByLabel('Den doručení / odběru', { exact: true }).fill(''), { ...expected, delivery_date: '' })
     })
 
     await run(browser, base, 'A failed request displays a recoverable error without losing the delivery day', async test => {
       const { page, api } = test
       api.failNext = true
       const failed = page.waitForResponse(value => new URL(value.url()).pathname === '/api/admin/orders' && value.status() === 503)
-      await page.getByLabel('Den doručení', { exact: true }).fill('2026-11-03')
+      await page.getByLabel('Den doručení / odběru', { exact: true }).fill('2026-11-03')
       await failed
       await page.getByRole('heading', { name: 'Data nelze načíst', exact: true }).waitFor()
       await page.getByRole('alert').filter({ hasText: 'Testovací výpadek načítání objednávek.' }).waitFor()
       await listAction(test, () => page.getByRole('button', { name: 'Obnovit', exact: true }).click(), { page: '1', status: '', q: '', delivery_date: '2026-11-03' })
-      assert.equal(await page.getByLabel('Den doručení', { exact: true }).inputValue(), '2026-11-03')
+      assert.equal(await page.getByLabel('Den doručení / odběru', { exact: true }).inputValue(), '2026-11-03')
       assert.equal(await page.locator('tbody tr').count(), 1)
     })
 
@@ -221,19 +221,19 @@ async function main() {
       for (const [instant, today, tomorrow] of cases) {
         await page.clock.setFixedTime(new Date(instant))
         await listAction(test, () => page.getByRole('button', { name: 'Dnes', exact: true }).click(), { page: '1', status: '', q: '', delivery_date: today })
-        assert.equal(await page.getByLabel('Den doručení', { exact: true }).inputValue(), today)
+        assert.equal(await page.getByLabel('Den doručení / odběru', { exact: true }).inputValue(), today)
         assert.equal(await page.getByRole('button', { name: 'Dnes', exact: true }).getAttribute('aria-pressed'), 'true')
         await listAction(test, () => page.getByRole('button', { name: 'Zítra', exact: true }).click(), { page: '1', status: '', q: '', delivery_date: tomorrow })
-        assert.equal(await page.getByLabel('Den doručení', { exact: true }).inputValue(), tomorrow)
+        assert.equal(await page.getByLabel('Den doručení / odběru', { exact: true }).inputValue(), tomorrow)
         assert.equal(await page.getByRole('button', { name: 'Zítra', exact: true }).getAttribute('aria-pressed'), 'true')
       }
     })
 
     await run(browser, base, 'Delivery day controls and empty results remain usable at 390 pixels', async test => {
       const { page } = test
-      await listAction(test, () => page.getByLabel('Den doručení', { exact: true }).fill('2026-11-03'), { page: '1', status: '', q: '', delivery_date: '2026-11-03' })
+      await listAction(test, () => page.getByLabel('Den doručení / odběru', { exact: true }).fill('2026-11-03'), { page: '1', status: '', q: '', delivery_date: '2026-11-03' })
       await assertNoOverflow(page)
-      const controls = page.getByRole('group', { name: 'Rychlá volba dne doručení', exact: true })
+      const controls = page.getByRole('group', { name: 'Rychlá volba dne doručení nebo odběru', exact: true })
       for (const label of ['Dnes', 'Zítra', 'Všechny dny']) {
         const bounds = await controls.getByRole('button', { name: label, exact: true }).boundingBox()
         assert(bounds && bounds.x >= 0 && bounds.x + bounds.width <= 391, `${label} must fit within the viewport`)
