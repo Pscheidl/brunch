@@ -61,6 +61,7 @@ struct ProductAvailability {
     active: bool,
     stock: Option<i32>,
     minimum_quantity: i32,
+    banquet: bool,
     variants: Vec<String>,
 }
 #[derive(Deserialize)]
@@ -277,15 +278,29 @@ async fn aggregate(
             "Společný košík může mít nejvýše 50 různých položek.",
         ));
     }
+    // Match checkout's settings-before-products lock order for a consistent limit.
+    let banquet_minimum = if require_minimum {
+        Some(
+            sqlx::query_scalar::<_, i32>(
+                "SELECT banquet_minimum_quantity FROM shop_settings WHERE id=1 FOR SHARE",
+            )
+            .fetch_one(&mut *conn)
+            .await?,
+        )
+    } else {
+        None
+    };
+    let mut banquet_quantity = 0;
     let mut result = Vec::new();
     for (id, (quantity, variants)) in combined {
-        let product: Option<ProductAvailability> = sqlx::query_as("SELECT name,active,stock,minimum_quantity,variants FROM products WHERE id=$1 FOR SHARE")
+        let product: Option<ProductAvailability> = sqlx::query_as("SELECT name,active,stock,minimum_quantity,banquet,variants FROM products WHERE id=$1 FOR SHARE")
             .bind(id).fetch_optional(&mut *conn).await?;
         let Some(ProductAvailability {
             name,
             active,
             stock,
             minimum_quantity: minimum,
+            banquet,
             variants: allowed,
         }) = product
         else {
@@ -315,11 +330,17 @@ async fn aggregate(
                 minimum.max(1)
             )));
         }
+        if banquet {
+            banquet_quantity += quantity;
+        }
         result.push(Item {
             product_id: id,
             quantity,
             variant: variants.into_iter().next().flatten(),
         });
+    }
+    if let Some(minimum) = banquet_minimum {
+        super::validate_banquet_quantity(banquet_quantity, minimum)?;
     }
     Ok(result)
 }

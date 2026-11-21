@@ -907,13 +907,13 @@ async fn upgrade_preserves_existing_products_photos_orders_and_settings() {
 
     // Compare every existing field, including image bytes and historical prices.
     let comparisons = [
-        ("products", " - 'minimum_quantity' - 'variants'"),
+        ("products", " - 'minimum_quantity' - 'variants' - 'banquet'"),
         ("images", ""),
         ("product_prices", ""),
         ("order_items", " - 'variant'"),
         (
             "shop_settings",
-            " - 'delivery_slots' - 'additional_order_emails'",
+            " - 'delivery_slots' - 'additional_order_emails' - 'banquet_minimum_quantity'",
         ),
         ("delivery_areas", " - 'delivery_slots'"),
         (
@@ -987,6 +987,9 @@ async fn upgrade_preserves_existing_products_photos_orders_and_settings() {
     assert_eq!(categories, ["", "Pečivo"]);
     let defaults: (bool, bool, bool) = sqlx::query_as("SELECT (SELECT bool_and(minimum_quantity=0) FROM products), (SELECT cardinality(delivery_slots)=3 FROM shop_settings), (SELECT delivery_slots IS NULL FROM delivery_areas)").fetch_one(&pool).await.unwrap();
     assert_eq!(defaults, (true, true, true));
+    let banquet_defaults: (bool, i32) = sqlx::query_as("SELECT (SELECT bool_and(NOT banquet) FROM products),banquet_minimum_quantity FROM shop_settings WHERE id=1")
+        .fetch_one(&pool).await.unwrap();
+    assert_eq!(banquet_defaults, (true, 30));
     let site_defaults: (i32, String, i64) =
         sqlx::query_as("SELECT id,hero_image,version FROM site_settings")
             .fetch_one(&pool)

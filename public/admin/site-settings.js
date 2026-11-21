@@ -1,7 +1,7 @@
 'use strict'
 
 async function siteSettingsPage() {
-  const settings = await api('/api/admin/site-settings')
+  const [settings, shopSettings] = await Promise.all([api('/api/admin/site-settings'), api('/api/admin/settings')])
   const defaultImage = '/images/brunch-spread.webp'
   const defaultAlt = 'Kváskový sendvič, jogurt s granolou a hummus se zeleninou na prostřeném stole'
   let selectedImage = settings.hero_image || ''
@@ -30,17 +30,18 @@ async function siteSettingsPage() {
   })
   const form = el('form', { class: 'panel site-settings-editor', onsubmit: event => saveForm(event, async data => {
     notice.hidden = true
+    form.querySelector('[data-form-error]')?.remove()
     const alt = String(data.get('hero_image_alt') || '').trim()
     if (!alt) throw new Error('Doplňte popis hlavní fotografie.')
     saving = true
     updateControls()
     try {
-      await api('/api/admin/site-settings', { method: 'PUT', body: JSON.stringify({
+      Object.assign(settings, await api('/api/admin/site-settings', { method: 'PUT', body: JSON.stringify({
         hero_image: selectedImage, hero_image_alt: alt, version: settings.version,
         ...Object.fromEntries(['public_contact_email', 'public_contact_phone', 'seller_name', 'seller_address', 'seller_ico', 'delivery_area_label'].map(key => [key, String(data.get(key) || '').trim()]))
-      }) })
+      }) }))
+      uploadStatus.textContent = 'Fotografie a údaje webu jsou uložené.'
       notify('Nastavení webu bylo zveřejněno.')
-      await renderPage()
     } finally {
       saving = false
       updateControls()
@@ -112,5 +113,50 @@ async function siteSettingsPage() {
       upload.value = ''
     }
   })
-  return [header('Obecné nastavení webu', 'Hlavní fotografie, veřejné kontakty a informace o rozvozu.', button('Obnovit', renderPage)), form]
+  return [header('Obecné nastavení webu', 'Hlavní fotografie, veřejné kontakty a pravidla objednávek.', button('Obnovit', renderPage)), banquetMinimumForm(shopSettings), form]
+}
+
+function banquetMinimumForm(settings) {
+  const minimum = field('Minimální množství banketního pečiva celkem', 'banquet_minimum_quantity', settings.banquet_minimum_quantity ?? 30, {
+    type: 'number', min: 1, max: 4950, step: 1, required: true,
+    hint: 'Počet kusů za celou objednávku. Sčítají se pouze výrobky označené jako banketní pečivo. Objednávky bez banketního pečiva tento limit nemají.'
+  })
+  const input = minimum.querySelector('input')
+  const hint = minimum.querySelector('.hint')
+  hint.id = 'banquet-minimum-hint'
+  input.setAttribute('aria-describedby', hint.id)
+  const form = el('form', { class: 'panel settings-panel banquet-settings', 'aria-labelledby': 'banquet-settings-title', onsubmit: event => saveForm(event, async data => {
+    notice.hidden = true
+    form.querySelector('[data-form-error]')?.remove()
+    const quantity = Number(data.get('banquet_minimum_quantity'))
+    if (!Number.isInteger(quantity) || quantity < 1 || quantity > 4950) throw new Error('Společné minimum banketního pečiva musí být celé číslo od 1 do 4950 kusů.')
+    input.disabled = true
+    refresh.disabled = true
+    try {
+      const payload = {
+        delivery_fee_cents: settings.delivery_fee_cents, free_delivery_from_cents: settings.free_delivery_from_cents,
+        order_email: settings.order_email, additional_order_emails: settings.additional_order_emails,
+        delivery_slots: settings.delivery_slots, version: settings.version, banquet_minimum_quantity: quantity
+      }
+      Object.assign(settings, await api('/api/admin/settings', { method: 'PUT', body: JSON.stringify(payload) }))
+      input.value = settings.banquet_minimum_quantity
+      notify('Minimum banketního pečiva bylo uloženo.')
+    } catch (error) {
+      if (error.status === 409) error.message = 'Nastavení mezitím změnil jiný správce. Načtěte aktuální hodnotu tlačítkem Obnovit minimum. Rozepsané údaje zatím zůstávají ve formuláři.'
+      throw error
+    } finally { input.disabled = false; refresh.disabled = false }
+  }) }, el('h2', { id: 'banquet-settings-title' }, 'Banketní pečivo'), minimum,
+  el('p', { class: 'hint' }, 'Například 10 ks banketních housek se sýrem, 10 ks s lososem a 10 ks s paštikou splní společné minimum 30 kusů. Každý výrobek zároveň musí splnit vlastní minimální odběr.'),
+  el('p', { class: 'hint' }, 'Změna se použije pro nové objednávky. Již přijaté objednávky zůstávají zachovány. Výchozí minimum je 30 kusů.'))
+  const refresh = button('Obnovit minimum', async () => {
+    refresh.disabled = true
+    try {
+      Object.assign(settings, await api('/api/admin/settings'))
+      input.value = settings.banquet_minimum_quantity ?? 30
+      form.querySelector('[data-form-error]')?.remove()
+    } catch (error) { formError(form, error) }
+    finally { refresh.disabled = false }
+  })
+  form.append(el('div', { class: 'actions' }, el('button', { type: 'submit', class: 'button primary' }, 'Uložit minimum banketního pečiva'), refresh))
+  return form
 }

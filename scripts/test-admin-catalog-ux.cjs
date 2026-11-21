@@ -42,6 +42,7 @@ async function main() {
     const method = request.method()
     const reply = (json, status = 200) => route.fulfill({ json, status })
     if (url.pathname === '/api/auth/me') return reply({ user: { id: 'admin', email: 'admin@example.test', is_admin: true } })
+    if (url.pathname === '/api/admin/settings') return reply({ delivery_fee_cents: 4900, free_delivery_from_cents: 35000, order_email: 'orders@example.test', additional_order_emails: [], delivery_slots: ['07:00–09:00'], banquet_minimum_quantity: 30, version: 1 })
     if (url.pathname === '/api/admin/products' && method === 'GET') return reply(products)
     if (/^\/api\/admin\/products\/\d+$/.test(url.pathname) && method === 'PUT') {
       const id = Number(url.pathname.split('/').pop())
